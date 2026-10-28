@@ -29,8 +29,9 @@ Constraints:
      - `--restricted`: settings files are ignored, file tools are confined to the working directories, and writes to git and settings files are blocked;
      - `--tools Bash,Read,Write,Edit,Glob,Grep,Agent`: no web or other tools;
      - `--permission-mode dontAsk`: any Bash command not on the allowlist is refused, including chained ones;
-     - the allowlist itself: read-only `git` subcommands, the skill's two validators, `mkdir` and `ls`.
-   - The checkout, the skill copy and the prior run are `chmod -R a-w` before the agent starts. The output directory is the only writable path.
+     - the allowlist itself: the skill's two validators, `mkdir` and `ls`.
+   - **No git command.** Allowlist rules match command prefixes, and several options of "read-only" git subcommands write files or run programs (`--output`, `grep -O`, `--ext-diff`). Trusted code exports the history as text before the agent starts (commit log with changed files, full patch log capped at 20 MB, file list), and the agent reads that instead.
+   - The checkout, the skill copy, the git export and the prior run are `chmod -R a-w` before the agent starts. The output directory is the only writable path.
    - The agent reads `SKILL.md` directly, because `--restricted` doesn't load user skills.
    - These behaviors were verified locally before adoption: an unlisted command, a chained command, a write outside the allowed directories, a write into the read-only checkout or skill, and an edit to `.git/config` were all refused.
    - The prompt also tells it to execute no target code. The runner can't provide the skill's OS-sandbox limits, so runs are source-only.
@@ -56,10 +57,10 @@ Constraints:
    Blast radius: the agent can mint tokens of about 10 minutes for that workspace while the job runs (capped by its spend limit), and it can use the auditor SA, which can only add reports. It can't reach the publisher identity, because its job's `environment` claim is `security-audit`. The run leaves no long-lived credential to steal.
 5. **Output.**
    - Agent output goes to files, never to the log.
-   - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/runs/<UTC timestamp>-<sha>/audit/`. It has public-access prevention and a 180-day delete rule.
+   - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/runs/<UTC timestamp>-<sha>-<nonce>/audit/`. The random nonce is chosen before the agent starts and never given to it, so a run can't pre-create objects under a later run's name (the auditor SA can create anywhere under `runs/`). It has public-access prevention and a 180-day delete rule.
    - The publisher files `REPORT.md` as an issue in `globalhost-ops`, or a "FAILED" issue if no report was produced.
    - Each run gets the previous run's files for the skill's prior-run comparison. The previous run is named by `globalhost/published/latest`, a pointer only the publisher can write (an IAM condition scoped to that one object). The publisher updates it only after filing a run that produced a report. The audit job checks the pointer against a strict format and treats a missing or malformed pointer, or a failed fetch, as "no prior run". A run can't choose what later runs treat as prior by planting objects.
-   - `publish` also runs when the audit job fails, so failures still file an issue.
+   - `publish` also runs when the audit job fails, so failures still file an issue. It files `REPORT.md` and advances the pointer only when the audit job, including its upload, succeeded; otherwise it files a "FAILED" issue and leaves the pointer alone.
 6. **Cost.** Each run is capped at $10. Runs are on demand, so spend is whatever the owner chooses, within the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
 7. **Later.**
    - Once the runner exists (P1-05+), the audit becomes a factory role run by the runner, and this workflow is retired.
