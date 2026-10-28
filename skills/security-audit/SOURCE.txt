@@ -1,0 +1,5 @@
+Source: https://github.com/cloudflare/security-audit-skill
+Commit: c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 (2026-09-14)
+Installed: 2026-10-28 by copying skills/security-audit; reviewed before install.
+Vendored into globalhost/skills/security-audit on 2026-10-28, unmodified (MIT notice in LICENSE kept).
+Used by .github/workflows/security-audit.yml (ADR-0012). To update: copy a reviewed upstream commit, update this file, and re-read every changed file before merging.
