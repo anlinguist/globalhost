@@ -41,9 +41,9 @@ gcloud storage buckets update "gs://${BUCKET}" --lifecycle-file="$LIFECYCLE"
 rm -f "$LIFECYCLE"
 
 # Secrets: created empty; the owner adds the values (below).
-for s in security-audit-anthropic-key globalhost-ops-issues-token; do
-  exists g secrets describe "$s" || g secrets create "$s" --replication-policy=automatic
-done
+# (The audit authenticates to Anthropic with Workload Identity Federation, so there's no Anthropic key.)
+exists g secrets describe globalhost-ops-issues-token ||
+  g secrets create globalhost-ops-issues-token --replication-policy=automatic
 
 # Service accounts, each usable only from its own GitHub environment.
 for sa in "$AUDITOR" "$PUBLISHER"; do
@@ -58,9 +58,7 @@ bind_env() { # <sa> <github environment>
 bind_env "$AUDITOR" security-audit
 bind_env "$PUBLISHER" security-audit-publish
 
-# auditor: read its Anthropic key; list/read prior runs and write new ones (no delete).
-g secrets add-iam-policy-binding security-audit-anthropic-key \
-  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/secretmanager.secretAccessor >/dev/null
+# auditor: list/read prior runs and write new ones (no delete). No secrets.
 for role in roles/storage.objectCreator roles/storage.objectViewer; do
   gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
     --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role="$role" >/dev/null
@@ -80,9 +78,11 @@ Done. Set these GitHub repository variables on ${REPO} (Settings → Secrets and
   GCP_PUBLISHER_SA   ${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com
   AUDIT_BUCKET       ${BUCKET}
 
-Then add the secret values. Each command waits for you to paste the value (hidden, no trailing newline):
-  printf 'Anthropic key: '; read -rs V; echo; printf %s "\$V" | gcloud secrets versions add security-audit-anthropic-key --project=${PROJECT} --data-file=-; unset V
-      # a Console API key in the globalhost-runners workspace, named security-audit
+Then add the ops-repo token (waits for a hidden paste; no trailing newline):
   printf 'globalhost-ops token: '; read -rs V; echo; printf %s "\$V" | gcloud secrets versions add globalhost-ops-issues-token --project=${PROJECT} --data-file=-; unset V
       # fine-grained PAT: repository anlinguist/globalhost-ops only, Issues: read and write, expiry ≤ 1 year
+
+Anthropic side (Console → Settings → Workload identity → Connect workload → GitHub Actions), see ADR-0012,
+then set repo variables ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_FEDERATION_RULE_ID,
+ANTHROPIC_SERVICE_ACCOUNT_ID, ANTHROPIC_WORKSPACE_ID.
 OUT

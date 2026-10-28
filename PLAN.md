@@ -33,7 +33,7 @@ pnpm + Turborepo, TypeScript strict, Node 24, vitest, eslint (with `no-restricte
 
 ### P1-01b Weekly security audit (ADR-0012)
 Vendor `skills/security-audit`; `.github/workflows/security-audit.yml` runs it weekly on `main` via `claude -p` (quick profile, $10 cap). The agent job holds no write credentials. Reports go to a private bucket, and a separate no-checkout job files them as issues in `globalhost-ops`. GCP setup lives in `infra/bootstrap/security-audit.sh` (moves to Pulumi in P1-04).
-**AC:** zizmor (auditor persona) and actionlint pass. Owner setup is done: bootstrap script, repo variables, `security-audit` and `security-audit-publish` environments restricted to `main`, and both secret values. A `workflow_dispatch` run on `main` files an issue in `globalhost-ops`, and neither the Actions log nor the artifacts contain report text. The audit job can't use the publisher SA (its OIDC subject is rejected).
+**AC:** zizmor (auditor persona) and actionlint pass. Owner setup is done: bootstrap script, repo variables, `security-audit` and `security-audit-publish` environments restricted to `main`, Anthropic WIF connected (four repo variables), and the `globalhost-ops` token value set. A `workflow_dispatch` run on `main` files an issue in `globalhost-ops`, and neither the Actions log nor the artifacts contain report text. The audit job can't use the publisher SA (its OIDC subject is rejected).
 
 ### P1-02 `factory.yaml` schema + validator
 zod schema in `packages/core` per ONBOARDING §4. Generate JSON Schema. `globalhost validate [path]`.

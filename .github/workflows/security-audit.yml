@@ -34,7 +34,7 @@ jobs:
     environment: security-audit
     permissions:
       contents: read # checkout
-      id-token: write # WIF to sa:globalhost-auditor
+      id-token: write # WIF to sa:globalhost-auditor and to Anthropic (no API key)
     outputs:
       run_prefix: ${{ steps.paths.outputs.run_prefix }}
     steps:
@@ -54,12 +54,6 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_AUDITOR_SA }}
 
-      - id: secrets
-        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
-        with:
-          secrets: |-
-            anthropic:${{ vars.GCP_PROJECT_ID }}/security-audit-anthropic-key
-
       - name: Install Claude Code
         run: .github/scripts/install-tool.sh "$CLAUDE_CODE_URL" "$CLAUDE_CODE_SHA256" package/claude 1
 
@@ -75,12 +69,30 @@ jobs:
 
       - name: Run the audit (output to files only)
         env:
-          # The agent can reach this key and the auditor SA (via the auth credentials file); that's the
-          # accepted blast radius (ADR-0012). It can't reach the publisher SA: its OIDC subject names this
-          # job's environment, not security-audit-publish.
-          ANTHROPIC_API_KEY: ${{ steps.secrets.outputs.anthropic }}
+          # Anthropic Workload Identity Federation: the CLI exchanges this job's GitHub OIDC token for a
+          # short-lived token on the security-audit service account (globalhost-runners workspace).
+          # There's no API key to steal; the agent can at most mint ~10-minute tokens while the job runs,
+          # and use the auditor SA. It can't reach the publisher SA: its OIDC subject names this job's
+          # environment, not security-audit-publish (ADR-0012).
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           DISABLE_TELEMETRY: "1"
         run: |
+          # GitHub OIDC tokens last ~5 minutes and each can be exchanged once, so keep a fresh one in the
+          # file the CLI re-reads whenever it refreshes its Anthropic token.
+          export ANTHROPIC_IDENTITY_TOKEN_FILE="$RUNNER_TEMP/anthropic-oidc.jwt"
+          fetch_jwt() {
+            curl --fail --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" \
+              | jq -r .value > "${ANTHROPIC_IDENTITY_TOKEN_FILE}.tmp"
+            mv "${ANTHROPIC_IDENTITY_TOKEN_FILE}.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          fetch_jwt
+          (while sleep 240; do fetch_jwt || true; done) &
+          refresher=$!
+
           mkdir -p "$HOME/.claude/skills" "$RUNNER_TEMP/audit"
           cp -R skills/security-audit "$HOME/.claude/skills/"
           skill="$HOME/.claude/skills/security-audit"
@@ -99,6 +111,7 @@ jobs:
             --disallowedTools "WebFetch" "WebSearch" \
             > "$RUNNER_TEMP/audit/claude-result.json" 2> "$RUNNER_TEMP/audit/claude-stderr.log"
           status=$?
+          kill "$refresher" 2>/dev/null || true
           set -e
           echo "claude exited with $status; output kept out of this public log."
           test -f "$RUNNER_TEMP/audit/REPORT.md" || echo "::warning::No REPORT.md was produced."
