@@ -1,13 +1,12 @@
 name: security-audit
 
-# Weekly LLM security audit of this repo with the vendored skills/security-audit (ADR-0012).
+# On-demand LLM security audit of this repo with the vendored skills/security-audit (ADR-0012).
+# Run it with `gh workflow run security-audit.yml --ref main` (no schedule: a run is long and costly).
 # This repo is public and so are its Actions logs and artifacts: the agent's output never goes to the
 # log or to an artifact. Reports go to a private GCS bucket, and a separate job with no checkout files
 # them as an issue in the private globalhost-ops repo.
 
 on:
-  schedule:
-    - cron: "17 6 * * 1" # Mondays 06:17 UTC
   workflow_dispatch:
 
 permissions: {}

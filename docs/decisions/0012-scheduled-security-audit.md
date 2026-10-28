@@ -1,6 +1,6 @@
-# ADR-0012: Scheduled LLM security audit (Actions now, runner later)
+# ADR-0012: LLM security audit (Actions now, runner later)
 
-- Status: accepted
+- Status: accepted; amended 2026-10-28 to run on demand only, after the first real run was much slower and costlier than expected.
 - Date: 2026-10-28
 
 ## Context
@@ -22,7 +22,7 @@ Constraints:
    - Updates are a reviewed copy of a pinned upstream commit.
    - It is excluded from ESLint so it stays byte-for-byte.
 2. **Interim host: GitHub Actions.**
-   - Workflow `.github/workflows/security-audit.yml` runs weekly (Mon 06:17 UTC) and on `workflow_dispatch`, only on `main`.
+   - Workflow `.github/workflows/security-audit.yml` runs only on `workflow_dispatch`, only on `main`. There is no schedule. The owner runs it before releases, after large or security-relevant changes, or when it seems worth it.
    - It runs the `claude -p` CLI. The binary comes from the npm registry tarball, pinned by SHA-256 and at least 14 days old.
    - Run settings: quick profile, model `claude-opus-5-5`, `--max-budget-usd 10`, 60-minute job timeout.
    - Tool allowlist: read and search; writes only through the Write/Edit tools; read-only `git`; the skill's two validators.
@@ -53,7 +53,7 @@ Constraints:
    - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/<UTC timestamp>-<sha>/audit/`. It has public-access prevention and a 180-day delete rule.
    - The publisher files `REPORT.md` as an issue in `globalhost-ops`, or a "FAILED" issue if no report was produced.
    - Each run gets the previous run's files for the skill's prior-run comparison.
-6. **Cost.** The expected cost is a few dollars per weekly run, with a hard cap of $10. That is at most about $43 per cycle out of the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
+6. **Cost.** Each run is capped at $10. Runs are on demand, so spend is whatever the owner chooses, within the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
 7. **Later.**
    - Once the runner exists (P1-05+), the audit becomes a factory role run by the runner, and this workflow is retired.
    - The assessor (P1-08) runs a full audit when onboarding a product. Product findings go to that product's own private destination, never to a public repo.
@@ -70,6 +70,6 @@ Constraints:
 
   Until then the workflow fails at authentication and does nothing else.
 - **Manual pin bumps.** The Claude Code and CI tool pins (`env:` in the workflows) aren't Renovate-managed. Bump them by hand: new URL, plus the SHA-256 checked against the publisher's checksum or the registry integrity.
-- **Not continuous.** A weekly audit misses changes between runs. Per-PR gates stay deterministic: zizmor, actionlint, gitleaks, ESLint boundary.
+- **Not continuous.** An on-demand audit only sees the commit it runs on. Per-PR gates stay deterministic: zizmor, actionlint, gitleaks, ESLint boundary.
 - **Billing.** Federated tokens bill to the workspace like an API key, so usage should draw on the linked credit the same way (ADR-0004). Check this on the Console usage page after the first run.
 - **Prompt injection.** The agent reads repo content that only the owner can merge to `main`. Even so, a hijacked run can only spend up to its cap and add a report. It can't edit the repo, publish, or reach the ops token.
