@@ -65,12 +65,14 @@ bind_env() { # <sa> <github environment>
 bind_env "$AUDITOR" security-audit
 bind_env "$PUBLISHER" security-audit-publish
 
+# The bucket policy has conditional bindings, so unconditional ones must say --condition=None.
 # Bucket layout: globalhost/runs/<run>/ is written by the auditor; globalhost/published/latest (the
 # next run's prior) only by the publisher, so a run can't choose what later runs treat as prior.
 OBJ="projects/_/buckets/${BUCKET}/objects"
 # auditor: read reports; create objects only under globalhost/runs/ (no delete or overwrite). No secrets.
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
-  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectViewer >/dev/null
+  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectViewer \
+  --condition=None >/dev/null
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectCreator \
   --condition="title=runs-prefix-only,expression=resource.name.startsWith(\"${OBJ}/globalhost/runs/\")" >/dev/null
@@ -86,7 +88,8 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
 g secrets add-iam-policy-binding globalhost-ops-issues-token \
   --member="serviceAccount:${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com" --role=roles/secretmanager.secretAccessor >/dev/null
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
-  --member="serviceAccount:${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectViewer >/dev/null
+  --member="serviceAccount:${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectViewer \
+  --condition=None >/dev/null
 
 cat <<OUT
 
