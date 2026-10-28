@@ -25,14 +25,20 @@ Constraints:
    - Workflow `.github/workflows/security-audit.yml` runs only on `workflow_dispatch`, only on `main`. There is no schedule. The owner runs it before releases, after large or security-relevant changes, or when it seems worth it.
    - It runs the `claude -p` CLI. The binary comes from the npm registry tarball, pinned by SHA-256 and at least 14 days old.
    - Run settings: quick profile, model `claude-opus-5-5`, `--max-budget-usd 10`, 60-minute job timeout.
-   - Tool allowlist: read and search; writes only through the Write/Edit tools; read-only `git`; the skill's two validators.
-   - Denied: WebFetch, WebSearch, and every other shell command.
-   - The prompt tells it to execute no target code. The runner can't provide the skill's OS-sandbox limits, so runs are source-only.
+   - **Containment is enforced by the CLI and the filesystem, not by the prompt.** The first real run showed that `--allowedTools` alone denies nothing that's missing from the list. So the agent runs with:
+     - `--restricted`: settings files are ignored, file tools are confined to the working directories, and writes to git and settings files are blocked;
+     - `--tools Bash,Read,Write,Edit,Glob,Grep,Agent`: no web or other tools;
+     - `--permission-mode dontAsk`: any Bash command not on the allowlist is refused, including chained ones;
+     - the allowlist itself: read-only `git` subcommands, the skill's two validators, `mkdir` and `ls`.
+   - The checkout, the skill copy and the prior run are `chmod -R a-w` before the agent starts. The output directory is the only writable path.
+   - The agent reads `SKILL.md` directly, because `--restricted` doesn't load user skills.
+   - These behaviors were verified locally before adoption: an unlisted command, a chained command, a write outside the allowed directories, a write into the read-only checkout or skill, and an edit to `.git/config` were all refused.
+   - The prompt also tells it to execute no target code. The runner can't provide the skill's OS-sandbox limits, so runs are source-only.
 3. **Two jobs, two identities**, both via keyless Workload Identity Federation (pool `github`, provider pinned to owner ID, repo ID, `anlinguist/globalhost` and `refs/heads/main`). Each service account trusts only tokens whose `environment` claim is its own GitHub environment.
 
    | Job | Environment | SA | Can |
    |---|---|---|---|
-   | `audit` (runs the agent) | `security-audit` | `globalhost-auditor` | read and create objects in the report bucket (no delete or overwrite); no secrets |
+   | `audit` (runs the agent) | `security-audit` | `globalhost-auditor` | read the report bucket; create objects only under `globalhost/runs/` (no delete or overwrite); no secrets |
    | `publish` (no checkout, runs no repo code) | `security-audit-publish` | `globalhost-audit-publisher` | read the report bucket; read `globalhost-ops-issues-token` (fine-grained PAT: Issues RW on `globalhost-ops` only) |
 
 4. **Anthropic auth is Workload Identity Federation, not an API key.**
@@ -50,9 +56,10 @@ Constraints:
    Blast radius: the agent can mint tokens of about 10 minutes for that workspace while the job runs (capped by its spend limit), and it can use the auditor SA, which can only add reports. It can't reach the publisher identity, because its job's `environment` claim is `security-audit`. The run leaves no long-lived credential to steal.
 5. **Output.**
    - Agent output goes to files, never to the log.
-   - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/<UTC timestamp>-<sha>/audit/`. It has public-access prevention and a 180-day delete rule.
+   - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/runs/<UTC timestamp>-<sha>/audit/`. It has public-access prevention and a 180-day delete rule.
    - The publisher files `REPORT.md` as an issue in `globalhost-ops`, or a "FAILED" issue if no report was produced.
-   - Each run gets the previous run's files for the skill's prior-run comparison.
+   - Each run gets the previous run's files for the skill's prior-run comparison. The previous run is named by `globalhost/published/latest`, a pointer only the publisher can write (an IAM condition scoped to that one object). The publisher updates it only after filing a run that produced a report. The audit job checks the pointer against a strict format and treats a missing or malformed pointer, or a failed fetch, as "no prior run". A run can't choose what later runs treat as prior by planting objects.
+   - `publish` also runs when the audit job fails, so failures still file an issue.
 6. **Cost.** Each run is capped at $10. Runs are on demand, so spend is whatever the owner chooses, within the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
 7. **Later.**
    - Once the runner exists (P1-05+), the audit becomes a factory role run by the runner, and this workflow is retired.

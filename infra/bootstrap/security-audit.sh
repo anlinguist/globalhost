@@ -25,8 +25,11 @@ g services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapi
 # Workload Identity Federation: only this repo, only main.
 exists g iam workload-identity-pools describe "$POOL" --location=global ||
   g iam workload-identity-pools create "$POOL" --location=global --display-name="GitHub Actions"
-exists g iam workload-identity-pools providers describe "$PROVIDER" --location=global --workload-identity-pool="$POOL" ||
-  g iam workload-identity-pools providers create-oidc "$PROVIDER" --location=global --workload-identity-pool="$POOL" \
+# create-oidc on first run, update-oidc after, so changes to the mapping or condition always apply.
+provider_verb=create-oidc
+exists g iam workload-identity-pools providers describe "$PROVIDER" --location=global --workload-identity-pool="$POOL" &&
+  provider_verb=update-oidc
+g iam workload-identity-pools providers "$provider_verb" "$PROVIDER" --location=global --workload-identity-pool="$POOL" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
     --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.workflow_ref=assertion.job_workflow_ref,attribute.environment=assertion.environment" \
     --attribute-condition="assertion.repository_owner_id=='${REPO_OWNER_ID}' && assertion.repository_id=='${REPO_ID}' && assertion.repository=='${REPO}' && assertion.ref=='refs/heads/main'"
@@ -62,11 +65,23 @@ bind_env() { # <sa> <github environment>
 bind_env "$AUDITOR" security-audit
 bind_env "$PUBLISHER" security-audit-publish
 
-# auditor: list/read prior runs and write new ones (no delete). No secrets.
-for role in roles/storage.objectCreator roles/storage.objectViewer; do
-  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
-    --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role="$role" >/dev/null
-done
+# Bucket layout: globalhost/runs/<run>/ is written by the auditor; globalhost/published/latest (the
+# next run's prior) only by the publisher, so a run can't choose what later runs treat as prior.
+OBJ="projects/_/buckets/${BUCKET}/objects"
+# auditor: read reports; create objects only under globalhost/runs/ (no delete or overwrite). No secrets.
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectViewer >/dev/null
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectCreator \
+  --condition="title=runs-prefix-only,expression=resource.name.startsWith(\"${OBJ}/globalhost/runs/\")" >/dev/null
+# Drop the unconditioned create grant from the first version of this script, if present.
+gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${AUDITOR}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectCreator \
+  --condition=None >/dev/null 2>&1 || true
+# publisher: write (and overwrite) only the published/latest pointer.
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com" --role=roles/storage.objectUser \
+  --condition="title=latest-pointer-only,expression=resource.name == \"${OBJ}/globalhost/published/latest\"" >/dev/null
 # publisher: read reports and the globalhost-ops issues token. Nothing else.
 g secrets add-iam-policy-binding globalhost-ops-issues-token \
   --member="serviceAccount:${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com" --role=roles/secretmanager.secretAccessor >/dev/null
