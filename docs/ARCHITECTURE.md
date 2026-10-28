@@ -199,6 +199,8 @@ Rules:
 | `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |
 | Cloudflare API token (preview) | dev secret | edit Worker KV / routes on `globalhost.ai` zone | other zones |
+| `sa:globalhost-auditor` (ADR-0012) | WIF, factory repo `main`, environment `security-audit` only | list/read/create objects in the audit report bucket | read any secret; delete or overwrite reports; any GitHub write; anything else |
+| `sa:globalhost-audit-publisher` (ADR-0012) | WIF, factory repo `main`, environment `security-audit-publish` only (job runs no repo code) | read audit reports; read `globalhost-ops-issues-token` (Issues RW on `globalhost-ops` only) | write reports; any other repo |
 
 No long-lived GCP keys anywhere. GitHub App private key and Anthropic key live in Secret Manager in `globalhost-factory`. Product secrets live in the product's own projects (dev and prod separated), set via `pulumi config set --secret` or `gcloud secrets versions add` by the owner — never by agents.
 

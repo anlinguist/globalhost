@@ -1,0 +1,164 @@
+name: security-audit
+
+# Weekly LLM security audit of this repo with the vendored skills/security-audit (ADR-0012).
+# This repo is public and so are its Actions logs and artifacts: the agent's output never goes to the
+# log or to an artifact. Reports go to a private GCS bucket, and a separate job with no checkout files
+# them as an issue in the private globalhost-ops repo.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: false
+
+env:
+  CLAUDE_CODE_URL: https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.296.tgz
+  # Matches the registry's sha512 integrity for this tarball.
+  CLAUDE_CODE_SHA256: eef5a2e2b09a5e7d2ce784d1b3ba335ae7fc6c7f6256c802a0ebf2c21e4fd0e1
+  AUDIT_MODEL: claude-opus-5-5
+  AUDIT_MAX_USD: "10"
+  REPORT_PREFIX: globalhost
+
+jobs:
+  audit:
+    name: audit (no write credentials)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # The WIF binding for sa:globalhost-auditor accepts only this environment's subject.
+    environment: security-audit
+    permissions:
+      contents: read # checkout
+      id-token: write # WIF to sa:globalhost-auditor and to Anthropic (no API key)
+    outputs:
+      run_prefix: ${{ steps.paths.outputs.run_prefix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: paths
+        name: Name this run
+        run: |
+          run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}"
+          echo "run_prefix=${REPORT_PREFIX}/${run_id}" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_AUDITOR_SA }}
+
+      - name: Install Claude Code
+        run: .github/scripts/install-tool.sh "$CLAUDE_CODE_URL" "$CLAUDE_CODE_SHA256" package/claude 1
+
+      - name: Fetch the previous run for prior-run comparison
+        env:
+          BUCKET: ${{ vars.AUDIT_BUCKET }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/prior"
+          last="$(gcloud storage ls "gs://${BUCKET}/${REPORT_PREFIX}/" 2>/dev/null | sort | tail -n 1 || true)"
+          if [ -n "$last" ]; then
+            gcloud storage cp --recursive --no-user-output-enabled "${last}audit" "$RUNNER_TEMP/prior/"
+          fi
+
+      - name: Run the audit (output to files only)
+        env:
+          # Anthropic Workload Identity Federation: the CLI exchanges this job's GitHub OIDC token for a
+          # short-lived token on the security-audit service account (globalhost-runners workspace).
+          # There's no API key to steal; the agent can at most mint ~10-minute tokens while the job runs,
+          # and use the auditor SA. It can't reach the publisher SA: its OIDC subject names this job's
+          # environment, not security-audit-publish (ADR-0012).
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          DISABLE_TELEMETRY: "1"
+        run: |
+          # GitHub OIDC tokens last ~5 minutes and each can be exchanged once, so keep a fresh one in the
+          # file the CLI re-reads whenever it refreshes its Anthropic token.
+          export ANTHROPIC_IDENTITY_TOKEN_FILE="$RUNNER_TEMP/anthropic-oidc.jwt"
+          fetch_jwt() {
+            curl --fail --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" \
+              | jq -r .value > "${ANTHROPIC_IDENTITY_TOKEN_FILE}.tmp"
+            mv "${ANTHROPIC_IDENTITY_TOKEN_FILE}.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          fetch_jwt
+          (while sleep 240; do fetch_jwt || true; done) &
+          refresher=$!
+
+          mkdir -p "$HOME/.claude/skills" "$RUNNER_TEMP/audit"
+          cp -R skills/security-audit "$HOME/.claude/skills/"
+          skill="$HOME/.claude/skills/security-audit"
+          prior=""
+          if [ -d "$RUNNER_TEMP/prior/audit" ]; then prior=" Prior run (read its coverage-ledger.json and findings.json per the skill): $RUNNER_TEMP/prior/audit."; fi
+          prompt="Use the security-audit skill in full audit mode on target $GITHUB_WORKSPACE (repo anlinguist/globalhost, commit $GITHUB_SHA). Profile: quick. Budget: 14 agent invocations. Output directory: $RUNNER_TEMP/audit (already created; write run files directly there, not in a run-N subdirectory).$prior This is an unattended CI run: do not ask questions. The OS sandbox controls the skill requires are not available here, so do not execute any target code; record the run as source-only. Run all six phases, both validators, and write REPORT.md, FINDINGS-DETAIL.md and NEEDS-VALIDATION.md. The public-repo rule in docs/ONBOARDING.md section 8 applies: these reports are private, but never quote credential values."
+          set +e
+          claude -p "$prompt" \
+            --model "$AUDIT_MODEL" \
+            --max-budget-usd "$AUDIT_MAX_USD" \
+            --output-format json \
+            --allowedTools "Read" "Grep" "Glob" "Write" "Edit" "Task" "Agent" "Skill" "TodoWrite" \
+              "Bash(git log:*)" "Bash(git show:*)" "Bash(git grep:*)" "Bash(git ls-files:*)" "Bash(git rev-list:*)" "Bash(git diff:*)" "Bash(git cat-file:*)" \
+              "Bash(node $skill/validate-findings.cjs:*)" "Bash(node $skill/validate-coverage-ledger.cjs:*)" \
+              "Bash(mkdir:*)" "Bash(ls:*)" \
+            --disallowedTools "WebFetch" "WebSearch" \
+            > "$RUNNER_TEMP/audit/claude-result.json" 2> "$RUNNER_TEMP/audit/claude-stderr.log"
+          status=$?
+          kill "$refresher" 2>/dev/null || true
+          set -e
+          echo "claude exited with $status; output kept out of this public log."
+          test -f "$RUNNER_TEMP/audit/REPORT.md" || echo "::warning::No REPORT.md was produced."
+          exit 0
+
+      - name: Upload the report to the private bucket
+        env:
+          BUCKET: ${{ vars.AUDIT_BUCKET }}
+          RUN_PREFIX: ${{ steps.paths.outputs.run_prefix }}
+        run: gcloud storage cp --recursive --no-user-output-enabled "$RUNNER_TEMP/audit" "gs://${BUCKET}/${RUN_PREFIX}/"
+
+  publish:
+    name: file report in globalhost-ops
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only this environment's subject can use sa:globalhost-audit-publisher (and its ops-repo token).
+    # No checkout: nothing the agent wrote runs here; its report is only issue text.
+    environment: security-audit-publish
+    permissions:
+      id-token: write # WIF to sa:globalhost-audit-publisher
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLISHER_SA }}
+
+      - id: secrets
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            ops_token:${{ vars.GCP_PROJECT_ID }}/globalhost-ops-issues-token
+
+      - name: Create the issue
+        env:
+          GH_TOKEN: ${{ steps.secrets.outputs.ops_token }}
+          BUCKET: ${{ vars.AUDIT_BUCKET }}
+          RUN_PREFIX: ${{ needs.audit.outputs.run_prefix }}
+        run: |
+          src="gs://${BUCKET}/${RUN_PREFIX}/audit"
+          body="$RUNNER_TEMP/body.md"
+          if gcloud storage cp --no-user-output-enabled "${src}/REPORT.md" "$RUNNER_TEMP/REPORT.md" 2>/dev/null; then
+            title="Security audit: globalhost ${GITHUB_SHA::7}"
+            { echo "Full run files: \`${src}/\`"; echo; head -c 60000 "$RUNNER_TEMP/REPORT.md"; } > "$body"
+          else
+            title="Security audit FAILED: globalhost ${GITHUB_SHA::7}"
+            echo "The audit produced no REPORT.md. See \`${src}/claude-result.json\` and \`claude-stderr.log\`." > "$body"
+          fi
+          gh issue create --repo anlinguist/globalhost-ops --title "$title" --body-file "$body" > /dev/null
+          echo "Filed: $title"
