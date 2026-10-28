@@ -1,0 +1,373 @@
+<title>globalhost Lifecycle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a signal-box track diagram. Four lanes (you / agents / CI / prod), gates as signals, the credential boundary as a hard rule above prod. */
+:root{
+  --bg:#E6EBE6; --panel:#F6F8F5; --ink:#17201C; --muted:#56635D; --track:#7C8C84; --line:#C6CFC9; --lane:#DDE3DE;
+  --you:#B86F00; --you-soft:#F5E2BC; --agent:#2C6688; --agent-soft:#D6E5EE; --ci:#467355; --ci-soft:#D8E8DC; --prod:#963827; --prod-soft:#F0D9D2;
+  --hl:#D99A00;
+  --display:'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif;
+  --body:'Atkinson Hyperlegible', system-ui, sans-serif;
+  --mono:'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F1412; --panel:#18201C; --ink:#E3E9E5; --muted:#97A39D; --track:#62736A; --line:#2B3531; --lane:#141B18;
+  --you:#F0A532; --you-soft:#3A2B10; --agent:#80B5D6; --agent-soft:#15283A; --ci:#88C097; --ci-soft:#162A1D; --prod:#E68B78; --prod-soft:#3A1D18;
+  --hl:#F6C247; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F1412; --panel:#18201C; --ink:#E3E9E5; --muted:#97A39D; --track:#62736A; --line:#2B3531; --lane:#141B18;
+  --you:#F0A532; --you-soft:#3A2B10; --agent:#80B5D6; --agent-soft:#15283A; --ci:#88C097; --ci-soft:#162A1D; --prod:#E68B78; --prod-soft:#3A1D18;
+  --hl:#F6C247; color-scheme:dark}
+
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}
+.wrap{max-width:1180px;margin:0 auto;padding-block:28px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:22px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;letter-spacing:-.01em}
+h1{font-size:clamp(1.7rem,3.4vw,2.4rem);font-weight:700}
+h2{font-size:1.2rem;font-weight:600}
+.lede{color:var(--muted);max-width:68ch;margin:6px 0 0}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+.controls{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:flex-end}
+.group{display:grid;gap:6px;min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:500 .82rem/1 var(--mono);padding:8px 11px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;cursor:pointer}
+.chip:hover{border-color:var(--track)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip:focus-visible,.node:focus-visible,.step:focus-visible{outline:2px solid var(--hl);outline-offset:2px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg button{font:500 .82rem/1 var(--mono);padding:9px 12px;border:0;background:transparent;color:var(--ink);cursor:pointer;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--you-soft);color:var(--ink);box-shadow:inset 0 -3px 0 var(--you)}
+.levelnote{font-size:.9rem;color:var(--muted);max-width:70ch;margin:0}
+
+.board{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+.board svg{display:block;min-width:1100px;width:100%;height:auto}
+.lanebg{fill:var(--lane)} .lanebg.alt{fill:var(--panel)}
+.lanelabel{font:700 13px var(--display);fill:var(--ink)}
+.lanesub{font:400 10px var(--mono);fill:var(--muted)}
+.boundary{stroke:var(--prod);stroke-width:2;stroke-dasharray:8 5}
+.boundtext{font:500 10.5px var(--mono);fill:var(--prod);letter-spacing:.04em}
+.e{fill:none;stroke:var(--track);stroke-width:1.5}
+.e.alt{stroke-dasharray:5 4}
+.e.on{stroke:var(--hl);stroke-width:3;stroke-dasharray:none}
+.etext{font:500 10px var(--mono);fill:var(--muted)}
+.ah{fill:var(--track)} .ah.on{fill:var(--hl)}
+.node{cursor:pointer}
+.node rect{fill:var(--panel);stroke-width:1.5}
+.node.you rect{stroke:var(--you)} .node.agent rect{stroke:var(--agent)} .node.ci rect{stroke:var(--ci)} .node.prod rect{stroke:var(--prod)}
+.node.gate rect{fill:var(--you-soft);stroke-width:2.2}
+.node.cond rect{stroke-dasharray:5 3;fill:var(--you-soft)}
+.node .lamp{fill:var(--you)}
+.node .t{font:700 13px var(--display);fill:var(--ink)}
+.node .s{font:400 10px var(--mono);fill:var(--muted)}
+.node .b{font:500 10px var(--mono);fill:var(--you)}
+.node.on rect{stroke:var(--hl);stroke-width:3}
+.node.sel rect{stroke:var(--ink);stroke-width:3}
+.dim{opacity:.28}
+.off{opacity:.18}
+
+.lower{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:22px}
+@media (max-width:820px){.lower{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:12px;min-width:0;align-content:start}
+.tally{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.tally strong{font:700 1.9rem/1 var(--display);color:var(--you);font-variant-numeric:tabular-nums}
+.tally span{color:var(--muted);font-size:.9rem}
+ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:2px;counter-reset:s}
+.step{display:grid;grid-template-columns:28px 92px minmax(0,1fr);gap:10px;align-items:start;padding:8px 6px;border-radius:6px;cursor:pointer;counter-increment:s}
+.step:hover{background:var(--lane)}
+.step::before{content:counter(s);font:500 .78rem/1.6 var(--mono);color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.who{font:500 .7rem/1 var(--mono);padding:4px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.05em;justify-self:start;margin-top:2px}
+.who.you{background:var(--you-soft);color:var(--you)} .who.agent{background:var(--agent-soft);color:var(--agent)}
+.who.ci{background:var(--ci-soft);color:var(--ci)} .who.prod{background:var(--prod-soft);color:var(--prod)}
+.step p{margin:0;font-size:.92rem}
+.step.you p{font-weight:700}
+dl.detail{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 14px;margin:0}
+dl.detail dt{font:500 .72rem/1.7 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+dl.detail dd{margin:0;font-size:.93rem}
+
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+.tablebox{overflow-x:auto}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 .72rem var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.never{margin:0;padding-left:1.1em;display:grid;gap:4px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 .78rem var(--mono);color:var(--muted)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px;border:2px solid}
+@media (prefers-reduced-motion:no-preference){.e,.node rect{transition:stroke .2s,opacity .2s}.node,.e{transition:opacity .2s}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">globalhost · software lifecycle</div>
+    <h1>From idea to production, and back</h1>
+    <p class="lede">Every stage is a GitHub operation. Agents work freely between the two gates, inside budget caps. Prod sits behind a credential boundary that only merged code or an approved ops request can cross. Tap a stage for details, or trace a change through the system.</p>
+  </header>
+
+  <div class="controls">
+    <div class="group">
+      <span class="eyebrow">Trace a change</span>
+      <div class="chips" id="traces" role="group" aria-label="Trace a change"></div>
+    </div>
+    <div class="group">
+      <span class="eyebrow">Repo autonomy</span>
+      <div class="seg" id="levels" role="group" aria-label="Autonomy level"></div>
+    </div>
+  </div>
+  <p class="levelnote" id="levelnote"></p>
+
+  <div class="board" id="board" aria-label="Lifecycle diagram"></div>
+  <div class="legend">
+    <span><i style="border-color:var(--you);background:var(--you-soft)"></i>your decision (gate)</span>
+    <span><i style="border-color:var(--you);border-style:dashed;background:var(--you-soft)"></i>only when triggered</span>
+    <span><i style="border-color:var(--agent)"></i>agent</span>
+    <span><i style="border-color:var(--ci)"></i>CI and previews</span>
+    <span><i style="border-color:var(--prod)"></i>production</span>
+    <span>- - - optional route</span>
+  </div>
+
+  <div class="lower">
+    <section class="card" aria-live="polite">
+      <div>
+        <div class="eyebrow">Trace</div>
+        <h2 id="traceTitle"></h2>
+      </div>
+      <div class="tally"><strong id="touches">0</strong><span id="touchText"></span></div>
+      <ol class="steps" id="steps"></ol>
+    </section>
+    <section class="card" aria-live="polite">
+      <div>
+        <div class="eyebrow">Stage</div>
+        <h2 id="dTitle"></h2>
+      </div>
+      <dl class="detail" id="detail"></dl>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>How each kind of change reaches prod</h2>
+    <div class="tablebox"><table>
+      <thead><tr><th>Change</th><th>Path</th></tr></thead>
+      <tbody>
+        <tr><td>App code, config, tests</td><td>PR → merge → release workflow</td></tr>
+        <tr><td>Infra with an IaC provider (GCP, Cloudflare, Neon)</td><td>IaC in the PR, with a review stack for risky diffs → merge → release applies it</td></tr>
+        <tr><td>Vendor setup with no IaC (verify a domain, toggle a setting)</td><td>Dev: the agent does it through MCP. Prod: an <code>ops:</code> request, your approval, then a trusted executor runs exactly those calls</td></tr>
+        <tr><td>Secrets</td><td>You set them. Agents only see secret names, plus dev keys injected at the network edge</td></tr>
+        <tr><td>Data migrations</td><td>Expand (backward compatible) → release → contract in a later PR</td></tr>
+        <tr><td>Extension permissions, breaking API, destructive migrations, new dependencies</td><td>Always your explicit approval, at every autonomy level</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2>What the factory never does</h2>
+    <ul class="never">
+      <li>Merges its own work, except allowlisted routine classes at L3. Auto-fixes are never auto-merged.</li>
+      <li>Deploys to prod or changes a prod vendor without a merge or an approved ops request.</li>
+      <li>Acts on instructions from anyone but you. Text from others is read as data.</li>
+      <li>Exceeds the per-run, daily or monthly budget. It pauses and asks instead.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+(function(){
+const LANES=[
+  {id:'you',name:'You',sub:'decisions'},
+  {id:'agent',name:'Agents',sub:'sandboxed, no prod'},
+  {id:'ci',name:'CI & previews',sub:'dev only'},
+  {id:'prod',name:'Production',sub:'users'}];
+const LI={you:0,agent:1,ci:2,prod:3};
+const N={
+ idea:{lane:'you',col:0,t:'Your idea',s:'issue, from anywhere',
+   d:{Who:'You',When:'Any time, from GitHub or the phone app (Phase 3)',Makes:'An issue in the product repo',You:'Write it however you like. One sentence is enough.',Access:'—'}},
+ watch:{lane:'prod',col:0,t:'Signals',s:'Sentry · scans · deps',
+   d:{Who:'Watchers: Sentry, security scanners, Renovate, analytics',When:'Continuously and on schedules',Makes:'Deduplicated issues labeled by source. Their text is treated as untrusted data.',You:'Nothing, unless it is urgent and gets pushed to you',Access:'Read-only prod observability'}},
+ plan:{lane:'agent',col:1,t:'Plan',s:'planner · triager',
+   d:{Who:'Planner agent (the triager handles watcher signals)',When:'You label factory:plan (L1), or automatically on your issues (L2+)',Makes:'A plan comment: spec change, acceptance tests, approach, risks, cost estimate. Wireframe options for UI, an OpenAPI diff for APIs, options plus a migration plan for stack changes.',You:'Read it',Access:'Read-only repo access'}},
+ gateA:{lane:'you',col:2,t:'Gate A',s:'approve intent',gate:1,
+   d:{Who:'You',When:'A plan is posted',Makes:'The factory:build label, a redirect comment, or a closed issue',You:'Approve, pick an option ("go with B"), or redirect',Access:'Your GitHub identity. Only your labels count.'}},
+ build:{lane:'agent',col:3,t:'Build',s:'tests first · dev MCP',
+   d:{Who:'Builder agent in a Managed Agents sandbox',When:'After Gate A, or after your comment on its PR (it resumes the same session)',Makes:'Failing acceptance tests first, then code, IaC and doc updates. It may set up dev resources through vendor MCP servers. Output is a bundle that trusted code pushes to factory/issue-n.',You:'Nothing, unless it asks a question (factory:blocked)',Access:'Read-only clone and dev-scoped vendor keys. It cannot push and has no prod access.'}},
+ verify:{lane:'ci',col:4,t:'Verify',s:'CI · guardrails',
+   d:{Who:'CI (GitHub Actions)',When:'Every push to the PR',Makes:'Typecheck, lint, tests, and the profile checks: Playwright with visual diffs, the extension on its target sites, contract tests with an OpenAPI diff. Then guardrails.',You:'Nothing, unless a guardrail trips',Access:'Dev environment only'}},
+ guard:{lane:'you',col:4,t:'Guardrail',s:'risky change',cond:1,
+   d:{Who:'You',When:'A guardrail trips: extension permissions, breaking API, destructive migration, new dependency, or load-bearing code',Makes:'An approved:<guardrail> label tied to that exact commit. A new push resets it.',You:'Review just the risky part of the diff',Access:'—'}},
+ review:{lane:'agent',col:5,t:'Review',s:'fresh reviewer',
+   d:{Who:'Reviewer agent: a fresh session with read-only access',When:'CI is green',Makes:"A structured review against the spec, informed by the builder's recorded session. At most two fix rounds with the builder.",You:'Nothing',Access:'Read-only'}},
+ preview:{lane:'ci',col:6,t:'Preview',s:'*.globalhost.ai',
+   d:{Who:"The profile's preview contract",When:'Review passes',Makes:"A per-PR environment behind Cloudflare Access with a passkey: seeded dev data, screenshots or GIF, API docs, and an extension zip wired to this PR's API",You:'Look at it, from the daily digest or a push notification',Access:'Dev project only. Previews never see real user data.'}},
+ gateB:{lane:'you',col:7,t:'Gate B',s:'taste',gate:1,
+   d:{Who:'You',When:'The preview is ready',Makes:'A comment (the builder resumes and revises; the feedback is saved to product memory) or Ship',You:'Decide whether it feels right',Access:'Your GitHub identity'}},
+ ship:{lane:'ci',col:8,t:'Ship',s:'rebase · merge',
+   d:{Who:'The ship action',When:'You tap Ship (or it is L3 routine work)',Makes:'Rebases onto main, re-runs CI on that exact commit, then merges. One PR at a time per repo.',You:'One tap',Access:'Merges only after your approval'}},
+ release:{lane:'prod',col:9,t:'Release',s:'adapter · canary',
+   d:{Who:'Release workflow and the deploy adapter',When:'A push to main',Makes:'A deploy through the adapter for that part: Cloud Build trigger, Cloud Run canary, or store upload with staged rollout. Prod IaC and migrations are applied, expand first. Store reviews are tracked asynchronously.',You:'Approve store promotions, if configured',Access:'The only place prod credentials exist. Usable only from main via release.yml.'}},
+ ops:{lane:'you',col:9,t:'Ops approval',s:'prod vendor calls',cond:1,
+   d:{Who:'You, then a trusted executor',When:'A prod change has no IaC, such as verifying a domain or toggling a vendor setting',Makes:'The agent posts the exact calls, you apply approved:ops, and the executor runs exactly those calls and logs the results',You:'Approve the specific calls',Access:'The executor holds the prod vendor keys. The agent never does.'}},
+ operate:{lane:'prod',col:10,t:'Operate',s:'observe · rollback',
+   d:{Who:'Watchers and the fixer agent',When:'Always',Makes:'Sentry, OpenTelemetry and PostHog signals. Canary auto-rollback. Auto-fix draft PRs with regression tests.',You:'Blocking alerts only. Everything else goes in digests.',Access:'Read-only prod observability'}}
+};
+const E=[
+ ['idea','plan'],['watch','plan'],['plan','gateA'],['gateA','build'],['build','verify'],['verify','review'],['review','preview'],['preview','gateB'],['gateB','ship'],['ship','release'],['release','operate'],
+ ['plan','build',{alt:1}],['watch','verify',{alt:1}],['review','ship',{alt:1,mx:'c7'}],['verify','guard',{alt:1}],['guard','review',{alt:1}],['release','ops',{alt:1}],['ops','operate',{alt:1}],
+ ['gateB','build',{back:'top',label:'redirect: your comment resumes the builder'}],['operate','watch',{back:'bottom',label:'new signals'}]
+];
+const TRACES={
+ feature:{name:'New feature',title:'Add a playback-speed control to stories',steps:[
+  ['idea','You file "add a playback-speed control to story audio" from your phone.'],
+  ['plan','The planner posts an approach, acceptance tests, two wireframe options, and an estimate of $1.80.'],
+  ['gateA','You pick option B and apply factory:build.'],
+  ['build','The builder writes failing Playwright tests, then the code. It never pushes anything itself.'],
+  ['verify','CI runs typecheck, lint, tests, visual diffs and guardrails. All green.'],
+  ['review',"The reviewer checks the diff against the spec and the builder's session."],
+  ['preview','A preview at numu-know-web-pr-42.globalhost.ai with seeded stories and mobile and desktop screenshots.'],
+  ['gateB','You comment "slider is too small on mobile". The builder resumes and fixes it, then you tap Ship.'],
+  ['ship','Rebased onto main, re-verified, merged.'],
+  ['release',"numu-know's existing Cloud Build trigger deploys. The factory reports the result and closes the issue."],
+  ['operate','Sentry and PostHog watch the new control.']]},
+ bug:{name:'Sentry bug',title:'Production error to fix',steps:[
+  ['watch','Sentry reports a TypeError spike in the story player, deduplicated by fingerprint.'],
+  ['plan','The triager files an issue and marks it factory:autofix.'],
+  ['build','The fixer reproduces the error, writes a regression test, and opens a draft PR.'],
+  ['verify','CI passes, and the new test fails on main, which proves it catches the bug.'],
+  ['review','The reviewer confirms the fix addresses the root cause.'],
+  ['preview','A preview with the fix.'],
+  ['gateB','You check it and tap Ship. Auto-fixes are never merged automatically.'],
+  ['ship','Merged.'],
+  ['release','Deployed.'],
+  ['operate','The error rate returns to baseline and the issue closes.']]},
+ deps:{name:'Dependency patch (L3)',title:'Routine dependency update',steps:[
+  ['watch','Renovate opens a patch update for next.'],
+  ['verify','CI and guardrails pass: no new dependencies, no permission changes.'],
+  ['review','The reviewer finds no breaking notes in the changelog.'],
+  ['ship','The repo is at L3 and renovate:patch is on its allowlist, so it ships automatically.'],
+  ['release','The canary deploys.'],
+  ['operate','If the error rate spikes, the canary rolls back automatically.']],level:3},
+ stack:{name:'Stack change',title:'Move emails from Klaviyo to Resend',steps:[
+  ['idea','You say: "move new-story emails to Resend".'],
+  ['plan','The planner posts a stack-change plan: options, cost, migration and rollback, and two email mockups.'],
+  ['gateA','You approve mockup 2.'],
+  ['build','The builder adds an email module and template, creates a Resend test domain through MCP with a dev key, and records the choice in STACK.md and DECISIONS.md.'],
+  ['verify','CI passes.'],
+  ['review','The reviewer approves.'],
+  ['preview','The preview shows the rendered email and the test message that was delivered.'],
+  ['gateB','You ship it.'],
+  ['ship','Merged.'],
+  ['release','The release applies the Cloudflare DNS records through IaC.'],
+  ['ops','Resend domain verification has no IaC. The agent posts the exact calls, you approve, and the executor runs them.'],
+  ['operate','Resend logs are read-only. A follow-up issue removes Klaviyo (the contract step).']]},
+ perm:{name:'Extension permission',title:'Extension asks for a new host permission',steps:[
+  ['idea','You say: "highlight words on any site".'],
+  ['plan','The plan notes this needs a broader host permission.'],
+  ['gateA','You approve.'],
+  ['build','The builder adds <all_urls> to host_permissions in manifest.json.'],
+  ['verify','The manifest-permissions guardrail trips and adds needs:owner-approval.'],
+  ['guard','You review the permission diff and apply approved:permissions, tied to this commit.'],
+  ['review','The reviewer approves.'],
+  ['preview','The PR gets the zip and a GIF of it on the target sites.'],
+  ['gateB','You ship it.'],
+  ['ship','Merged.'],
+  ['release','Uploaded to Chrome Web Store trusted testers. The store review is tracked and you are notified of the result.'],
+  ['operate','Privacy-safe error reporting.']]}
+};
+const LEVELS={
+ 0:{name:'L0 observe',note:'L0 observe: agents only scan and file issues. Nothing gets built.',A:'no builds',B:'—'},
+ 1:{name:'L1 on request',note:'L1 on request: nothing starts until you label an issue. Every build waits for Gate A, and every merge waits for Gate B.',A:'you · always',B:'you · always'},
+ 2:{name:'L2 full loop',note:'L2 full loop: the planner runs on every issue you file, and the reviewer gates every PR. Build still waits for Gate A, and merge still waits for Gate B.',A:'you · always',B:'you · always'},
+ 3:{name:'L3 trusted',note:'L3 trusted: allowlisted routine work (dependency patches, lint fixes) passes both gates automatically once CI and the reviewer agree. Everything else works as at L2. Guardrails and ops always need you.',A:'routine skips',B:'routine skips'}
+};
+
+const LW=112,CW=118,NW=104,TOP=46,LH=100,BOT=46;
+const cx=c=>LW+18+NW/2+c*CW, cy=l=>TOP+l*LH+LH/2;
+const W=cx(10)+NW/2+18, H=TOP+4*LH+BOT;
+const nh=n=>(n.gate||n.cond)?62:48;
+for(const k in N){const n=N[k];n.x=cx(n.col);n.y=cy(LI[n.lane]);n.h=nh(n);}
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function edgePath(a,b,o){
+  const A=N[a],B=N[b];
+  if(o.back==='top'){const y=18;return `M${A.x} ${A.y-A.h/2} V${y} H${B.x} V${B.y-B.h/2-2}`;}
+  if(o.back==='bottom'){const y=H-16;return `M${A.x} ${A.y+A.h/2} V${y} H${B.x} V${B.y+B.h/2+2}`;}
+  if(A.col===B.col){const up=B.y<A.y;return `M${A.x} ${up?A.y-A.h/2:A.y+A.h/2} V${up?B.y+B.h/2+2:B.y-B.h/2-2}`;}
+  const x1=A.x+NW/2,x2=B.x-NW/2-2;
+  let mx=(x1+x2)/2; if(o.mx) mx=cx(+o.mx.slice(1));
+  if(A.y===B.y) return `M${x1} ${A.y} H${x2}`;
+  return `M${x1} ${A.y} H${mx} V${B.y} H${x2}`;
+}
+
+function draw(){
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lifecycle lanes: you, agents, CI and previews, production">`;
+  s+=`<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker><marker id="ahon" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="ah on" d="M0 0L10 5L0 10z"/></marker></defs>`;
+  LANES.forEach((L,i)=>{const y=TOP+i*LH;
+    s+=`<rect class="lanebg ${i%2?'alt':''}" x="0" y="${y}" width="${W}" height="${LH}"/>`;
+    s+=`<text class="lanelabel" x="14" y="${y+LH/2-3}">${L.name}</text><text class="lanesub" x="14" y="${y+LH/2+13}">${L.sub}</text>`;});
+  const by=TOP+3*LH;
+  s+=`<line class="boundary" x1="0" x2="${W}" y1="${by}" y2="${by}"/>`;
+  s+=`<text class="boundtext" x="${LW+20}" y="${by-6}">CREDENTIAL BOUNDARY · only merged code or approved ops cross</text>`;
+  E.forEach(([a,b,o={}])=>{
+    const d=edgePath(a,b,o);
+    s+=`<path id="e-${a}-${b}" class="e ${o.alt?'alt':''}" d="${d}" marker-end="url(#ah)"/>`;
+    if(o.label){const y=o.back==='top'?13:H-6;const x=o.back==='top'?(N[a].x+N[b].x)/2:(N[a].x+N[b].x)/2;
+      s+=`<text class="etext" x="${x}" y="${y}" text-anchor="middle">${esc(o.label)}</text>`;}
+  });
+  for(const k in N){const n=N[k];const x=n.x-NW/2,y=n.y-n.h/2;
+    const cls=['node',n.lane,n.gate?'gate':'',n.cond?'cond':''].join(' ');
+    s+=`<g class="${cls}" id="n-${k}" tabindex="0" role="button" aria-label="${esc(n.t)}: ${esc(n.s)}">`;
+    s+=`<rect x="${x}" y="${y}" width="${NW}" height="${n.h}" rx="7"/>`;
+    if(n.gate) s+=`<circle class="lamp" cx="${x+NW-10}" cy="${y+10}" r="4"/>`;
+    s+=`<text class="t" x="${x+10}" y="${y+20}">${esc(n.t)}</text><text class="s" x="${x+10}" y="${y+36}">${esc(n.s)}</text>`;
+    if(n.gate||n.cond) s+=`<text class="b" id="b-${k}" x="${x+10}" y="${y+53}"></text>`;
+    s+=`</g>`;}
+  s+=`</svg>`;
+  document.getElementById('board').innerHTML=s;
+  for(const k in N){const g=document.getElementById('n-'+k);
+    g.addEventListener('click',()=>showNode(k));
+    g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();showNode(k);}});}
+}
+
+let trace='feature',level=1,selected=null;
+function showNode(k){
+  selected=k;const n=N[k];
+  document.querySelectorAll('.node').forEach(g=>g.classList.toggle('sel',g.id==='n-'+k));
+  document.getElementById('dTitle').textContent=n.t+(n.s?' · '+n.s:'');
+  const labels={Who:'Who',When:'When',Makes:'Produces',You:'Your part',Access:'Access'};
+  document.getElementById('detail').innerHTML=Object.entries(n.d).map(([k2,v])=>`<dt>${labels[k2]}</dt><dd>${esc(v)}</dd>`).join('');
+}
+function applyTrace(){
+  const T=TRACES[trace];const ids=T.steps.map(s=>s[0]);
+  document.querySelectorAll('#traces .chip').forEach(b=>b.setAttribute('aria-pressed',b.dataset.k===trace));
+  const onEdges=new Set();for(let i=0;i<ids.length-1;i++) onEdges.add(`e-${ids[i]}-${ids[i+1]}`);
+  document.querySelectorAll('.e').forEach(p=>{const on=onEdges.has(p.id);p.classList.toggle('on',on);p.classList.toggle('dim',!on);p.setAttribute('marker-end',on?'url(#ahon)':'url(#ah)');});
+  document.querySelectorAll('.node').forEach(g=>{const on=ids.includes(g.id.slice(2));g.classList.toggle('on',on);g.classList.toggle('dim',!on);});
+  document.getElementById('traceTitle').textContent=T.title;
+  const touches=T.steps.filter(s=>N[s[0]].lane==='you').length;
+  document.getElementById('touches').textContent=touches;
+  document.getElementById('touchText').textContent=touches===1?'decision from you':touches===0?'decisions from you: it runs on its own':'decisions from you';
+  document.getElementById('steps').innerHTML=T.steps.map(([k,t])=>{const n=N[k];
+    return `<li class="step ${n.lane}" data-k="${k}" tabindex="0"><span class="who ${n.lane}">${n.t}</span><p>${esc(t)}</p></li>`;}).join('');
+  document.querySelectorAll('.step').forEach(li=>{
+    li.addEventListener('click',()=>showNode(li.dataset.k));
+    li.addEventListener('keydown',e=>{if(e.key==='Enter'){showNode(li.dataset.k);}});});
+  if(T.level!==undefined && level!==T.level){level=T.level;applyLevel();}
+  showNode(ids.find(k=>N[k].lane==='you')||ids[0]);
+}
+function applyLevel(){
+  const L=LEVELS[level];
+  document.querySelectorAll('#levels button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.l===level));
+  document.getElementById('levelnote').textContent=L.note;
+  const set=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t;};
+  set('b-gateA',L.A);set('b-gateB',L.B);set('b-guard','you · every level');set('b-ops','you · every level');
+  const offAtL0=['build','verify','review','preview','gateB','ship','release','ops','guard','gateA'];
+  for(const k in N){document.getElementById('n-'+k).classList.toggle('off',level===0&&offAtL0.includes(k));}
+}
+
+draw();
+document.getElementById('traces').innerHTML=Object.entries(TRACES).map(([k,T])=>`<button class="chip" data-k="${k}" aria-pressed="false">${esc(T.name)}</button>`).join('');
+document.getElementById('levels').innerHTML=[0,1,2,3].map(l=>`<button data-l="${l}" aria-pressed="false">${LEVELS[l].name}</button>`).join('');
+document.querySelectorAll('#traces .chip').forEach(b=>b.addEventListener('click',()=>{trace=b.dataset.k;applyTrace();}));
+document.querySelectorAll('#levels button').forEach(b=>b.addEventListener('click',()=>{level=+b.dataset.l;applyLevel();}));
+applyLevel();applyTrace();
+})();
+</script>
