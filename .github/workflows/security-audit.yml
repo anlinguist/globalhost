@@ -21,7 +21,11 @@ env:
   CLAUDE_CODE_SHA256: eef5a2e2b09a5e7d2ce784d1b3ba335ae7fc6c7f6256c802a0ebf2c21e4fd0e1
   AUDIT_MODEL: claude-opus-5-5
   AUDIT_MAX_USD: "10"
-  REPORT_PREFIX: globalhost
+  # Runs are written under runs/ (auditor SA, create-only there). Only the publisher SA can write
+  # published/latest, which names the last run that produced a report; the next run reads its prior
+  # results from there, never by listing what earlier (possibly compromised) runs created.
+  RUNS_PREFIX: globalhost/runs
+  LATEST_POINTER: globalhost/published/latest
 
 jobs:
   audit:
@@ -46,7 +50,7 @@ jobs:
         name: Name this run
         run: |
           run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}"
-          echo "run_prefix=${REPORT_PREFIX}/${run_id}" >> "$GITHUB_OUTPUT"
+          echo "run_prefix=${RUNS_PREFIX}/${run_id}" >> "$GITHUB_OUTPUT"
 
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -61,10 +65,28 @@ jobs:
           BUCKET: ${{ vars.AUDIT_BUCKET }}
         run: |
           mkdir -p "$RUNNER_TEMP/prior"
-          last="$(gcloud storage ls "gs://${BUCKET}/${REPORT_PREFIX}/" 2>/dev/null | sort | tail -n 1 || true)"
-          if [ -n "$last" ]; then
-            gcloud storage cp --recursive --no-user-output-enabled "${last}audit" "$RUNNER_TEMP/prior/"
+          if ! last="$(gcloud storage cat "gs://${BUCKET}/${LATEST_POINTER}" 2>/dev/null)"; then
+            echo "No published prior run; auditing without one."
+            exit 0
           fi
+          if ! [[ "$last" =~ ^globalhost/runs/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
+            echo "::warning::Ignoring malformed ${LATEST_POINTER}."
+            exit 0
+          fi
+          if ! gcloud storage cp --recursive --no-user-output-enabled "gs://${BUCKET}/${last}/audit" "$RUNNER_TEMP/prior/"; then
+            echo "::warning::Couldn't fetch the prior run; auditing without one."
+            rm -rf "$RUNNER_TEMP/prior/audit"
+          fi
+
+      # Containment for the agent (ADR-0012): --restricted ignores settings files, confines file tools to
+      # the working directories and blocks writes to git/settings files; --tools names the only tools it gets; dontAsk refuses
+      # every Bash command not on the allowlist (including chained ones). The checkout, skill and prior
+      # run are made read-only, so the only writable path is the output directory.
+      - name: Make inputs read-only
+        run: |
+          mkdir -p "$HOME/.claude/skills" "$RUNNER_TEMP/audit"
+          cp -R skills/security-audit "$HOME/.claude/skills/"
+          chmod -R a-w "$GITHUB_WORKSPACE" "$HOME/.claude/skills/security-audit" "$RUNNER_TEMP/prior"
 
       - name: Run the audit (output to files only)
         env:
@@ -92,22 +114,23 @@ jobs:
           (while sleep 240; do fetch_jwt || true; done) &
           refresher=$!
 
-          mkdir -p "$HOME/.claude/skills" "$RUNNER_TEMP/audit"
-          cp -R skills/security-audit "$HOME/.claude/skills/"
           skill="$HOME/.claude/skills/security-audit"
           prior=""
           if [ -d "$RUNNER_TEMP/prior/audit" ]; then prior=" Prior run (read its coverage-ledger.json and findings.json per the skill): $RUNNER_TEMP/prior/audit."; fi
-          prompt="Use the security-audit skill in full audit mode on target $GITHUB_WORKSPACE (repo anlinguist/globalhost, commit $GITHUB_SHA). Profile: quick. Budget: 14 agent invocations. Output directory: $RUNNER_TEMP/audit (already created; write run files directly there, not in a run-N subdirectory).$prior This is an unattended CI run: do not ask questions. The OS sandbox controls the skill requires are not available here, so do not execute any target code; record the run as source-only. Run all six phases, both validators, and write REPORT.md, FINDINGS-DETAIL.md and NEEDS-VALIDATION.md. The public-repo rule in docs/ONBOARDING.md section 8 applies: these reports are private, but never quote credential values."
+          prompt="Read $skill/SKILL.md and follow it (its companion files are in the same directory) in full audit mode on target $GITHUB_WORKSPACE (repo anlinguist/globalhost, commit $GITHUB_SHA). Profile: quick. Budget: 14 agent invocations. Output directory: $RUNNER_TEMP/audit (already created; write run files directly there, not in a run-N subdirectory).$prior This is an unattended CI run: do not ask questions. The OS sandbox controls the skill requires are not available here, so do not execute any target code; record the run as source-only. Run all six phases, both validators, and write REPORT.md, FINDINGS-DETAIL.md and NEEDS-VALIDATION.md. The public-repo rule in docs/ONBOARDING.md section 8 applies: these reports are private, but never quote credential values."
           set +e
           claude -p "$prompt" \
             --model "$AUDIT_MODEL" \
             --max-budget-usd "$AUDIT_MAX_USD" \
             --output-format json \
-            --allowedTools "Read" "Grep" "Glob" "Write" "Edit" "Task" "Agent" "Skill" "TodoWrite" \
+            --restricted \
+            --permission-mode dontAsk \
+            --tools "Bash,Read,Write,Edit,Glob,Grep,Agent" \
+            --add-dir "$RUNNER_TEMP/audit" "$RUNNER_TEMP/prior" "$skill" \
+            --allowedTools "Read" "Grep" "Glob" "Write" "Edit" "Agent" \
               "Bash(git log:*)" "Bash(git show:*)" "Bash(git grep:*)" "Bash(git ls-files:*)" "Bash(git rev-list:*)" "Bash(git diff:*)" "Bash(git cat-file:*)" \
               "Bash(node $skill/validate-findings.cjs:*)" "Bash(node $skill/validate-coverage-ledger.cjs:*)" \
               "Bash(mkdir:*)" "Bash(ls:*)" \
-            --disallowedTools "WebFetch" "WebSearch" \
             > "$RUNNER_TEMP/audit/claude-result.json" 2> "$RUNNER_TEMP/audit/claude-stderr.log"
           status=$?
           kill "$refresher" 2>/dev/null || true
@@ -115,6 +138,10 @@ jobs:
           echo "claude exited with $status; output kept out of this public log."
           test -f "$RUNNER_TEMP/audit/REPORT.md" || echo "::warning::No REPORT.md was produced."
           exit 0
+
+      - name: Restore write access for cleanup
+        if: always()
+        run: chmod -R u+w "$GITHUB_WORKSPACE" "$HOME/.claude/skills" "$RUNNER_TEMP/prior" 2>/dev/null || true
 
       - name: Upload the report to the private bucket
         env:
@@ -125,6 +152,8 @@ jobs:
   publish:
     name: file report in globalhost-ops
     needs: audit
+    # Also runs when the audit job failed, so a failure still files an issue.
+    if: ${{ !cancelled() && needs.audit.outputs.run_prefix != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Only this environment can use sa:globalhost-audit-publisher (and its ops-repo token).
@@ -155,6 +184,9 @@ jobs:
           if gcloud storage cp --no-user-output-enabled "${src}/REPORT.md" "$RUNNER_TEMP/REPORT.md" 2>/dev/null; then
             title="Security audit: globalhost ${GITHUB_SHA::7}"
             { echo "Full run files: \`${src}/\`"; echo; head -c 60000 "$RUNNER_TEMP/REPORT.md"; } > "$body"
+            # Only a run that produced a report becomes the next run's prior. RUN_PREFIX comes from the
+            # audit job's first step, before the agent ran.
+            printf %s "$RUN_PREFIX" | gcloud storage cp --no-user-output-enabled - "gs://${BUCKET}/${LATEST_POINTER}"
           else
             title="Security audit FAILED: globalhost ${GITHUB_SHA::7}"
             echo "The audit produced no REPORT.md. See \`${src}/claude-result.json\` and \`claude-stderr.log\`." > "$body"

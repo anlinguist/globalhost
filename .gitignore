@@ -6,3 +6,6 @@ coverage/
 .env
 .env.*
 .DS_Store
+
+# google-github-actions/auth credential files (CI only)
+gha-creds-*.json
