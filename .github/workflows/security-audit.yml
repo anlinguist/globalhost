@@ -30,7 +30,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # The WIF binding for sa:globalhost-auditor accepts only this environment's subject.
+    # The WIF binding for sa:globalhost-auditor accepts only this environment.
     environment: security-audit
     permissions:
       contents: read # checkout
@@ -72,8 +72,8 @@ jobs:
           # Anthropic Workload Identity Federation: the CLI exchanges this job's GitHub OIDC token for a
           # short-lived token on the security-audit service account (globalhost-runners workspace).
           # There's no API key to steal; the agent can at most mint ~10-minute tokens while the job runs,
-          # and use the auditor SA. It can't reach the publisher SA: its OIDC subject names this job's
-          # environment, not security-audit-publish (ADR-0012).
+          # and use the auditor SA. It can't reach the publisher SA: its OIDC token's environment claim is
+          # security-audit, not security-audit-publish (ADR-0012).
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
@@ -128,7 +128,7 @@ jobs:
     needs: audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Only this environment's subject can use sa:globalhost-audit-publisher (and its ops-repo token).
+    # Only this environment can use sa:globalhost-audit-publisher (and its ops-repo token).
     # No checkout: nothing the agent wrote runs here; its report is only issue text.
     environment: security-audit-publish
     permissions:
