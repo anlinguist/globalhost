@@ -1,0 +1,27 @@
+{
+  "name": "globalhost",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.17.0",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "eslint . && pnpm lint:actions",
+    "lint:actions": "zizmor --offline .github && actionlint",
+    "globalhost": "turbo run build --filter=@globalhost/cli --output-logs=errors-only && node packages/cli/dist/bin.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.13.0",
+    "globals": "17.13.0",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  }
+}
