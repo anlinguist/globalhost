@@ -23,7 +23,8 @@ env:
   AUDIT_MAX_USD: "10"
   # Runs are written under runs/ (auditor SA, create-only there). Only the publisher SA can write
   # published/latest, which names the last run that produced a report; the next run reads its prior
-  # results from there, never by listing what earlier (possibly compromised) runs created.
+  # results from there, never by listing what earlier (possibly compromised) runs created. Each run
+  # name ends in a random nonce, so no run can pre-create objects under a later run's name.
   RUNS_PREFIX: globalhost/runs
   LATEST_POINTER: globalhost/published/latest
 
@@ -49,7 +50,7 @@ jobs:
       - id: paths
         name: Name this run
         run: |
-          run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}"
+          run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}-$(openssl rand -hex 8)"
           echo "run_prefix=${RUNS_PREFIX}/${run_id}" >> "$GITHUB_OUTPUT"
 
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -69,7 +70,8 @@ jobs:
             echo "No published prior run; auditing without one."
             exit 0
           fi
-          if ! [[ "$last" =~ ^globalhost/runs/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
+          # The nonce is optional only so the last run before nonces still counts as prior.
+          if ! [[ "$last" =~ ^globalhost/runs/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}(-[0-9a-f]{16})?$ ]]; then
             echo "::warning::Ignoring malformed ${LATEST_POINTER}."
             exit 0
           fi
@@ -78,15 +80,25 @@ jobs:
             rm -rf "$RUNNER_TEMP/prior/audit"
           fi
 
+      # The agent gets no git command: several git options write files or run programs (--output,
+      # grep -O, --ext-diff), so trusted code exports the history it needs as text instead.
+      - name: Export git history for the agent
+        run: |
+          mkdir -p "$RUNNER_TEMP/git"
+          git log --format=fuller --name-status > "$RUNNER_TEMP/git/log.txt"
+          git log -p --format=fuller > "$RUNNER_TEMP/git/log-patch.txt"
+          truncate -s '<20M' "$RUNNER_TEMP/git/log-patch.txt"
+          git ls-files > "$RUNNER_TEMP/git/ls-files.txt"
+
       # Containment for the agent (ADR-0012): --restricted ignores settings files, confines file tools to
       # the working directories and blocks writes to git/settings files; --tools names the only tools it gets; dontAsk refuses
-      # every Bash command not on the allowlist (including chained ones). The checkout, skill and prior
-      # run are made read-only, so the only writable path is the output directory.
+      # every Bash command not on the allowlist (including chained ones). The checkout, skill, git export and
+      # prior run are made read-only, so the only writable path is the output directory.
       - name: Make inputs read-only
         run: |
           mkdir -p "$HOME/.claude/skills" "$RUNNER_TEMP/audit"
           cp -R skills/security-audit "$HOME/.claude/skills/"
-          chmod -R a-w "$GITHUB_WORKSPACE" "$HOME/.claude/skills/security-audit" "$RUNNER_TEMP/prior"
+          chmod -R a-w "$GITHUB_WORKSPACE" "$HOME/.claude/skills/security-audit" "$RUNNER_TEMP/git" "$RUNNER_TEMP/prior"
 
       - name: Run the audit (output to files only)
         env:
@@ -117,7 +129,7 @@ jobs:
           skill="$HOME/.claude/skills/security-audit"
           prior=""
           if [ -d "$RUNNER_TEMP/prior/audit" ]; then prior=" Prior run (read its coverage-ledger.json and findings.json per the skill): $RUNNER_TEMP/prior/audit."; fi
-          prompt="Read $skill/SKILL.md and follow it (its companion files are in the same directory) in full audit mode on target $GITHUB_WORKSPACE (repo anlinguist/globalhost, commit $GITHUB_SHA). Profile: quick. Budget: 14 agent invocations. Output directory: $RUNNER_TEMP/audit (already created; write run files directly there, not in a run-N subdirectory).$prior This is an unattended CI run: do not ask questions. The OS sandbox controls the skill requires are not available here, so do not execute any target code; record the run as source-only. Run all six phases, both validators, and write REPORT.md, FINDINGS-DETAIL.md and NEEDS-VALIDATION.md. The public-repo rule in docs/ONBOARDING.md section 8 applies: these reports are private, but never quote credential values."
+          prompt="Read $skill/SKILL.md and follow it (its companion files are in the same directory) in full audit mode on target $GITHUB_WORKSPACE (repo anlinguist/globalhost, commit $GITHUB_SHA). Profile: quick. Budget: 14 agent invocations. Output directory: $RUNNER_TEMP/audit (already created; write run files directly there, not in a run-N subdirectory). There is no git command; the full history is exported read-only in $RUNNER_TEMP/git (log.txt with changed files per commit, log-patch.txt with diffs, ls-files.txt).$prior This is an unattended CI run: do not ask questions. The OS sandbox controls the skill requires are not available here, so do not execute any target code; record the run as source-only. Run all six phases, both validators, and write REPORT.md, FINDINGS-DETAIL.md and NEEDS-VALIDATION.md. The public-repo rule in docs/ONBOARDING.md section 8 applies: these reports are private, but never quote credential values."
           set +e
           claude -p "$prompt" \
             --model "$AUDIT_MODEL" \
@@ -126,9 +138,8 @@ jobs:
             --restricted \
             --permission-mode dontAsk \
             --tools "Bash,Read,Write,Edit,Glob,Grep,Agent" \
-            --add-dir "$RUNNER_TEMP/audit" "$RUNNER_TEMP/prior" "$skill" \
+            --add-dir "$RUNNER_TEMP/audit" "$RUNNER_TEMP/git" "$RUNNER_TEMP/prior" "$skill" \
             --allowedTools "Read" "Grep" "Glob" "Write" "Edit" "Agent" \
-              "Bash(git log:*)" "Bash(git show:*)" "Bash(git grep:*)" "Bash(git ls-files:*)" "Bash(git rev-list:*)" "Bash(git diff:*)" "Bash(git cat-file:*)" \
               "Bash(node $skill/validate-findings.cjs:*)" "Bash(node $skill/validate-coverage-ledger.cjs:*)" \
               "Bash(mkdir:*)" "Bash(ls:*)" \
             > "$RUNNER_TEMP/audit/claude-result.json" 2> "$RUNNER_TEMP/audit/claude-stderr.log"
@@ -141,7 +152,7 @@ jobs:
 
       - name: Restore write access for cleanup
         if: always()
-        run: chmod -R u+w "$GITHUB_WORKSPACE" "$HOME/.claude/skills" "$RUNNER_TEMP/prior" 2>/dev/null || true
+        run: chmod -R u+w "$GITHUB_WORKSPACE" "$HOME/.claude/skills" "$RUNNER_TEMP/git" "$RUNNER_TEMP/prior" 2>/dev/null || true
 
       - name: Upload the report to the private bucket
         env:
@@ -178,10 +189,12 @@ jobs:
           GH_TOKEN: ${{ steps.secrets.outputs.ops_token }}
           BUCKET: ${{ vars.AUDIT_BUCKET }}
           RUN_PREFIX: ${{ needs.audit.outputs.run_prefix }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
         run: |
           src="gs://${BUCKET}/${RUN_PREFIX}/audit"
           body="$RUNNER_TEMP/body.md"
-          if gcloud storage cp --no-user-output-enabled "${src}/REPORT.md" "$RUNNER_TEMP/REPORT.md" 2>/dev/null; then
+          # Trust the report only when the audit job, including its upload, succeeded.
+          if [ "$AUDIT_RESULT" = success ] && gcloud storage cp --no-user-output-enabled "${src}/REPORT.md" "$RUNNER_TEMP/REPORT.md" 2>/dev/null; then
             title="Security audit: globalhost ${GITHUB_SHA::7}"
             { echo "Full run files: \`${src}/\`"; echo; head -c 60000 "$RUNNER_TEMP/REPORT.md"; } > "$body"
             # Only a run that produced a report becomes the next run's prior. RUN_PREFIX comes from the
@@ -189,7 +202,7 @@ jobs:
             printf %s "$RUN_PREFIX" | gcloud storage cp --no-user-output-enabled - "gs://${BUCKET}/${LATEST_POINTER}"
           else
             title="Security audit FAILED: globalhost ${GITHUB_SHA::7}"
-            echo "The audit produced no REPORT.md. See \`${src}/claude-result.json\` and \`claude-stderr.log\`." > "$body"
+            echo "The audit job ended with \`${AUDIT_RESULT}\` or produced no REPORT.md. Its report, if any, is not trusted. See \`${src}/claude-result.json\` and \`claude-stderr.log\`." > "$body"
           fi
           gh issue create --repo anlinguist/globalhost-ops --title "$title" --body-file "$body" > /dev/null
           echo "Filed: $title"
