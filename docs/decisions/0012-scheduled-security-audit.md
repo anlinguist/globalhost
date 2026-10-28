@@ -28,7 +28,7 @@ Constraints:
    - Tool allowlist: read and search; writes only through the Write/Edit tools; read-only `git`; the skill's two validators.
    - Denied: WebFetch, WebSearch, and every other shell command.
    - The prompt tells it to execute no target code. The runner can't provide the skill's OS-sandbox limits, so runs are source-only.
-3. **Two jobs, two identities**, both via keyless Workload Identity Federation (pool `github`, provider pinned to owner ID + `anlinguist/globalhost` + `refs/heads/main`). Each service account trusts only the OIDC subject of one GitHub environment.
+3. **Two jobs, two identities**, both via keyless Workload Identity Federation (pool `github`, provider pinned to owner ID, repo ID, `anlinguist/globalhost` and `refs/heads/main`). Each service account trusts only tokens whose `environment` claim is its own GitHub environment.
 
    | Job | Environment | SA | Can |
    |---|---|---|---|
@@ -37,12 +37,17 @@ Constraints:
 
 4. **Anthropic auth is Workload Identity Federation, not an API key.**
    - A Console service account (`security-audit`) is a member of the `globalhost-runners` workspace only.
-   - Its federation rule matches issuer `https://token.actions.githubusercontent.com`, audience `https://api.anthropic.com`, subject prefix `repo:anlinguist/globalhost:environment:security-audit`, and claims `repository_owner=anlinguist`, `ref=refs/heads/main`.
+   - Its federation rule (`globalhost-security-audit`) matches:
+     - issuer `https://token.actions.githubusercontent.com`;
+     - audience `https://api.anthropic.com`;
+     - the exact subject `repo:anlinguist@47403803/globalhost@1437394155:environment:security-audit`. GitHub uses immutable, ID-qualified subjects for this repo.
+     - claims `repository_owner_id=47403803`, `repository=anlinguist/globalhost` and `ref=refs/heads/main`;
+     - a CEL condition limiting it to `schedule` and `workflow_dispatch` runs of `.github/workflows/security-audit.yml`.
    - Scope `workspace:developer`, token lifetime 600 s.
    - The CLI exchanges the job's GitHub OIDC token itself. A background loop rewrites the token file every 4 minutes, because GitHub tokens last about 5 minutes and each can be exchanged once.
    - Org, rule, service-account and workspace IDs are repo variables. They are identifiers, not credentials.
 
-   Blast radius: the agent can mint tokens of about 10 minutes for that workspace while the job runs (capped by its spend limit), and it can use the auditor SA, which can only add reports. It can't reach the publisher identity, because the OIDC subject for its job names a different environment. The run leaves no long-lived credential to steal.
+   Blast radius: the agent can mint tokens of about 10 minutes for that workspace while the job runs (capped by its spend limit), and it can use the auditor SA, which can only add reports. It can't reach the publisher identity, because its job's `environment` claim is `security-audit`. The run leaves no long-lived credential to steal.
 5. **Output.**
    - Agent output goes to files, never to the log.
    - Files upload to a private bucket, `gs://globalhost-factory-audit-reports/globalhost/<UTC timestamp>-<sha>/audit/`. It has public-access prevention and a 180-day delete rule.

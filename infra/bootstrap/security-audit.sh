@@ -8,6 +8,7 @@ PROJECT="${PROJECT:-globalhost-factory}"
 REGION="${REGION:-us-central1}"
 REPO="anlinguist/globalhost"
 REPO_OWNER_ID="47403803"   # github.com/anlinguist; pins the provider against owner-name reuse
+REPO_ID="1437394155"       # anlinguist/globalhost; pins against repo delete-and-recreate
 POOL="github"
 PROVIDER="github-actions"
 BUCKET="${BUCKET:-${PROJECT}-audit-reports}"
@@ -27,8 +28,8 @@ exists g iam workload-identity-pools describe "$POOL" --location=global ||
 exists g iam workload-identity-pools providers describe "$PROVIDER" --location=global --workload-identity-pool="$POOL" ||
   g iam workload-identity-pools providers create-oidc "$PROVIDER" --location=global --workload-identity-pool="$POOL" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
-    --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.workflow_ref=assertion.job_workflow_ref" \
-    --attribute-condition="assertion.repository_owner_id=='${REPO_OWNER_ID}' && assertion.repository=='${REPO}' && assertion.ref=='refs/heads/main'"
+    --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.workflow_ref=assertion.job_workflow_ref,attribute.environment=assertion.environment" \
+    --attribute-condition="assertion.repository_owner_id=='${REPO_OWNER_ID}' && assertion.repository_id=='${REPO_ID}' && assertion.repository=='${REPO}' && assertion.ref=='refs/heads/main'"
 POOL_ID="projects/${NUMBER}/locations/global/workloadIdentityPools/${POOL}"
 
 # Private report bucket: no public access, reports deleted after 180 days.
@@ -45,7 +46,10 @@ rm -f "$LIFECYCLE"
 exists g secrets describe globalhost-ops-issues-token ||
   g secrets create globalhost-ops-issues-token --replication-policy=automatic
 
-# Service accounts, each usable only from its own GitHub environment.
+# Service accounts, each usable only from its own GitHub environment. Bound on the mapped `environment`
+# claim rather than `sub`: this repo uses GitHub's immutable subjects
+# (repo:anlinguist@47403803/globalhost@1437394155:environment:<env>), and the provider condition above
+# already pins owner, repo and ref.
 for sa in "$AUDITOR" "$PUBLISHER"; do
   exists g iam service-accounts describe "${sa}@${PROJECT}.iam.gserviceaccount.com" ||
     g iam service-accounts create "$sa"
@@ -53,7 +57,7 @@ done
 bind_env() { # <sa> <github environment>
   g iam service-accounts add-iam-policy-binding "${1}@${PROJECT}.iam.gserviceaccount.com" \
     --role=roles/iam.workloadIdentityUser \
-    --member="principal://iam.googleapis.com/${POOL_ID}/subject/repo:${REPO}:environment:${2}" >/dev/null
+    --member="principalSet://iam.googleapis.com/${POOL_ID}/attribute.environment/${2}" >/dev/null
 }
 bind_env "$AUDITOR" security-audit
 bind_env "$PUBLISHER" security-audit-publish
