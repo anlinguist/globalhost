@@ -36,7 +36,7 @@ docs/                architecture, profiles, onboarding, ADRs, metrics
 - Tests: vitest. Every policy (trust gate, path policy, guardrails, budget) needs tests including adversarial fixtures. External APIs are tested against recorded fixtures, not live.
 - Pin everything: exact dependency versions (lockfile committed), container images by digest, third-party Actions by commit SHA. Adding a dependency needs a one-line justification in the PR.
 - Pulumi in TypeScript; GCS backend + KMS secrets (ADR-0008); resource names prefixed `globalhost-` in the factory project.
-- GitHub Actions: minimal `permissions:` per job; zizmor + actionlint must pass.
+- GitHub Actions: minimal `permissions:` per job; zizmor + actionlint + gitleaks must pass. CI tools are release tarballs pinned by SHA-256 (`.github/scripts/install-tool.sh`); no dependency caches written from PR runs.
 - Logging: structured JSON, never log tokens or prompt bodies containing untrusted text at info level.
 - Naming: labels `factory:*`, `needs:*`, `approved:*`; branches `factory/issue-<n>`; preview hosts `<product>-<part>-pr-<n>.globalhost.ai`.
 
@@ -48,6 +48,7 @@ pnpm build          # turbo build
 pnpm typecheck      # tsc --noEmit incl. tests
 pnpm test           # vitest across workspace
 pnpm lint           # eslint + zizmor + actionlint (local: brew install zizmor actionlint)
+gitleaks git .      # secret scan over history; CI runs it on every PR (brew install gitleaks)
 pnpm globalhost …   # CLI from source
 ```
 

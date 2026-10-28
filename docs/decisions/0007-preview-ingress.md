@@ -22,8 +22,7 @@ Previews must sit behind Cloudflare Access, cost ~nothing, and work for many pro
 
 ## Setup facts (P0-03, 2026-10-27)
 
-- Cloudflare account `b310d413b53aede67348d9442de1aca6` (owner's personal account).
-- Zone `globalhost.ai`: id `859de9f350a6d4b89ad676abcf214d9a`, Free plan, full setup. Cloudflare nameservers: `brynne.ns.cloudflare.com`, `vick.ns.cloudflare.com` (the registrar is GoDaddy).
+- Cloudflare: owner's personal account; zone `globalhost.ai` on the Free plan, full setup (account and zone IDs in `globalhost-ops/factory/ids.md`; Pulumi config at P1-04). Cloudflare nameservers: `brynne.ns.cloudflare.com`, `vick.ns.cloudflare.com` (the registrar is GoDaddy).
 - Zero Trust team domain: `broken-haze-4579.cloudflareaccess.com`. This is the `iss` the `access-guard` checks; the auto-generated name was kept on purpose.
 
 ## Who can get in, and how

@@ -183,7 +183,7 @@ Rules:
 3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`.
 4. **Network:** agent egress limited to an allowlist (Anthropic API, npm/pnpm registry, GitHub read for clone) using Claude Code sandbox network rules. Arbitrary `WebFetch` disabled for builders; planners may fetch from an allowlisted docs list.
 5. **Dependencies:** lockfiles required; new direct dependencies trip `needs:owner-approval` (`approved:deps`). Runner image and Actions pinned by digest/SHA.
-6. **Workflow hardening:** zizmor + actionlint in CI; no `pull_request_target` with checkout of PR head; minimal `permissions:` per job.
+6. **Workflow hardening:** zizmor + actionlint + gitleaks (full history) in CI, tools pinned by SHA-256; no `pull_request_target` with checkout of PR head; minimal `permissions:` per job; no caches saved from PR runs; GitHub secret scanning + push protection on public repos.
 
 ## 5. Credential & permission model
 

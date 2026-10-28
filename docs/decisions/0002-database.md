@@ -23,4 +23,4 @@ The brief asks Neon (per-PR branching) vs Cloud SQL (DB per PR on a shared dev i
 
 - One more vendor (Neon), accepted for cost and branching.
 - The `service` profile supports `db: neon | firestore | none`; core doesn't care.
-- Prod PITR: Neon (paid) for Postgres; Firestore PITR (7-day) + scheduled exports to GCS for Firestore prods. Enabling these for numu-know prod is a Phase 4 task.
+- Prod PITR: Neon (paid) for Postgres; Firestore PITR (7-day) + scheduled exports to GCS for Firestore prods. Phase 4 applies this to every onboarded prod.

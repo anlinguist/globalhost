@@ -284,7 +284,7 @@ const cx=c=>LW+18+NW/2+c*CW, cy=l=>TOP+l*LH+LH/2;
 const W=cx(10)+NW/2+18, H=TOP+4*LH+BOT;
 const nh=n=>(n.gate||n.cond)?62:48;
 for(const k in N){const n=N[k];n.x=cx(n.col);n.y=cy(LI[n.lane]);n.h=nh(n);}
-const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 
 function edgePath(a,b,o){
   const A=N[a],B=N[b];

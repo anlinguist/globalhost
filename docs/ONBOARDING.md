@@ -98,7 +98,7 @@ parts:
     preview: { enabled: true }
     release:
       - adapter: cloud-build-trigger
-        config: { project: numu-know, trigger: "rmgpgab-numu-know-us-central1-anlinguist-Numu-Know--mafyn" }
+        config: { project: numu-know, trigger: "<trigger-name>" }
     dependsOn: []
 
 limits:
@@ -159,27 +159,7 @@ Behavior:
 
 ## 7. Readefine consolidation plan (first candidate)
 
-**Facts (from local checkout, GitHub, and gcloud; updated 2026-10-28 after P0-01):**
-- **GCP:** Readefine has a real GCP Organization (`getreadefine.com`, account `admin@getreadefine.com`). All prod runs in project **`query-readefine`**; `readefine-user` has no Cloud Run, Cloud Build or Scheduler APIs enabled. Because there's an org, we can make `readefine-dev` a proper sibling project under it with org-level policy.
-- **Repos with live deploys:** Cloud Build triggers in `query-readefine` deploy from **five** `readefine-app` repos (a personal GitHub account, not an org):
-
-  | Repo | `main` → | `staging` → |
-  |---|---|---|
-  | `readefineserver` (NestJS) | `readefineserver` | `readefineserverstaging` |
-  | `readefinewebapp` (Next.js) | `appreadefine` | `stagingappreadefine` |
-  | `readefinewebhooks` | `readefinewebhooks` | — (`stagingreadefinewebhooks` deleted 2026-10-27, unused) |
-  | `getreadefine` (marketing site) | Cloud Run `getreadefine` | — |
-  | `readefineextension` (Chrome/Edge/Firefox/Safari) | stores (manual today) | — |
-
-  The trigger for `getreadefine` exists, but no matching Cloud Run service shows in `query-readefine`; check whether it's dead or deploys elsewhere.
-- **Retired 2026-10-27:** `readefinenodeserver` / `readefine-node-server` (legacy API, retired rather than fixed). Service, triggers, scheduler job and `apiv2-staging` deleted; repo archived. Record in `globalhost-ops/runbooks/deleted-services/`.
-- **Other prod pieces:** the Firestore → BigQuery export extension, and a Cloud Function (likely the "Run Payments with Stripe" extension) that receives a second Stripe webhook.
-- **Staging is broken end to end:** the staging web app calls the prod API (`api.readefine.ai`, hard-coded), whose CORS doesn't allow `staging.readefine.ai`. Fix by pointing staging at `readefineserverstaging`, or replace with factory previews.
-- **Data:** Firestore native `(default)` in `query-readefine`. **Point-in-time recovery is disabled on a prod DB with active users**, so turning it on is a quick win independent of the factory.
-- **GitHub access:** `anlinguist` is a collaborator (push) on the `readefine-app` repos. Collaborators can't install GitHub Apps on a personal account, so before onboarding either transfer the repos to `anlinguist` (then reconnect their Cloud Build triggers) or install the App from the `readefine-app` account. The empty `getreadefine` GitHub org is unused.
-- **Consolidation scope:** server, web, webhooks, extension, plus the marketing site `getreadefine`.
-- Extension builds Chrome, Edge, Firefox, and Safari targets from one source tree.
-- Active users.
+**Scope:** server, web, webhooks, extension (Chrome, Edge, Firefox and Safari from one source tree), plus the marketing site. Live-environment facts (projects, deploy map, open items) are in the private `globalhost-ops` repo (`products/readefine.md`), per §8.
 
 **Plan (each step an issue; nothing starts until Phase 2 and owner approval):**
 

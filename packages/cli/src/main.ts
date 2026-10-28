@@ -9,6 +9,14 @@ Options:
 
 Commands are added as their PLAN.md issues land (validate: P1-02).`;
 
+// C0/C1 control characters (incl. ESC) let echoed text rewrite the terminal; show them as \uXXXX instead.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+export function printable(text: string): string {
+  return text.replace(CONTROL_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 export interface CliResult {
   code: number;
   stdout: string;
@@ -36,11 +44,11 @@ export function run(argv: readonly string[]): CliResult {
       allowPositionals: true,
     });
   } catch (err) {
-    return { code: 2, stdout: "", stderr: `${(err as Error).message}\n\n${USAGE}\n` };
+    return { code: 2, stdout: "", stderr: `${printable((err as Error).message)}\n\n${USAGE}\n` };
   }
 
   if (parsed.values.version) return { code: 0, stdout: `${readVersion()}\n`, stderr: "" };
   if (parsed.values.help || parsed.positionals.length === 0) return { code: 0, stdout: `${USAGE}\n`, stderr: "" };
 
-  return { code: 2, stdout: "", stderr: `Unknown command: ${parsed.positionals[0]}\n\n${USAGE}\n` };
+  return { code: 2, stdout: "", stderr: `Unknown command: ${printable(parsed.positionals[0] ?? "")}\n\n${USAGE}\n` };
 }

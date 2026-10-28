@@ -16,4 +16,10 @@ describe("globalhost CLI", () => {
     expect(run(["deploy-prod"])).toMatchObject({ code: 2, stderr: expect.stringContaining("Unknown command: deploy-prod") });
     expect(run(["--force"]).code).toBe(2);
   });
+
+  it("escapes control characters before echoing input", () => {
+    const { stderr } = run(["\u001b]0;pwned\u0007x"]);
+    expect(stderr).toContain("Unknown command: \\u001b]0;pwned\\u0007x");
+    expect(stderr.includes("\u001b") || stderr.includes("\u0007")).toBe(false);
+  });
 });

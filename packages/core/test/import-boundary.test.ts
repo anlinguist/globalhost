@@ -33,6 +33,25 @@ describe("packages/core import boundary (CLAUDE.md non-negotiable #1)", () => {
     expect(errors[0]).toContain("must not depend on profiles or adapters");
   });
 
+  it.each([
+    ["a template-literal dynamic import", "export const load = (n: string) => import(`@globalhost/profile-${n}`);"],
+    ["a variable dynamic import", `export const load = (spec: string) => import(spec);`],
+    ["createRequire", `import { createRequire } from "node:module";\nexport const m: unknown = createRequire(import.meta.url)("../../profiles/web-app/src/index.js");`],
+    ["module.createRequire", `import mod from "node:module";\nexport const m: unknown = mod.createRequire(import.meta.url)("x");`],
+    ["a bare require call", `declare const require: (s: string) => unknown;\nexport const m = require("@globalhost/profile-web-app");`],
+  ])("rejects %s (specifier lint can't check)", async (_name, code) => {
+    const errors = await boundaryErrors(code, CORE_FILE);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.join("\n")).toContain("static string specifier");
+  });
+
+  it("ignores inline eslint-disable comments in core", async () => {
+    const code = `// eslint-disable-next-line no-restricted-imports\nimport { webApp } from "@globalhost/profile-web-app";\nexport { webApp };`;
+    const errors = await boundaryErrors(code, CORE_FILE);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("must not depend on profiles or adapters");
+  });
+
   it("applies to core tests too, not just src", async () => {
     const errors = await boundaryErrors(`import "@globalhost/profile-web-app";`, "packages/core/test/fixture.test.ts");
     expect(errors).toHaveLength(1);

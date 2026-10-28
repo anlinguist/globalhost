@@ -29,5 +29,5 @@ Rationale: single repo, modern stack, public repo (gets real branch protection o
 ## Open items for the onboarding issue
 
 - Branch flow: `develop` is 10 commits behind `main`, `staging` equals `main`. Proposal: factory PRs target `main`; per-PR previews replace the need for `staging` (keep the trigger, stop using the branch).
-- `staging-numu-know` very likely reads prod Firestore. Previews will use a new `numu-know-dev` Firebase project with seed data instead.
+- Previews use a new `numu-know-dev` Firebase project with seed data, never prod data.
 - Firebase Auth authorized domains don't support wildcards; previews either add each preview host via API at deploy time or use a fixed preview host per PR slot. Resolve in P1-11.
