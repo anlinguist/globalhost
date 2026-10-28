@@ -80,9 +80,9 @@ Done. Set these GitHub repository variables on ${REPO} (Settings → Secrets and
   GCP_PUBLISHER_SA   ${PUBLISHER}@${PROJECT}.iam.gserviceaccount.com
   AUDIT_BUCKET       ${BUCKET}
 
-Then add the secret values (owner only; printf adds no trailing newline):
-  printf %s "\$KEY" | gcloud secrets versions add security-audit-anthropic-key --project=${PROJECT} --data-file=-
+Then add the secret values. Each command waits for you to paste the value (hidden, no trailing newline):
+  printf 'Anthropic key: '; read -rs V; echo; printf %s "\$V" | gcloud secrets versions add security-audit-anthropic-key --project=${PROJECT} --data-file=-; unset V
       # a Console API key in the globalhost-runners workspace, named security-audit
-  printf %s "\$TOKEN" | gcloud secrets versions add globalhost-ops-issues-token --project=${PROJECT} --data-file=-
+  printf 'globalhost-ops token: '; read -rs V; echo; printf %s "\$V" | gcloud secrets versions add globalhost-ops-issues-token --project=${PROJECT} --data-file=-; unset V
       # fine-grained PAT: repository anlinguist/globalhost-ops only, Issues: read and write, expiry ≤ 1 year
 OUT
