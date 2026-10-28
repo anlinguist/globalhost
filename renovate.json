@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":pinAllExceptPeerDependencies"
+  ],
+  "minimumReleaseAge": "14 days",
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchPackageNames": [
+        "@types/node"
+      ],
+      "allowedVersions": "24.x",
+      "description": "Node 24 is the runtime (.nvmrc); keep its types in step"
+    },
+    {
+      "description": "typescript-eslint 8.x supports typescript <6.1.0; lift when it supports TS 7",
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<6.1.0"
+    }
+  ]
+}
