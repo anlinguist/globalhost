@@ -21,7 +21,8 @@ const UNCHECKABLE_LOAD_MESSAGE =
   "packages/core may only load modules with a static string specifier, so the profile/adapter boundary stays checkable (CLAUDE.md non-negotiable #1).";
 
 export default tseslint.config(
-  { ignores: ["**/node_modules/", "**/dist/", "**/coverage/", "**/.turbo/"] },
+  // skills/security-audit is vendored upstream code (ADR-0012), kept byte-for-byte.
+  { ignores: ["**/node_modules/", "**/dist/", "**/coverage/", "**/.turbo/", "skills/security-audit/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
