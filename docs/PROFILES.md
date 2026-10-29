@@ -53,10 +53,10 @@ export interface Profile<Cfg = unknown> {
 
 export interface PreviewContract {
   kind: Array<"url" | "artifact" | "screenshots" | "gif" | "api-docs">;
-  /** Values other parts can bind to (composite previews), e.g. { url: "https://..." } */
+  /** Output names other parts can bind to (composite previews), e.g. ["url"] */
   outputs: string[];
-  /** Inputs from other parts' outputs, e.g. extension needs api.url */
-  inputs?: Record<string, string>;
+  /** Input names this part accepts as bindings, e.g. ["API_URL"]; factory.yaml may bind only these */
+  inputs: string[];
   build(ctx: PreviewCtx): Promise<PreviewResult>;   // runs in PR workflow
   teardown(ctx: PreviewCtx): Promise<void>;
 }
@@ -91,6 +91,8 @@ parts:
 ```
 
 Order: `api` preview deploys first → its `url` output is injected as `API_URL` when building the extension zip → the PR gets one comment with the API URL, the API reference, the extension zip, and screenshots of the extension running against *that* API.
+
+A binding is exactly one `${parts.<part>.preview.<output>}` reference. Its key must be one of the consumer profile's `inputs`, the referenced part must be in `dependsOn`, and the output must be declared by the provider's profile (FACTORY-YAML.md §3.5.1). Validation uses the profile's descriptor fields (`configSchema`, `preview.kinds/outputs/inputs`, `release.allowedAdapters`), which `Profile` extends.
 
 Only parts whose paths (or dependencies' paths) changed are rebuilt; unchanged providers reuse the dev deployment's outputs.
 
