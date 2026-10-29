@@ -24,7 +24,7 @@ Constraints:
 2. **Interim host: GitHub Actions.**
    - Workflow `.github/workflows/security-audit.yml` runs only on `workflow_dispatch`, only on `main`. There is no schedule. The owner runs it before releases, after large or security-relevant changes, or when it seems worth it.
    - It runs the `claude -p` CLI. The binary comes from the npm registry tarball, pinned by SHA-256 and at least 14 days old.
-   - Run settings: quick profile, model `claude-opus-5-5`, `--max-budget-usd 10`, 60-minute job timeout.
+   - Run settings: quick profile, model `claude-opus-5-5`, `--max-budget-usd 15`, 60-minute job timeout.
    - **Containment is enforced by the CLI and the filesystem, not by the prompt.** The first real run showed that `--allowedTools` alone denies nothing that's missing from the list. So the agent runs with:
      - `--restricted`: settings files are ignored, file tools are confined to the working directories, and writes to git and settings files are blocked;
      - `--tools Bash,Read,Write,Edit,Glob,Grep,Agent`: no web or other tools;
@@ -61,7 +61,7 @@ Constraints:
    - The publisher files `REPORT.md` as an issue in `globalhost-ops`, or a "FAILED" issue if no report was produced.
    - Each run gets the previous run's files for the skill's prior-run comparison. The previous run is named by `globalhost/published/latest`, a pointer only the publisher can write (an IAM condition scoped to that one object). The publisher updates it only after filing a run that produced a report. The audit job checks the pointer against a strict format and treats a missing or malformed pointer, or a failed fetch, as "no prior run". A run can't choose what later runs treat as prior by planting objects.
    - `publish` also runs when the audit job fails, so failures still file an issue. It files `REPORT.md` and advances the pointer only when the audit job, including its upload, succeeded; otherwise it files a "FAILED" issue and leaves the pointer alone.
-6. **Cost.** Each run is capped at $10. Runs are on demand, so spend is whatever the owner chooses, within the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
+6. **Cost.** Each run is capped at $15 (raised from $10 after two quick runs hit it and one skipped candidate validation). Runs are on demand, so spend is whatever the owner chooses, within the $150 `globalhost-runners` workspace. The run cap is above ADR-0004's $4 per-run default, on purpose: an audit is one large reviewer-class run. The bucket costs cents. No other paid resources.
 7. **Later.**
    - Once the runner exists (P1-05+), the audit becomes a factory role run by the runner, and this workflow is retired.
    - The assessor (P1-08) runs a full audit when onboarding a product. Product findings go to that product's own private destination, never to a public repo.
