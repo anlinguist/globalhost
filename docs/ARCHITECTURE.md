@@ -100,9 +100,9 @@ Harness steps:
 5. Run the profile's local checks (fast subset of verify) and record results.
 6. Emit `bundle` (git bundle of new commits on top of base SHA), `run.json` (role, model, tokens, $ cost, duration, tests added, summary, questions for owner), and the Entire checkpoint export to `gs://globalhost-runs/<repo>/<runId>/`.
 
-The runner SA can read exactly one secret (Anthropic API key) and write to its run prefix. It has **no** GitHub write token, no deploy rights, no access to any product project.
+The runner SA reads no secrets: it authenticates to Anthropic with its own Google identity token through WIF (ADR-0014), and it can write to its run prefix. It has **no** GitHub write token, no deploy rights, no access to any product project.
 
-> Residual risk: Cloud Run exposes the runner SA token on the metadata server to any process in the container, including the agent. This is why the runner SA is near-powerless; the Anthropic key is the only valuable thing in reach, and its blast radius is capped by the Console workspace spend limit (ADR-0004).
+> Residual risk: Cloud Run exposes the runner SA token on the metadata server to any process in the container, including the agent. This is why the runner SA is near-powerless; the most valuable thing in reach is minting ~10-minute Anthropic tokens while the job runs, capped by the Console workspace spend limit (ADR-0004, ADR-0014).
 
 ### 2.5 Roles
 
@@ -195,7 +195,8 @@ Rules:
 | GitHub App `globalhost-ai` | installed per repo | contents RW, issues RW, PRs RW, checks R, actions R, metadata R | **workflows** (cannot modify `.github/workflows/**`), administration, secrets, members |
 | App token (read-only variant) | minted by dispatcher for runner | contents/issues/PRs read on one repo, 1h | any write |
 | `sa:gh-dispatch` | WIF from product repos' `globalhost.yml` | run the runner job; read run artifacts; access App private key secret; read/write `globalhost-control` | deploy anything; read product projects |
-| `sa:runner` | Cloud Run Job | read `anthropic-api-key`; write `gs://globalhost-runs/<run>` | anything else |
+| `sa:runner` | Cloud Run Job | write `gs://globalhost-runs/<run>`; its identity token is accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
+| `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
 | `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |
 | Cloudflare API token (preview) | dev secret | edit Worker KV / routes on `globalhost.ai` zone | other zones |

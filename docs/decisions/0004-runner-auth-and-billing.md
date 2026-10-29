@@ -19,7 +19,7 @@
 
 ## Decision
 
-1. **Unattended runs authenticate with API keys from the linked org.** Never a subscription OAuth token in CI/Cloud Run. **Don't use the Claude Code GitHub Action** (`anthropics/claude-code-action`): its usage isn't covered by the credit. Our runner calls the Agent SDK directly.
+1. **Unattended runs authenticate with credentials from the linked org** (since ADR-0014: Workload Identity Federation tokens, never stored API keys). Never a subscription OAuth token in CI/Cloud Run. **Don't use the Claude Code GitHub Action** (`anthropics/claude-code-action`): its usage isn't covered by the credit. Our runner calls the Agent SDK directly.
 2. **Keep auto-reload off and don't buy credits.** Running out then stops the factory for the rest of the cycle instead of billing. This is the hard cap.
 3. Because the balance is shared org-wide, partition it with **Console workspaces + spend limits**:
    - `globalhost-runners` — $150/cycle (builder, planner, reviewer, fixer, triage)
@@ -32,4 +32,4 @@
 
 ## Runner host
 
-Decided separately in ADR-0011 (Managed Agents first, Cloud Run Job as fallback, gated on spike P1-00). This ADR covers auth and billing only; both runner options use an API key from the linked org.
+Decided separately in ADR-0011 (Managed Agents first, Cloud Run Job as fallback, gated on spike P1-00). This ADR covers auth and billing only; both runner options authenticate through WIF to service accounts in the linked org (ADR-0014).
