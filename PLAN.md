@@ -25,23 +25,49 @@ Exit criteria: **three real numu-know issues** go issue → plan → build → P
 
 ### P1-00 Spike: Managed Agents as runner (ADR-0011)
 A throwaway script runs one real numu-know issue on Managed Agents: `limited` networking, read-only clone, bundle to outputs, budget cap, resume-after-comment.
+
+**Setup (decided 2026-10-29):**
+- **Clone without credentials.** numu-know is public, so the session clones it with no token. Nothing in the session can write to GitHub.
+- **Adjusted build criterion.** numu-know uses npm (`package-lock.json`) and has no Playwright tests yet. ADR-0011 criterion 2 is measured as `npm ci && npm run build` plus a one-file Playwright smoke the spike supplies (load `/`, take a screenshot), still under 15 min. It is not added to numu-know.
+- **API key.** The spike authenticates with the `globalhost-runners` key from ADR-0004. The owner stores it now as Secret Manager `anthropic-api-key` in `globalhost-factory`, pulled forward from P1-04, which `pulumi import`s it. The script reads it with `gcloud secrets versions access` straight into its own environment. It is never printed, written to disk or passed to the session.
+- **Code.** A dependency-free Node script using `fetch`, in `spikes/managed-agents/`. It is deleted when the P1-06 harness lands. It contains no product facts; results go into ADR-0011 as numbers only.
+- **Spend.** Per-session `budget` is $5, the looping test (criterion 6) gets $1, and the whole spike is capped at about $25 in `globalhost-runners`. `networking.type: limited` is set explicitly on every environment.
+
+**Open (owner):**
+- **Which numu-know change to run.** The repo has no open issues. File one small, real, UI-visible issue, so the preview screenshot means something.
+- **Store the runner key** (above). Paste it with the hidden-input command the script prints.
 **AC:** all six go/no-go criteria in ADR-0011 are recorded with numbers. The ADR is marked accepted, or rejected in favor of the Cloud Run Job runner. P1-04/P1-06 are adjusted accordingly (with Managed Agents: no runner image, no Cloud Run Job; the harness becomes the session-creation and output-collection code in the dispatcher).
 
-### P1-01 Factory repo scaffold
+### P1-01 Factory repo scaffold ✅ (2026-10-28; Renovate app install pending, owner)
 pnpm + Turborepo, TypeScript strict, Node 24, vitest, eslint (with `no-restricted-imports` keeping `packages/core` free of profile/adapter imports), zizmor + actionlint, Renovate.
 **AC:** `pnpm i && pnpm build && pnpm test && pnpm lint` passes locally and in CI on `anlinguist/globalhost`; importing a profile from core fails lint (test fixture proves it).
 
-### P1-01b On-demand security audit (ADR-0012)
+### P1-01b On-demand security audit (ADR-0012) ✅ (2026-10-28)
 Vendor `skills/security-audit`; `.github/workflows/security-audit.yml` runs it on demand (`workflow_dispatch`) on `main` via `claude -p` (quick profile, $15 cap). The agent job holds no write credentials. Reports go to a private bucket, and a separate no-checkout job files them as issues in `globalhost-ops`. GCP setup lives in `infra/bootstrap/security-audit.sh` (moves to Pulumi in P1-04).
 **AC:** zizmor (auditor persona) and actionlint pass. Owner setup is done: bootstrap script, repo variables, `security-audit` and `security-audit-publish` environments restricted to `main`, Anthropic WIF connected (four repo variables), and the `globalhost-ops` token value set. A `workflow_dispatch` run on `main` files an issue in `globalhost-ops`, and neither the Actions log nor the artifacts contain report text. The audit job can't use the publisher SA (its OIDC subject is rejected).
 
 ### P1-02 `factory.yaml` schema + validator
-zod schema in `packages/core` per ONBOARDING §4. Generate JSON Schema. `globalhost validate [path]`.
-**AC:** valid/invalid fixture suite (≥15 cases incl. cyclic `dependsOn`, unknown profile, bad adapter config); JSON Schema published at `schemas/factory.schema.json`; numu-know's draft file validates.
+Implement docs/FACTORY-YAML.md (rationale in ADR-0013) in `packages/core`: `parseFactoryYaml`, `validateFactoryConfig`, `createRegistry`, the `ProfileDescriptor`/`AdapterDescriptor`/`Registry` types and the normalized `FactoryConfig` type. Add `schemas/factory.schema.json` and `globalhost validate [path] [--json]`. New dependencies are `zod` 4.6.7 and `yaml` 2.9.1 in core, exact pins, both with no dependencies of their own.
+**AC:**
+- **Fixtures** live in `packages/core/test/fixtures/factory-yaml/`, with fake profiles and adapters only.
+  - **Valid:** at least 10 files. Each asserts its normalized output, including defaults and the merged immutable baseline.
+  - **Invalid:** at least 25 files. Each asserts its exact `{path, code}` list, and together they cover every error code in FACTORY-YAML §5.
+  - **Adversarial cases are included:**
+    - YAML abuse: alias bomb, 64 KiB + 1, depth 33, duplicate key, an explicit `!!` tag;
+    - bad names and paths: a `__proto__` part name, a hyphenated part name, `../x` and absolute paths;
+    - bad globs: negation and braces;
+    - bad bindings: extra text, two references, an undeclared input, a non-dependency;
+    - policy breaks: `branchPrefix`, dev sharing prod's project, a 3-part cycle, `autoMerge` at L2, an owner given by login only.
+- **JSON Schema:** `schemas/factory.schema.json` is committed, and a test fails if it differs from the generated schema.
+- **CLI tests** cover:
+  - exit codes 0, 1 and 2, including a missing file, a directory, and an oversized file rejected before it is read;
+  - the `--json` output shape;
+  - control characters from the file reaching the terminal only as escapes.
+- **ONBOARDING §4 example:** it validates in a CLI test, with fake descriptors registered under the ids `web-app` and `cloud-build-trigger`.
 
 ### P1-03 Profile + DeployAdapter interfaces; `web-app` profile v0; `cloud-build-trigger` adapter
 Interfaces per PROFILES.md §1/§3. `web-app` v0 has detect, skill, verify (typecheck/lint/build + Playwright smoke + screenshots), preview contract (url + screenshots). Guardrails deferred to Phase 2 except `immutable` paths. Adapter observes a Cloud Build trigger's build for a merge SHA and reports status.
-**AC:** `detect()` reports numu-know as web-app with ≥0.8 confidence; adapter unit tests against recorded Cloud Build API responses; a profile registry test shows adding a fake profile needs no core change.
+**AC:** `Profile` extends `ProfileDescriptor` and `DeployAdapter` extends `AdapterDescriptor` (FACTORY-YAML §5), and the CLI registers both packages. The ONBOARDING §4 example validates with the real `web-app` profile and `cloud-build-trigger` adapter, including part and adapter config. `detect()` reports numu-know as web-app with ≥0.8 confidence; adapter unit tests against recorded Cloud Build API responses; a profile registry test shows adding a fake profile needs no core change.
 
 ### P1-04 Factory GCP infra (Pulumi, `globalhost/infra`)
 In `globalhost-factory`:

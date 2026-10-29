@@ -65,29 +65,30 @@ Never at any level: auto-merge of guardrail-tripping changes (`manifest-permissi
 
 ## 3. Trigger policy (public repos)
 
-Only labels/comments from `owners` start work. Issues from others can enter the loop only after the owner labels them, and their text is always untrusted data. The dispatcher checks `sender.login`, not issue author, so a stranger's issue labeled by the owner is processed with the stranger's text fenced as untrusted.
+Only labels/comments from `owners` start work. Issues from others can enter the loop only after the owner labels them, and their text is always untrusted data. The dispatcher checks the sender's immutable user ID (`sender.id` against `owners[].id`), not the issue author, so a stranger's issue labeled by the owner is processed with the stranger's text fenced as untrusted.
 
 ## 4. `factory.yaml` schema
 
 ```yaml
-# factory.yaml — validated by `globalhost validate` (JSON Schema generated from packages/core)
+# factory.yaml — spec: docs/FACTORY-YAML.md; checked by `globalhost validate`
+# yaml-language-server: $schema=https://raw.githubusercontent.com/anlinguist/globalhost/main/schemas/factory.schema.json
 version: 1
 product: numu-know                # unique slug; used in preview hostnames and GCP naming
-owners: [anlinguist]              # GitHub logins whose actions are trusted
+owners:                           # trust is by immutable user id; login is for display
+  - { login: anlinguist, id: 47403803 }
 autonomy: L1                      # L0 | L1 | L2 | L3
 project: null                     # or a project id from globalhost/projects/*.yaml
 
 git:
   defaultBranch: main
-  baseBranch: main                # where factory PRs target
-  branchPrefix: factory/
+  baseBranch: main                # where factory PRs target; agent branches are always factory/*
 
 environments:
   dev:  { gcpProject: numu-know-dev, region: us-central1 }
   prod: { gcpProject: numu-know,     region: us-central1 }
 
 parts:
-  web:
+  web:                            # part names: lowercase alphanumerics, no hyphens
     path: .                       # repo root for single-app repos
     profile: web-app
     config:
@@ -109,7 +110,7 @@ limits:
 
 guardrails:
   loadBearing: ["app/api/**", "proxy.ts", "lib/firebase*"]   # always needs:owner-approval
-  immutable: [".github/**", "factory.yaml"]                    # agents can never change
+  immutable: []                   # agents can never change; .github/**, factory.yaml and CODEOWNERS are always included
 
 autoMerge: []                     # L3 only, e.g. ["renovate:patch"]
 
@@ -119,7 +120,16 @@ notifications:
   routine: digest
 ```
 
-Schema rules: `product` matches `^[a-z][a-z0-9-]{1,30}$`; each part's `config` validated by its profile's `configSchema`; adapter `config` by the adapter's schema; `dependsOn` must be acyclic; bindings may only reference declared outputs.
+The full contract is **docs/FACTORY-YAML.md**: every field, default, limit, rule, error code, parsing limits, and the CLI. Rationale for the security-relevant rules is in ADR-0013.
+
+Highlights:
+- Every object is closed (unknown keys are errors).
+- Only the default branch's copy is trusted.
+- Owners are matched by user ID.
+- Part configs, adapter configs and bindings are checked against the registered profile and adapter.
+- `dependsOn` must be acyclic.
+- `autoMerge` needs L3.
+- No environment may share prod's GCP project.
 
 ## 5. Factory-level config
 
@@ -139,7 +149,7 @@ Used when there's a real reason (public/private split, different collaborators, 
 # globalhost/projects/<id>.yaml
 version: 1
 project: readefine
-owners: [anlinguist]
+owners: [{ login: anlinguist, id: 47403803 }]   # same owner rules as factory.yaml (ADR-0013)
 repos:
   server:    { repo: readefine-app/readefineserver,     parts: { api: { profile: service } } }
   webapp:    { repo: readefine-app/readefinewebapp,     parts: { web: { profile: web-app } } }

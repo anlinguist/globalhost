@@ -27,7 +27,7 @@ globalhost is a personal software factory. AI agents plan, build, preview, and m
                                         ▼
                          ┌────────────────────────────────────────────────────┐
                          │ Dispatcher (GitHub Actions job in product repo)    │
-                         │  • trust gate: sender == owner, label allowlist    │
+                         │  • trust gate: sender.id ∈ owners, label allowlist │
                          │  • kill switch / budget check                      │
                          │  • WIF → GCP as sa:gh-dispatch                     │
                          │  • execute Cloud Run Job, wait                     │
@@ -54,7 +54,7 @@ pnpm + Turborepo monorepo:
 
 | Path | Contents |
 |---|---|
-| `packages/core` | `factory.yaml` schema (zod), label state machine, trust policy, path policy, budget accounting, Profile/DeployAdapter interfaces |
+| `packages/core` | `factory.yaml` parser + schema (zod) + validator against an injected profile/adapter registry, label state machine, trust policy, path policy, budget accounting, Profile/DeployAdapter interfaces |
 | `packages/cli` | `globalhost` CLI: `assess`, `install`, `validate`, `run` (local), `pause`/`resume`, `budget`, `preview`, `cleanup` |
 | `packages/runner` | Harness + container image for Cloud Run Jobs |
 | `packages/roles` | Role prompts + tool policies (planner, builder, reviewer, triager, …) |
@@ -69,14 +69,14 @@ pnpm + Turborepo monorepo:
 
 ### 2.2 Product repos
 
-Each declares `factory.yaml` (schema in ONBOARDING.md §4). New products use the template (pnpm workspaces + Turborepo, `apps/*`, `packages/*`, `infra/`). Adopted repos keep their structure; `factory.yaml` maps parts to paths.
+Each declares `factory.yaml` (contract in FACTORY-YAML.md; example in ONBOARDING.md §4). New products use the template (pnpm workspaces + Turborepo, `apps/*`, `packages/*`, `infra/`). Adopted repos keep their structure; `factory.yaml` maps parts to paths.
 
 ### 2.3 Dispatcher + Publisher (GitHub Actions, installed per repo)
 
 A single small workflow `.github/workflows/globalhost.yml` rendered by `globalhost install`. It contains no logic beyond invoking pinned steps; logic lives in the runner image and in a pinned composite action from the factory repo (or vendored copy for repos that can't reach it — see ADR-0006).
 
 Responsibilities:
-1. **Trust gate.** Proceed only if `github.event.sender.login ∈ factory.yaml:owners` *and* the event is an allowlisted label or an owner comment on a `factory/*` PR. Never interpolate `${{ github.event.* }}` text into shell (zizmor/actionlint enforced in CI).
+1. **Trust gate.** Proceed only if `github.event.sender.id ∈ factory.yaml:owners[].id` (immutable user IDs; logins can be renamed and re-registered, ADR-0013), with `factory.yaml` read from the default branch, *and* the event is an allowlisted label or an owner comment on a `factory/*` PR. Never interpolate `${{ github.event.* }}` text into shell (zizmor/actionlint enforced in CI).
 2. **Kill switch + budget.** Read `gs://globalhost-control/state.json` (`paused`, daily/monthly spend). Abort with a comment if paused or over budget.
 3. **Concurrency.** `concurrency: globalhost-${repo}-${issue}`; plus a per-repo builder cap via a GCS lock object (generation-match precondition = compare-and-swap).
 4. **Execute** the runner job via WIF (`sa:gh-dispatch`) with args `{repo, ref, issue|pr, role, runId}` and wait.
