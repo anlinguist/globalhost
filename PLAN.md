@@ -15,7 +15,7 @@ These need the owner's accounts. The factory can't do them.
 | P0-01b | ✅ **Readefine PITR** (done 2026-10-27, owner; verified `POINT_IN_TIME_RECOVERY_ENABLED`, 7-day retention): enable Firestore PITR on `query-readefine` (keys part done under P0-01) | `gcloud firestore databases describe` shows PITR enabled |
 | P0-02 | ✅ (done 2026-10-27: `globalhost-factory` on the owner's billing account; IDs in `globalhost-ops/factory/ids.md`) Create GCP project `globalhost-factory` (or the nearest free ID) on the owner's billing account | `gcloud projects describe` OK; billing enabled |
 | P0-03 | ✅ (done: zone active 2026-10-28T04:42Z on `brynne`/`vick.ns.cloudflare.com`; team domain `broken-haze-4579.cloudflareaccess.com`, see ADR-0007) Add `globalhost.ai` to Cloudflare (free); create a Zero Trust team (free) | zone active; Access team domain known |
-| P0-04 | ✅ (done 2026-10-27 per ADR-0004: workspaces `globalhost-runners` $150, `globalhost-chat` $20, `personal` $30; runner key held by owner) Anthropic Console: link the Max plan's monthly API credit; create the ADR-0004 workspaces with spend limits; create runner key in `globalhost-runners` | key in hand (goes straight into Secret Manager in P1-04) |
+| P0-04 | ✅ (done 2026-10-27 per ADR-0004: workspaces `globalhost-runners` $150, `globalhost-chat` $20, `personal` $30; runner key held by owner; unused since ADR-0014, owner deletes it) Anthropic Console: link the Max plan's monthly API credit; create the ADR-0004 workspaces with spend limits; create runner key in `globalhost-runners` | key in hand (goes straight into Secret Manager in P1-04) |
 | P0-05 | ✅ (done 2026-10-27: ADR-0004 accepted) Confirm credit terms (API credit vs Agent SDK credit) on Anthropic's pricing/support pages; record in ADR-0004 | ADR-0004 status → accepted |
 | P0-06 | ✅ (done 2026-10-27: pulumi v3.272.0 via Homebrew, wrangler 4.154.0 via npm -g) Install `pulumi`, `wrangler` locally | `pulumi version`, `wrangler --version` |
 
@@ -27,15 +27,15 @@ Exit criteria: **three real numu-know issues** go issue → plan → build → P
 A throwaway script runs one real numu-know issue on Managed Agents: `limited` networking, read-only clone, bundle to outputs, budget cap, resume-after-comment.
 
 **Setup (decided 2026-10-29):**
+- **Issue:** numu-know#10 "CSP blocks audio" (story audio from Firebase Storage blocked by a missing `media-src`). The Playwright smoke asserts that a story page logs no CSP violation for audio. The resume test (criterion 5) is an owner follow-up comment on the same issue.
 - **Clone without credentials.** numu-know is public, so the session clones it with no token. Nothing in the session can write to GitHub.
 - **Adjusted build criterion.** numu-know uses npm (`package-lock.json`) and has no Playwright tests yet. ADR-0011 criterion 2 is measured as `npm ci && npm run build` plus a one-file Playwright smoke the spike supplies (load `/`, take a screenshot), still under 15 min. It is not added to numu-know.
-- **API key.** The spike authenticates with the `globalhost-runners` key from ADR-0004. The owner stores it now as Secret Manager `anthropic-api-key` in `globalhost-factory`, pulled forward from P1-04, which `pulumi import`s it. The script reads it with `gcloud secrets versions access` straight into its own environment. It is never printed, written to disk or passed to the session.
+- **Keyless auth (ADR-0014).** The script runs on the owner's machine and impersonates a new, permissionless GCP SA `globalhost-spike` to mint a Google identity token (`gcloud auth print-identity-token --impersonate-service-account=… --audiences=https://api.anthropic.com --include-email`). It exchanges that token through WIF for a ~10-minute Anthropic token on a Console service account in `globalhost-runners`. The rule matches the SA's `sub` (unique ID) and `email`. The spike's SA, its Console service account and its rule are all deleted when the spike ends.
 - **Code.** A dependency-free Node script using `fetch`, in `spikes/managed-agents/`. It is deleted when the P1-06 harness lands. It contains no product facts; results go into ADR-0011 as numbers only.
 - **Spend.** Per-session `budget` is $5, the looping test (criterion 6) gets $1, and the whole spike is capped at about $25 in `globalhost-runners`. `networking.type: limited` is set explicitly on every environment.
 
 **Open (owner):**
-- **Which numu-know change to run.** The repo has no open issues. File one small, real, UI-visible issue, so the preview screenshot means something.
-- **Store the runner key** (above). Paste it with the hidden-input command the script prints.
+- **Connect the spike workload.** In Console, use Connect workload → Google Cloud, with the SA's unique ID and email (the setup script prints both), workspace `globalhost-runners`, scope `workspace:developer` and 600 s. Then send the organization, rule, service-account and workspace IDs.
 **AC:** all six go/no-go criteria in ADR-0011 are recorded with numbers. The ADR is marked accepted, or rejected in favor of the Cloud Run Job runner. P1-04/P1-06 are adjusted accordingly (with Managed Agents: no runner image, no Cloud Run Job; the harness becomes the session-creation and output-collection code in the dispatcher).
 
 ### P1-01 Factory repo scaffold ✅ (2026-10-28; Renovate app install pending, owner)
@@ -75,10 +75,10 @@ In `globalhost-factory`:
 - GCS buckets `globalhost-pulumi-state` (versioned), `globalhost-runs` (30-day lifecycle), `globalhost-control`; KMS key for Pulumi secrets;
 - WIF pool `github` with provider attribute conditions (`repository_owner in [anlinguist, readefine-app]`);
 - SAs `gh-dispatch`, `runner` with exactly the bindings in ARCHITECTURE §5.1;
-- Secret Manager `anthropic-api-key`, `github-app-key` (values added by owner);
+- Secret Manager `github-app-key` (value added by owner); no Anthropic key: `runner` authenticates through WIF (ADR-0014);
 - Cloud Run Job `runner`;
 - budget $25 with alerts 40/80/100% → Pub/Sub → function that sets `paused=true`.
-**AC:** `pulumi up` from clean state succeeds. An IAM policy test (`gcloud ... get-iam-policy` snapshot) shows `runner` can access only `anthropic-api-key` and its bucket prefix. A simulated 100% budget message flips `paused`.
+**AC:** `pulumi up` from clean state succeeds. An IAM policy test (`gcloud ... get-iam-policy` snapshot) shows `runner` can access no secrets and only its bucket prefix. A simulated 100% budget message flips `paused`.
 
 ### P1-05 GitHub App `globalhost-ai`
 Created via the manifest flow from a script in `infra/github-app/`. Permissions per ARCHITECTURE §5.1 (no workflows/admin). Private key → Secret Manager. Installed on `anlinguist/numu-know` only.

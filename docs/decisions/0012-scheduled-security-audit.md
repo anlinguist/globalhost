@@ -11,7 +11,7 @@ Constraints:
 - **This repo is public.** Actions logs and artifacts are world-readable, so audit output must never reach either. Findings go only to private `globalhost-ops` (ONBOARDING §8).
 - **Secrets live in GCP Secret Manager** (CLAUDE.md #5), and fewer secrets is better.
 - **Agents hold no write credentials** (CLAUDE.md #3).
-- **Auth and billing (ADR-0004).** Unattended runs use an API key from the linked Console org, which the monthly credit covers. `anthropics/claude-code-action` usage isn't covered, so it is not used.
+- **Auth and billing (ADR-0004).** Unattended runs bill to the linked Console org, which the monthly credit covers (since ADR-0014, always through WIF, never an API key). `anthropics/claude-code-action` usage isn't covered, so it is not used.
 - **No runner yet.** The factory runner (ADR-0011, Cloud Run Job or Managed Agents) doesn't exist until P1-05.
 
 ## Decision
