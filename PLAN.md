@@ -32,7 +32,7 @@ pnpm + Turborepo, TypeScript strict, Node 24, vitest, eslint (with `no-restricte
 **AC:** `pnpm i && pnpm build && pnpm test && pnpm lint` passes locally and in CI on `anlinguist/globalhost`; importing a profile from core fails lint (test fixture proves it).
 
 ### P1-01b On-demand security audit (ADR-0012)
-Vendor `skills/security-audit`; `.github/workflows/security-audit.yml` runs it on demand (`workflow_dispatch`) on `main` via `claude -p` (quick profile, $10 cap). The agent job holds no write credentials. Reports go to a private bucket, and a separate no-checkout job files them as issues in `globalhost-ops`. GCP setup lives in `infra/bootstrap/security-audit.sh` (moves to Pulumi in P1-04).
+Vendor `skills/security-audit`; `.github/workflows/security-audit.yml` runs it on demand (`workflow_dispatch`) on `main` via `claude -p` (quick profile, $15 cap). The agent job holds no write credentials. Reports go to a private bucket, and a separate no-checkout job files them as issues in `globalhost-ops`. GCP setup lives in `infra/bootstrap/security-audit.sh` (moves to Pulumi in P1-04).
 **AC:** zizmor (auditor persona) and actionlint pass. Owner setup is done: bootstrap script, repo variables, `security-audit` and `security-audit-publish` environments restricted to `main`, Anthropic WIF connected (four repo variables), and the `globalhost-ops` token value set. A `workflow_dispatch` run on `main` files an issue in `globalhost-ops`, and neither the Actions log nor the artifacts contain report text. The audit job can't use the publisher SA (its OIDC subject is rejected).
 
 ### P1-02 `factory.yaml` schema + validator

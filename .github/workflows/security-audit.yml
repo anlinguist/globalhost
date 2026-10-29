@@ -20,7 +20,7 @@ env:
   # Matches the registry's sha512 integrity for this tarball.
   CLAUDE_CODE_SHA256: eef5a2e2b09a5e7d2ce784d1b3ba335ae7fc6c7f6256c802a0ebf2c21e4fd0e1
   AUDIT_MODEL: claude-opus-5-5
-  AUDIT_MAX_USD: "10"
+  AUDIT_MAX_USD: "15"
   # Runs are written under runs/ (auditor SA, create-only there). Only the publisher SA can write
   # published/latest, which names the last run that produced a report; the next run reads its prior
   # results from there, never by listing what earlier (possibly compromised) runs created. Each run
