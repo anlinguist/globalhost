@@ -1,0 +1,9 @@
+{
+  "name": "spike-managed-agents",
+  "private": true,
+  "type": "module",
+  "description": "P1-00 throwaway spike (ADR-0011). Not a workspace package; delete when the P1-06 harness lands.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.134.0"
+  }
+}
