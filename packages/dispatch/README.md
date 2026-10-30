@@ -44,10 +44,9 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 `globalhost install` will automate this (P1-09). Until then, set it up by hand, once per repo:
 
 1. **Factory side:** make sure the factory infra is applied (P1-04) with the repo in `dispatchRepos`, and that the `globalhost-ai` App is created and installed on the repo (P1-05).
-2. **Anthropic Console:** add a federation rule for the repo's dispatcher. Use Connect workload → GitHub Actions with these settings:
-   - the same immutable-subject form as the audit's rule;
-   - environment `globalhost`;
-   - workspace `globalhost-runners`.
+2. **ID-based OIDC subjects** for the repo, so the shared `globalhost-dispatch` federation rule (ADR-0014 amendment) matches it:
+   `gh api -X PUT repos/<owner>/<repo>/actions/oidc/customization/sub -F use_default=true -F use_immutable_subject=true`.
+   The rule already exists; there's no per-repo Console step.
 3. **In the product repo:**
    - Create an environment `globalhost` whose deployment branches are limited to the default branch.
    - Add these repo variables. They're identifiers, not secrets:
@@ -57,6 +56,6 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
      | `GLOBALHOST_WIF_PROVIDER` | stack output `workloadIdentityProvider` |
      | `GLOBALHOST_DISPATCH_SA` | `globalhost-gh-dispatch@globalhost-factory.iam.gserviceaccount.com` |
      | `GLOBALHOST_APP_ID`, `GLOBALHOST_APP_SLUG` | printed by `infra/github-app` |
-     | `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID` | from step 2 |
+     | `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID` | the shared `globalhost-dispatch` rule's IDs (same for every repo) |
 
    - Commit `factory.yaml` and `.github/workflows/globalhost.yml`. In the workflow, the placeholder SHA is replaced with a `globalhost` commit on `main`.
