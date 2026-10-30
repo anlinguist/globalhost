@@ -256,10 +256,24 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
     afterApis,
   );
   const buildMember = pulumi.interpolate`serviceAccount:${buildSa.email}`;
-  new gcp.projects.IAMMember("functions-build-logs", {
+  const buildLogs = new gcp.projects.IAMMember("functions-build-logs", {
     project,
     role: "roles/logging.logWriter",
     member: buildMember,
+  });
+  // Cloud Functions copies the source into its own staging bucket before building, and a custom build
+  // identity must be able to read it. That bucket is Google-created (on first deploy), so the grant is
+  // project-level but conditioned on that one bucket's name: no access to control, runs or anything else.
+  const stagingBucket = pulumi.interpolate`gcf-v2-sources-${projectNumber}-${region}`;
+  const buildStaging = new gcp.projects.IAMMember("functions-build-staging", {
+    project,
+    role: "roles/storage.objectViewer",
+    member: buildMember,
+    condition: {
+      title: "gcf-v2-sources only",
+      // The bucket itself or its objects; an exact prefix so a lookalike name doesn't match.
+      expression: pulumi.interpolate`resource.name == "projects/_/buckets/${stagingBucket}" || resource.name.startsWith("projects/_/buckets/${stagingBucket}/")`,
+    },
   });
 
   // Function images. Cloud Functions 2nd gen always builds a container; this repo replaces the
@@ -281,7 +295,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
     },
     afterApis,
   );
-  new gcp.artifactregistry.RepositoryIamMember("functions-build-images", {
+  const buildImages = new gcp.artifactregistry.RepositoryIamMember("functions-build-images", {
     project,
     location: region,
     repository: functionImages.name,
@@ -304,7 +318,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
     },
     afterApis,
   );
-  new gcp.storage.BucketIAMMember("functions-build-source", {
+  const buildSource = new gcp.storage.BucketIAMMember("functions-build-source", {
     bucket: sourceBucket.name,
     role: "roles/storage.objectViewer",
     member: buildMember,
@@ -352,13 +366,18 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
         serviceAccountEmail: pauseSa.email,
       },
     },
-    afterApis,
+    // The build fails (and leaves a FAILED function behind) if it starts before its identity can act.
+    { dependsOn: [...apis, buildLogs, buildStaging, buildImages, buildSource] },
   );
   // The trigger identity may invoke only this function's service.
   new gcp.cloudrunv2.ServiceIamMember("budget-pause-invoker", {
     project,
     location: region,
-    name: pauseFunction.serviceConfig.apply((s) => s?.service ?? ""),
+    // A function whose first build failed has no service; say so rather than bind to "".
+    name: pauseFunction.serviceConfig.apply((s) => {
+      if (!s?.service) throw new Error("globalhost-budget-pause has no Cloud Run service (failed build?); delete it, `pulumi refresh`, and re-run");
+      return s.service;
+    }),
     role: "roles/run.invoker",
     member: pauseMember,
   });

@@ -110,6 +110,17 @@ describe("factory infra", () => {
     }
   });
 
+  it("lets the build SA read only Cloud Functions' staging bucket at project level", () => {
+    const projectLevel = resources.filter((r) => r.type.startsWith("gcp:projects/iAM") && r.inputs.role === "roles/storage.objectViewer");
+    expect(projectLevel).toHaveLength(1);
+    const grant = projectLevel[0]!;
+    expect(grant.inputs.member).toBe(`serviceAccount:globalhost-fn-build@${PROJECT}.iam.gserviceaccount.com`);
+    expect((grant.inputs.condition as { expression: string }).expression).toBe(
+      `resource.name == "projects/_/buckets/gcf-v2-sources-${PROJECT_NUMBER}-us-central1" || ` +
+        `resource.name.startsWith("projects/_/buckets/gcf-v2-sources-${PROJECT_NUMBER}-us-central1/")`,
+    );
+  });
+
   it("grants sa:gh-dispatch exactly its bucket roles, bucket-scoped", () => {
     const grants = ofType("gcp:storage/bucketIAMMember:BucketIAMMember")
       .filter((r) => r.inputs.member === GH_DISPATCH)

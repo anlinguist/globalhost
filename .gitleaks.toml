@@ -1,0 +1,12 @@
+# gitleaks defaults, plus one narrow allowlist.
+[extend]
+useDefault = true
+
+# A Pulumi stack's `encryptedkey` is its data key wrapped by Cloud KMS (ADR-0008): useless without
+# decrypt rights on the key in globalhost-factory, and meant to be committed. Matched on the finding
+# text only. Not by path: gitleaks 8.30 ignores `condition = "AND"` in a top-level allowlist, so a
+# path entry would silence every finding in stack files.
+[[allowlists]]
+description = "Pulumi stack data key, KMS-wrapped"
+regexTarget = "match"
+regexes = ['''^encryptedkey: [A-Za-z0-9+/=]+$''']

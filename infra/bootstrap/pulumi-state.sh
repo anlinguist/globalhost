@@ -18,7 +18,9 @@ KEY="state"
 g() { gcloud --project="$PROJECT" --quiet "$@"; }
 exists() { "$@" >/dev/null 2>&1; }
 
-g services enable storage.googleapis.com cloudkms.googleapis.com
+# Resource Manager and Service Usage too: the program reads the project and enables the rest of its APIs
+# through them, before it could enable them itself.
+g services enable storage.googleapis.com cloudkms.googleapis.com cloudresourcemanager.googleapis.com serviceusage.googleapis.com
 
 # State bucket: private, versioned. A noncurrent version is deleted 90 days after it was replaced
 # (and only once 10 newer versions exist), so state history is recoverable without growing forever.
