@@ -6,7 +6,9 @@ import {
   MAX_FACTORY_YAML_BYTES,
   parseFactoryYaml,
   validateFactoryConfig,
+  type DeployAdapter,
   type FactoryYamlError,
+  type Profile,
   type Registry,
 } from "@globalhost/core";
 import { webApp } from "@globalhost/profile-web-app";
@@ -49,14 +51,18 @@ export interface FileIo {
 export interface CliDeps {
   /**
    * Profiles and adapters `validate` checks against. The CLI, not core, is where they are imported
-   * (FACTORY-YAML §7). Adding one is a package plus an entry in defaultDeps(); core doesn't change.
+   * (FACTORY-YAML §7).
    */
   registry: Registry;
   io: FileIo;
 }
 
+/** Every profile and adapter the factory knows. Adding one is a package plus an entry here; core doesn't change. */
+export const PROFILES: readonly Profile[] = [webApp];
+const ADAPTERS: readonly DeployAdapter[] = [cloudBuildTrigger];
+
 export function defaultDeps(): CliDeps {
-  return { registry: createRegistry([webApp], [cloudBuildTrigger]), io: fs };
+  return { registry: createRegistry(PROFILES, ADAPTERS), io: fs };
 }
 
 function readVersion(): string {

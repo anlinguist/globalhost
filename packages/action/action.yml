@@ -1,0 +1,45 @@
+# globalhost dispatcher steps (P1-07), used by templates/.github/workflows/globalhost.yml in product
+# repos and pinned there by commit SHA. The steps' logic lives in packages/dispatch; this action only
+# installs the factory at the pinned commit (lockfile-exact) and runs `globalhost dispatch <step>`.
+name: globalhost
+description: Run one globalhost dispatcher step (gate or run)
+inputs:
+  step:
+    description: gate | run
+    required: true
+outputs:
+  action:
+    description: "gate: ignore | start | resume"
+    value: ${{ steps.dispatch.outputs.action }}
+  role:
+    description: "gate: planner | builder"
+    value: ${{ steps.dispatch.outputs.role }}
+  issue:
+    description: "gate: issue number"
+    value: ${{ steps.dispatch.outputs.issue }}
+  pr:
+    description: "gate: PR number (resume)"
+    value: ${{ steps.dispatch.outputs.pr }}
+  comment:
+    description: "gate: steering comment id (resume)"
+    value: ${{ steps.dispatch.outputs.comment }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+        package-manager-cache: false
+    - name: Install the factory at this action's commit
+      shell: bash
+      working-directory: ${{ github.action_path }}/../..
+      run: |
+        corepack enable
+        pnpm install --frozen-lockfile --filter "@globalhost/cli..."
+        pnpm --filter "@globalhost/cli..." build
+    - id: dispatch
+      name: globalhost dispatch
+      shell: bash
+      env:
+        STEP: ${{ inputs.step }}
+      run: node "$GITHUB_ACTION_PATH/../cli/dist/bin.js" dispatch "$STEP"

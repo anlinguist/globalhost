@@ -1,0 +1,82 @@
+# globalhost dispatcher (rendered into product repos by `globalhost install`; ARCHITECTURE §2.3).
+# Only an owner's factory:plan / factory:build label, or an owner's comment on a factory/* PR, starts
+# work. Owners are matched by immutable user ID from factory.yaml on the default branch.
+# Repo variables (identifiers, not secrets): ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_FEDERATION_RULE_ID,
+# ANTHROPIC_SERVICE_ACCOUNT_ID, ANTHROPIC_WORKSPACE_ID, GLOBALHOST_WIF_PROVIDER, GLOBALHOST_DISPATCH_SA,
+# GLOBALHOST_APP_ID, GLOBALHOST_APP_SLUG.
+name: globalhost
+
+on:
+  issues:
+    types: [labeled]
+  # Owner steering on factory PRs. Safe here: no job checks out or runs PR code; the gate matches the
+  # commenter's user ID against owners, and the agent runs in the Managed Agents sandbox.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
+
+permissions: {}
+
+# One run per issue or PR at a time; a second trigger waits rather than racing the first.
+concurrency:
+  group: globalhost-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # Cheap pre-filter only; the real trust gate is in the step.
+    if: >-
+      (github.event_name == 'issues' && startsWith(github.event.label.name, 'factory:'))
+      || (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.type == 'User')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      action: ${{ steps.gate.outputs.action }}
+      role: ${{ steps.gate.outputs.role }}
+      issue: ${{ steps.gate.outputs.issue }}
+      pr: ${{ steps.gate.outputs.pr }}
+      comment: ${{ steps.gate.outputs.comment }}
+    steps:
+      - id: gate
+        uses: anlinguist/globalhost/packages/action@0000000000000000000000000000000000000000 # globalhost-action-sha (set by `globalhost install`)
+        with:
+          step: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  dispatch:
+    needs: gate
+    if: needs.gate.outputs.action == 'start' || needs.gate.outputs.action == 'resume'
+    runs-on: ubuntu-24.04
+    # perRunMinutes is at most 180; the rest is setup and publishing.
+    timeout-minutes: 200
+    environment: globalhost
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      id-token: write # WIF: GCP as sa:globalhost-gh-dispatch, Anthropic via the dispatch federation rule
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GLOBALHOST_WIF_PROVIDER }}
+          service_account: ${{ vars.GLOBALHOST_DISPATCH_SA }}
+      - uses: anlinguist/globalhost/packages/action@0000000000000000000000000000000000000000 # globalhost-action-sha (set by `globalhost install`)
+        with:
+          step: run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GLOBALHOST_ACTION: ${{ needs.gate.outputs.action }}
+          GLOBALHOST_ROLE: ${{ needs.gate.outputs.role }}
+          GLOBALHOST_ISSUE: ${{ needs.gate.outputs.issue }}
+          GLOBALHOST_PR: ${{ needs.gate.outputs.pr }}
+          GLOBALHOST_COMMENT: ${{ needs.gate.outputs.comment }}
+          GLOBALHOST_APP_ID: ${{ vars.GLOBALHOST_APP_ID }}
+          GLOBALHOST_APP_SLUG: ${{ vars.GLOBALHOST_APP_SLUG }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}

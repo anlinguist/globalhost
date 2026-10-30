@@ -108,6 +108,7 @@ Per ADR-0011 (accepted), `packages/runner` is session-driving code behind a `Run
 - `git config --list` and `env` inside the agent shell show no credentials.
 
 ### P1-07 Dispatcher + publisher (installed workflow + composite action)
+**Status (2026-10-30):** code done (`packages/dispatch`, `packages/action`, `templates/.github/workflows/globalhost.yml`, path policy + trust gate in core). Run and publish share one job, since the agent runs in Managed Agents, not in Actions. The live AC (test-account label, real PR, real pause) runs once P1-04/P1-05 are applied and numu-know is set up per `packages/dispatch/README.md`.
 `templates/.github/workflows/globalhost.yml` + `packages/action` (composite action pinned by SHA). Implements trust gate, kill switch/budget check, concurrency + GCS lock, WIF → execute job → wait, publisher with path policy, branch claim, draft PR template, run report comment, labels.
 Triggers:
 - `issues.labeled` (`factory:plan`, `factory:build`);
