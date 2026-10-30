@@ -29,18 +29,22 @@ globalhost is a personal software factory. AI agents plan, build, preview, and m
                          │ Dispatcher (GitHub Actions job in product repo)    │
                          │  • trust gate: sender.id ∈ owners, label allowlist │
                          │  • kill switch / budget check                      │
-                         │  • WIF → GCP as sa:gh-dispatch                     │
-                         │  • execute Cloud Run Job, wait                     │
+                         │  • WIF → GCP as sa:gh-dispatch (control, runs,     │
+                         │    App key); GitHub OIDC → Anthropic (ADR-0014)    │
+                         │  • create Managed Agents session, wait             │
                          │  • Publisher: validate bundle → push factory/* →   │
                          │    open/update PR (App token)                      │
-                         └──────────────┬─────────────────────────────────────┘
-                                        ▼
-  GCP project globalhost-factory ┌──────────────────────────────────────────────┐
-                                 │ Cloud Run Job "runner" (sa:runner)           │
-                                 │  harness (trusted) ─▶ Claude Agent SDK       │
-                                 │  roles: planner | builder | reviewer | ...   │
-                                 │  output: git bundle + run.json → GCS         │
-                                 └──────────────────────────────────────────────┘
+                         └───────┬──────────────────────────────┬─────────────┘
+                                 ▼                              ▼
+  Claude Managed Agents  ┌──────────────────────────┐  GCP project globalhost-factory
+  (ADR-0011)             │ one session per run      │  ┌──────────────────────────────┐
+                         │  sandbox, limited egress │  │ gs://globalhost-control      │
+                         │  roles: planner | builder│  │ gs://globalhost-runs (30 d)  │
+                         │   | reviewer | ...       │  │ secret github-app-key        │
+                         │  output: bundle +        │  │ budget → Pub/Sub → pause fn  │
+                         │  run.json (Files API)    │  │ WIF pool github              │
+                         └──────────────────────────┘  └──────────────────────────────┘
+  Fallback, not built: Cloud Run Job runner with sa:runner (§2.4).
   CI (GitHub Actions, per profile): typecheck/lint/test, profile verify, guardrails
   Preview (per profile): Cloud Run tagged revision in <product>-dev project
         └─ Cloudflare Worker router + Access on *.globalhost.ai (ADR-0007)
@@ -79,7 +83,7 @@ Responsibilities:
 1. **Trust gate.** Proceed only if `github.event.sender.id ∈ factory.yaml:owners[].id` (immutable user IDs; logins can be renamed and re-registered, ADR-0013), with `factory.yaml` read from the default branch, *and* the event is an allowlisted label or an owner comment on a `factory/*` PR. Never interpolate `${{ github.event.* }}` text into shell (zizmor/actionlint enforced in CI).
 2. **Kill switch + budget.** Read `gs://globalhost-control/state.json` (`paused`, daily/monthly spend). Abort with a comment if paused or over budget.
 3. **Concurrency.** `concurrency: globalhost-${repo}-${issue}`; plus a per-repo builder cap via a GCS lock object (generation-match precondition = compare-and-swap).
-4. **Execute** the runner job via WIF (`sa:gh-dispatch`) with args `{repo, ref, issue|pr, role, runId}` and wait.
+4. **Execute** the run: create a Managed Agents session with `{repo, ref, issue|pr, role, runId}` (Anthropic auth with the job's own GitHub OIDC token, ADR-0014) and wait; archive outputs to `gs://globalhost-runs/` as `sa:gh-dispatch`. With the unbuilt Cloud Run fallback, this step would execute the runner job instead.
 5. **Publish** (trusted): download `bundle` + `run.json`, apply **path policy** (e.g. `.github/**` and `factory.yaml` are immutable to agents; profile guardrail paths add labels), push to `factory/issue-<n>` (never force, never the default branch), open/update a draft PR from the template, set labels, post the run report (cost, duration, tests written, files touched).
 
 Phase 2+ may move steps 4–5 into a Cloud Run "publisher" job to save Actions minutes on private repos (public repos have unlimited minutes).
@@ -193,9 +197,11 @@ Rules:
 |---|---|---|---|
 | Owner (`anlinguist`) | GitHub, GCP, Cloudflare | everything | — |
 | GitHub App `globalhost-ai` | installed per repo | contents RW, issues RW, PRs RW, checks R, actions R, metadata R | **workflows** (cannot modify `.github/workflows/**`), administration, secrets, members |
-| App token (read-only variant) | minted by dispatcher for runner | contents/issues/PRs read on one repo, 1h | any write |
-| `sa:gh-dispatch` | WIF from product repos' `globalhost.yml` | run the runner job; read run artifacts; access App private key secret; read/write `globalhost-control` | deploy anything; read product projects |
-| `sa:runner` | Cloud Run Job | write `gs://globalhost-runs/<run>`; its identity token is accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
+| App token (read-only variant) | minted by dispatcher for the run's inputs | contents/issues/PRs read on one repo, 1h | any write |
+| `sa:gh-dispatch` (`globalhost-gh-dispatch`) | WIF provider `github/globalhost-dispatch`: owner ID 47403803, a listed repo ID on its default branch, environment `globalhost` (product repos' `globalhost.yml`) | bucket- and secret-level only: read/write/delete objects in `globalhost-control`; create + read objects in `globalhost-runs`; access secret `github-app-key` | any project-level role; overwrite or delete run artifacts; deploy anything; read product projects |
+| `sa:runner` (**not built**; Cloud Run fallback only) | Cloud Run Job | would: write `gs://globalhost-runs/<run>`; its identity token accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
+| `sa:globalhost-budget-pause` | Cloud Function `globalhost-budget-pause` (runtime and Pub/Sub trigger identity) | read/write `gs://globalhost-control/state.json` only (IAM condition); invoke its own function | anything else |
+| `sa:globalhost-fn-build` | Cloud Build for that function | write logs; push to Artifact Registry `globalhost-functions`; read the function source bucket | anything else |
 | `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
 | `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |
@@ -203,7 +209,7 @@ Rules:
 | `sa:globalhost-auditor` (ADR-0012) | WIF, factory repo `main`, environment `security-audit` only | list/read/create objects in the audit report bucket | read any secret; delete or overwrite reports; any GitHub write; anything else |
 | `sa:globalhost-audit-publisher` (ADR-0012) | WIF, factory repo `main`, environment `security-audit-publish` only (job runs no repo code) | read audit reports; read `globalhost-ops-issues-token` (Issues RW on `globalhost-ops` only) | write reports; any other repo |
 
-No long-lived GCP keys anywhere. GitHub App private key and Anthropic key live in Secret Manager in `globalhost-factory`. Product secrets live in the product's own projects (dev and prod separated), set via `pulumi config set --secret` or `gcloud secrets versions add` by the owner — never by agents.
+No long-lived GCP keys anywhere. The GitHub App private key lives in Secret Manager in `globalhost-factory` (`github-app-key`, readable only by `sa:gh-dispatch`). There is no Anthropic key (ADR-0014). Product secrets live in the product's own projects (dev and prod separated), set via `pulumi config set --secret` or `gcloud secrets versions add` by the owner — never by agents.
 
 ### 5.2 GCP project layout
 
@@ -211,7 +217,7 @@ No GCP Organization exists (projects are under the personal account). Layout:
 
 | Project | Purpose | Billing budget |
 |---|---|---|
-| `globalhost-factory` (new) | runner job, Artifact Registry, run artifacts, control bucket, Pulumi state bucket + KMS, factory secrets | part of $25/mo factory budget |
+| `globalhost-factory` (new) | run artifacts, control bucket, Pulumi state bucket + KMS, WIF pool, factory secrets, budget-pause function (`infra/factory`). No runner job or runner image (ADR-0011) | part of $25/mo factory budget |
 | `<product>-dev` (new per product as needed, e.g. `numu-know-dev`) | preview services, dev Firestore/DB, seed data | part of $25/mo factory budget |
 | existing prod projects (`numu-know`, `biblia-sacra`, `reader-365202`, …) | unchanged prod | existing |
 
@@ -229,7 +235,7 @@ See ADR-0006. Public repos get rulesets on free (require PR, require checks, blo
 | Hard monthly cap | Anthropic Console workspace spend limit = monthly credit | 1 |
 | Daily budget | dispatcher sums `run.json` costs in control bucket; default $20/day | 1 (simple) / 2 |
 | Kill switch | `globalhost pause` sets `paused=true`; dispatcher refuses; running jobs cancelled | 1 (minimal) / 2 |
-| GCP | budget alerts + auto-pause; AR cleanup policies; scale-to-zero everywhere | 1 |
+| GCP | budget alerts + auto-pause; lifecycle rules on every bucket; AR cleanup policy on the function image repo; scale-to-zero everywhere | 1 |
 | Orphans | nightly cleanup of preview tags/images/review stacks whose PR is closed | 1 (tags) / 2 (stacks) |
 | Auto-fix cap | ≤ N auto-fix runs/day, never auto-merge | 4 |
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-time GCP setup for .github/workflows/security-audit.yml (ADR-0012).
 # Owner-run (it changes IAM in globalhost-factory). Safe to re-run: existing resources are kept.
-# Port to Pulumi with the rest of the factory infra in P1-04.
+# The WIF pool `github` is imported into infra/factory (P1-04) and managed there; this script still
+# creates it on a fresh project and owns the audit provider, SAs and bucket until they are ported too.
 set -euo pipefail
 
 PROJECT="${PROJECT:-globalhost-factory}"

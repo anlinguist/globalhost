@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Scripts run directly with Node 24's type stripping (no build step), so only erasable syntax and
+    // explicit .ts import specifiers.
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "test"]
+}

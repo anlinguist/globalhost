@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": ["src/**", "functions/**", "tsconfig*.json", "package.json"],
+      "outputs": ["dist/**"]
+    }
+  }
+}

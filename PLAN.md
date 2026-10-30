@@ -70,20 +70,20 @@ Implement docs/FACTORY-YAML.md (rationale in ADR-0013) in `packages/core`: `pars
 Interfaces per PROFILES.md §1/§3. `web-app` v0 has detect, skill, verify (typecheck/lint/build + Playwright smoke + screenshots), preview contract (url + screenshots). Guardrails deferred to Phase 2 except `immutable` paths. Adapter observes a Cloud Build trigger's build for a merge SHA and reports status.
 **AC:** `Profile` extends `ProfileDescriptor` and `DeployAdapter` extends `AdapterDescriptor` (FACTORY-YAML §5), and the CLI registers both packages. The ONBOARDING §4 example validates with the real `web-app` profile and `cloud-build-trigger` adapter, including part and adapter config. `detect()` reports numu-know as web-app with ≥0.8 confidence; adapter unit tests against recorded Cloud Build API responses; a profile registry test shows adding a fake profile needs no core change.
 
-### P1-04 Factory GCP infra (Pulumi, `globalhost/infra`)
-In `globalhost-factory`:
-- APIs; Artifact Registry `globalhost` with cleanup policy (keep last 5 per image, delete untagged >7d);
-- GCS buckets `globalhost-pulumi-state` (versioned), `globalhost-runs` (30-day lifecycle), `globalhost-control`; KMS key for Pulumi secrets;
-- WIF pool `github` with provider attribute conditions (`repository_owner in [anlinguist, readefine-app]`);
-- SAs `gh-dispatch`, `runner` with exactly the bindings in ARCHITECTURE §5.1;
-- Secret Manager `github-app-key` (value added by owner); no Anthropic key: `runner` authenticates through WIF (ADR-0014);
-- no runner infrastructure: Managed Agents hosts the sandbox (ADR-0011). The Cloud Run Job fallback is built only if a later requirement fails;
-- budget $25 with alerts 40/80/100% → Pub/Sub → function that sets `paused=true`.
-**AC:** `pulumi up` from clean state succeeds. An IAM policy test (`gcloud ... get-iam-policy` snapshot) shows `runner` can access no secrets and only its bucket prefix. A simulated 100% budget message flips `paused`.
+### P1-04 Factory GCP infra (Pulumi, `infra/factory`)
+In `globalhost-factory` (details in `infra/factory/README.md`):
+- `infra/bootstrap/pulumi-state.sh` creates the backend Pulumi can't manage itself: bucket `globalhost-pulumi-state` (versioned) and KMS key `pulumi/state` for stack secrets;
+- APIs; GCS buckets `globalhost-runs` (30-day lifecycle) and `globalhost-control` (versioned, noncurrent versions expire);
+- WIF pool `github` (imported from the security-audit bootstrap, not duplicated) with a dispatcher provider pinned to `repository_owner_id` 47403803, listed repo IDs on their default branch, environment `globalhost`;
+- SA `gh-dispatch` with exactly the bindings in ARCHITECTURE §5.1, all bucket- or secret-level;
+- Secret Manager `github-app-key` (value added by owner; only `gh-dispatch` can access it). No Anthropic key: the dispatcher authenticates to Anthropic with its GitHub OIDC token (ADR-0014);
+- no runner infrastructure: Managed Agents hosts the sandbox (ADR-0011). No Cloud Run Job, no runner image registry, no `sa:runner`. The Cloud Run Job fallback is built only if a later requirement fails. The only Artifact Registry repo holds the budget function's build output (keep 2 newest);
+- budget $25 with alerts 40/80/100% → Pub/Sub → function `globalhost-budget-pause` that sets `paused=true` in `gs://globalhost-control/state.json`.
+**AC:** `pulumi up` from clean state succeeds. An IAM policy check (`gcloud ... get-iam-policy`) shows `gh-dispatch` has no project-level role and is the only principal on `github-app-key`. A simulated 100% budget message flips `paused`. Unit tests (Pulumi mocks) assert the same properties before apply.
 
 ### P1-05 GitHub App `globalhost-ai`
-Created via the manifest flow from a script in `infra/github-app/`. Permissions per ARCHITECTURE §5.1 (no workflows/admin). Private key → Secret Manager. Installed on `anlinguist/numu-know` only.
-**AC:** a script mints a read-only token (contents/issues/PRs read) and a write token. The write token can't push to `.github/workflows/*` (verified: 403) and the read token can't push at all.
+Created via the manifest flow from `infra/github-app/src/create-app.ts`. Permissions per ARCHITECTURE §5.1 (no workflows/admin); private App; webhook inactive. Private key piped straight from GitHub's response into Secret Manager `github-app-key` (never on disk or printed). Installed on `anlinguist/numu-know` only.
+**AC:** `infra/github-app/src/token.ts` mints a read-only token (contents/issues/PRs read) and a write token. The write token can't push to `.github/workflows/*` (verified: 403) and the read token can't push at all (commands in `infra/github-app/README.md`).
 
 ### P1-06 Runner harness on Managed Agents (planner & builder roles)
 Per ADR-0011 (accepted), `packages/runner` is session-driving code behind a `RunnerHost` interface. There is no container image. It covers:

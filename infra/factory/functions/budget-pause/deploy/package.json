@@ -1,0 +1,13 @@
+{
+  "name": "globalhost-budget-pause",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": "24"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "5.0.5"
+  }
+}
