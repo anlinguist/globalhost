@@ -68,3 +68,11 @@ export {
   type TemplateRef,
   type VerifyStep,
 } from "./profile.js";
+export {
+  evaluatePathPolicy,
+  globMatch,
+  pathPolicyAllows,
+  type PathPolicyInput,
+  type PathPolicyResult,
+} from "./path-policy.js";
+export { gate, START_LABELS, type GateDecision, type GateEvent, type StartLabel } from "./trust-gate.js";

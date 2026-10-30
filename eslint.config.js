@@ -22,7 +22,7 @@ const UNCHECKABLE_LOAD_MESSAGE =
 
 export default tseslint.config(
   // skills/security-audit is vendored upstream code (ADR-0012), kept byte-for-byte.
-  { ignores: ["**/node_modules/", "**/dist/", "**/coverage/", "**/.turbo/", "skills/security-audit/", "spikes/**/.out/"] },
+  { ignores: ["**/node_modules/", "**/dist/", "**/coverage/", "**/.turbo/", "skills/security-audit/", "spikes/**/.out/", ".claude/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

@@ -69,6 +69,9 @@ importers:
       '@globalhost/core':
         specifier: workspace:*
         version: link:../core
+      '@globalhost/dispatch':
+        specifier: workspace:*
+        version: link:../dispatch
       '@globalhost/profile-web-app':
         specifier: workspace:*
         version: link:../profiles/web-app
@@ -91,6 +94,18 @@ importers:
       eslint:
         specifier: 10.13.0
         version: 10.13.0
+
+  packages/dispatch:
+    dependencies:
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../core
+      '@globalhost/runner':
+        specifier: workspace:*
+        version: link:../runner
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/profiles/web-app:
     dependencies:
