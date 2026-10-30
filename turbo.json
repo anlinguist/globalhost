@@ -16,6 +16,10 @@
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/schemas/**", "$TURBO_ROOT$/eslint.config.js"]
     },
+    "@globalhost/profile-web-app#test": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/skills/web-app/**"]
+    },
     "@globalhost/cli#test": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/ONBOARDING.md"]

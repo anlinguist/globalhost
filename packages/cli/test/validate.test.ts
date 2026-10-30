@@ -3,27 +3,11 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRegistry, z, type AdapterDescriptor, type ProfileDescriptor } from "@globalhost/core";
-import { run, type FileIo } from "../src/main.js";
+import { createRegistry } from "@globalhost/core";
+import { defaultDeps, run, type FileIo } from "../src/main.js";
 
-// Fake descriptors registered under the real ids, until P1-03 brings the real web-app profile and
-// cloud-build-trigger adapter (whose AC repeats this test with them).
-const fakeWebApp: ProfileDescriptor = {
-  id: "web-app",
-  configSchema: z.strictObject({
-    port: z.number().int(),
-    routes: z.array(z.string()),
-    previewEnv: z.record(z.string(), z.string()),
-    seed: z.string(),
-  }),
-  preview: { kinds: ["url", "screenshots"], outputs: ["url"], inputs: [] },
-  release: { allowedAdapters: ["cloud-build-trigger"] },
-};
-const fakeCloudBuildTrigger: AdapterDescriptor = {
-  id: "cloud-build-trigger",
-  configSchema: z.strictObject({ project: z.string(), trigger: z.string() }),
-};
-const registry = createRegistry([fakeWebApp], [fakeCloudBuildTrigger]);
+// The CLI's real registry: the web-app profile and cloud-build-trigger adapter packages (P1-03).
+const { registry } = defaultDeps();
 
 const repoRoot = new URL("../../../", import.meta.url);
 let dir: string;
@@ -56,14 +40,34 @@ function onboardingExample(): string {
 }
 
 describe("globalhost validate", () => {
-  it("accepts the ONBOARDING §4 example with web-app and cloud-build-trigger registered (exit 0)", () => {
+  it("accepts the ONBOARDING §4 example with the real web-app profile and cloud-build-trigger adapter (exit 0)", () => {
     const path = file("onboarding.yaml", onboardingExample());
-    expect(run(["validate", path], { registry })).toEqual({ code: 0, stdout: `${path}: valid\n`, stderr: "" });
-    expect(run(["validate", path, "--json"], { registry })).toEqual({ code: 0, stdout: `{"ok":true,"errors":[]}\n`, stderr: "" });
+    expect(run(["validate", path])).toEqual({ code: 0, stdout: `${path}: valid\n`, stderr: "" });
+    expect(run(["validate", path, "--json"])).toEqual({ code: 0, stdout: `{"ok":true,"errors":[]}\n`, stderr: "" });
   });
 
-  it("fails the ONBOARDING example with the default (empty) registry: unknown profile and adapter", () => {
-    const result = run(["validate", file("onboarding2.yaml", onboardingExample()), "--json"]);
+  it("checks the ONBOARDING example's part and adapter config against the real schemas", () => {
+    const example = onboardingExample();
+    const withInstall = example.replace('seed: "pnpm seed:dev"', 'seed: "pnpm seed:dev"\n      install: "npm ci --legacy-peer-deps"');
+    expect(withInstall).not.toBe(example);
+    expect(run(["validate", file("onboarding-install.yaml", withInstall)]).code).toBe(0);
+
+    const bad = withInstall
+      .replace("port: 8080", "port: 0")
+      .replace('routes: ["/", "/stories"', 'routes: ["stories"')
+      .replace("trigger: numu-know-main", 'trigger: "<trigger-name>"');
+    const result = run(["validate", file("onboarding-bad.yaml", bad), "--json"]);
+    expect(result.code).toBe(1);
+    const { errors } = JSON.parse(result.stdout) as { errors: Array<{ path: string; code: string }> };
+    expect(errors.map((e) => [e.path, e.code])).toEqual([
+      ["parts.web.config.port", "profile_config"],
+      ["parts.web.config.routes[0]", "profile_config"],
+      ["parts.web.release[0].config.trigger", "adapter_config"],
+    ]);
+  });
+
+  it("fails the ONBOARDING example with an empty registry: unknown profile and adapter", () => {
+    const result = run(["validate", file("onboarding2.yaml", onboardingExample()), "--json"], { registry: createRegistry([], []) });
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual({
       ok: false,

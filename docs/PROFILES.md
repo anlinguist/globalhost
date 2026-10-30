@@ -11,14 +11,21 @@ A **part** is a deployable unit in a product repo (`apps/web`, `apps/extension`,
 Profiles are npm packages under `packages/profiles/<id>` exporting a `Profile` object. The core discovers them by id from `factory.yaml`.
 
 ```ts
-// packages/core/src/profile.ts
-export interface Profile<Cfg = unknown> {
+// packages/core/src/profile.ts (abridged; the file is authoritative)
+export interface RepoSnapshot {
+  readonly files: readonly string[];                   // repo-relative file paths at one commit
+  readFile(path: string): Promise<string | undefined>;
+}
+export interface Detection<Cfg> { confidence: number; evidence: string[]; suggestedConfig: Cfg }
+export interface PartCtx<Cfg, D> { name: string; path: string; config: Cfg; detection: D }
+
+export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg>> extends ProfileDescriptor {
   id: string;                         // "web-app", "chrome-extension", "service", "npm-package", ...
   version: string;
-  configSchema: z.ZodType<Cfg>;       // validates parts[].config in factory.yaml
+  configSchema: z.ZodType<Cfg>;       // validates parts[].config in factory.yaml (synchronous)
 
   /** Assessment: how confident is it that this path is this kind of part? */
-  detect(ctx: RepoSnapshot, path: string): Promise<Detection>;  // {confidence, evidence[], suggestedConfig}
+  detect(repo: RepoSnapshot, path: string): Promise<D>;  // profiles may extend Detection with typed facts
 
   /** Files rendered into the product repo by `globalhost install` (and new-project template). */
   scaffold: {
@@ -27,16 +34,23 @@ export interface Profile<Cfg = unknown> {
   };
 
   /** Mounted into every agent run touching this part. */
-  skills: SkillRef[];                 // e.g. skills/web-app/SKILL.md
+  skills: SkillRef[];                 // e.g. { name: "web-app", path: "skills/web-app" }
+
+  /** The `limited` network environment agent runs use (ADR-0011); package registries are always allowed. */
+  environment: { name: string; allowedHosts: string[] };
+
+  /** Repo-specific text for the run's task message: commands to install, verify and smoke-test.
+   *  Built from owner-authored config and fixed strings only, never repo content. */
+  guidance(part: PartCtx<Cfg, D>): string;
 
   /** Verification contributed to CI; fails closed. */
   verify: {
-    steps: VerifyStep[];              // {id, run, needs?, artifacts?, image?}
+    steps(part: PartCtx<Cfg, D>): VerifyStep[];  // {id, run, env?, needs?, artifacts?, image?}
     localSubset: string[];            // step ids the runner executes before publishing
   };
 
   /** What the owner receives on the PR. */
-  preview: PreviewContract;
+  preview: PreviewContract<Cfg>;
 
   /** How it reaches users. Adapter is chosen per part in factory.yaml. */
   release: {
@@ -44,21 +58,22 @@ export interface Profile<Cfg = unknown> {
     allowedAdapters: string[];
   };
 
-  /** Checks that turn into needs:owner-approval or hard failures. */
-  guardrails: Guardrail[];
+  guardrails: {
+    immutable: string[];              // part-relative globs agents can never change (Phase 1)
+    checks: Guardrail[];              // evaluated checks below; Phase 2, empty until then
+  };
 
-  /** Optional reusable Pulumi component for hosted parts. */
-  infra?: { component: string; inputs: (cfg: Cfg, env: Env) => Record<string, unknown> };
+  // Later: infra?: { component: string; inputs: (cfg: Cfg, env: Env) => Record<string, unknown> };
 }
 
-export interface PreviewContract {
-  kind: Array<"url" | "artifact" | "screenshots" | "gif" | "api-docs">;
+export interface PreviewContract<Cfg> {
+  kinds: Array<"url" | "artifact" | "screenshots" | "gif" | "api-docs">;
   /** Output names other parts can bind to (composite previews), e.g. ["url"] */
   outputs: string[];
   /** Input names this part accepts as bindings, e.g. ["API_URL"]; factory.yaml may bind only these */
   inputs: string[];
-  build(ctx: PreviewCtx): Promise<PreviewResult>;   // runs in PR workflow
-  teardown(ctx: PreviewCtx): Promise<void>;
+  build(ctx: PreviewCtx<Cfg>): Promise<PreviewResult>;   // runs in PR workflow
+  teardown(ctx: PreviewCtx<Cfg>): Promise<void>;
 }
 
 export interface Guardrail {
@@ -68,6 +83,8 @@ export interface Guardrail {
   approvalLabel: string;               // e.g. "approved:permissions"
 }
 ```
+
+**How the runner uses a profile for a run** (P1-06): build the registry the same way the CLI does (`createRegistry<Profile, DeployAdapter>([webApp, ...], [...])`), take the part from the validated `factory.yaml`, then `profile = registry.profile(part.profile)`, `detection = await profile.detect(snapshot, part.path)`, and `profile.guidance({ name, path, config: part.config, detection })` → `startRun({ guidance })`. The session's environment is `profile.environment`, and `profile.skills` are mounted. Detection facts that reach guidance come from fixed sets (framework, package manager), so the guidance carries no untrusted repo text.
 
 Rules:
 - **Core never imports a profile.** Enforced by a lint rule (`no-restricted-imports`) in `packages/core`.
@@ -106,7 +123,7 @@ Artifact hosting for previews:
 Release and hosted-preview mechanics are adapters, so a part can keep its existing target.
 
 ```ts
-export interface DeployAdapter<Cfg = unknown> {
+export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
   id: string;
   configSchema: z.ZodType<Cfg>;
   capabilities: { preview: boolean; canary: boolean; rollback: boolean; asyncGate: boolean };
@@ -115,7 +132,11 @@ export interface DeployAdapter<Cfg = unknown> {
   status(handle: ReleaseHandle): Promise<ReleaseStatus>;   // polled by watcher for async gates
   rollback?(handle: ReleaseHandle): Promise<void>;
 }
+// ReleaseHandle = { adapter, sha, data: Record<string, string> }: plain JSON recorded on GitHub, no credentials.
+// ReleaseStatus = { state: pending | running | succeeded | failed | cancelled | unknown, detail, url? }.
 ```
+
+Adapters that call cloud APIs take their credentials as an injected provider (`createXAdapter({ accessToken })`); the instance the CLI registers for validation has none.
 
 | Adapter | Use | Notes |
 |---|---|---|
@@ -146,7 +167,9 @@ A part may list several release targets (e.g. an extension shipping to Chrome, E
 | Release | default `cloud-run` (canary: 10% tagged revision → watch error rate 10 min → 100%, else roll back); adopted repos: `cloud-build-trigger` / `cloud-run-existing` |
 | Guardrails | `visual-baseline` (baseline image changes need `approved:visual`), `new-dependency`, `env-surface` (new `NEXT_PUBLIC_*`/public env vars need approval), `auth-config` (changes to auth/middleware paths) |
 | Data | previews use the dev project's DB/Firestore with seed data |
-| Config | `routes` to screenshot, `port`, `buildArgs`, `previewEnv`, `seed` command |
+| Config | `routes` to screenshot, `port`, `previewEnv` (non-secret build/runtime env), `seed` command, `install` (overrides the lockfile-derived install, e.g. `npm ci --legacy-peer-deps` for numu-know); `buildArgs` later |
+
+**v0 (P1-03)** implements detect, the skill, verify (install, typecheck, lint, test, build, Playwright smoke with screenshots), guidance and the preview contract's shape. `preview.build`/`teardown` throw until P1-11. Release allows only `cloud-build-trigger` until `cloud-run` exists. Guardrails: only `immutable` (`.env`, `.env.*`); the checks above arrive in Phase 2.
 
 ### 4.2 `chrome-extension` (MV3; multi-store capable)
 

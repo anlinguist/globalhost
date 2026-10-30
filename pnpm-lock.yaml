@@ -55,11 +55,23 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
-  packages/cli:
+  packages/adapters/cloud-build-trigger:
     dependencies:
       '@globalhost/core':
         specifier: workspace:*
+        version: link:../../core
+
+  packages/cli:
+    dependencies:
+      '@globalhost/adapter-cloud-build-trigger':
+        specifier: workspace:*
+        version: link:../adapters/cloud-build-trigger
+      '@globalhost/core':
+        specifier: workspace:*
         version: link:../core
+      '@globalhost/profile-web-app':
+        specifier: workspace:*
+        version: link:../profiles/web-app
       '@globalhost/roles':
         specifier: workspace:*
         version: link:../roles
@@ -79,6 +91,12 @@ importers:
       eslint:
         specifier: 10.13.0
         version: 10.13.0
+
+  packages/profiles/web-app:
+    dependencies:
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../../core
 
   packages/roles: {}
 

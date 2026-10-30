@@ -19,9 +19,15 @@ export interface AdapterDescriptor {
   configSchema: z.ZodType;
 }
 
-export interface Registry {
-  profile(id: string): ProfileDescriptor | undefined;
-  adapter(id: string): AdapterDescriptor | undefined;
+/**
+ * Generic so callers that registered full `Profile`/`DeployAdapter` objects (the runner, the CLI) get them back
+ * typed; the validator only needs the descriptor fields.
+ */
+export interface Registry<P extends ProfileDescriptor = ProfileDescriptor, A extends AdapterDescriptor = AdapterDescriptor> {
+  profile(id: string): P | undefined;
+  adapter(id: string): A | undefined;
+  profiles(): P[];
+  adapters(): A[];
 }
 
 function checkId(kind: string, id: unknown): void {
@@ -40,9 +46,12 @@ function checkNames(what: string, names: readonly string[], pattern: RegExp): vo
  * Builds the registry the validator checks profile and adapter ids against. Core never imports a profile or
  * adapter (CLAUDE.md #1); the caller (the CLI) passes them in. Throws on duplicate or malformed ids.
  */
-export function createRegistry(profiles: readonly ProfileDescriptor[], adapters: readonly AdapterDescriptor[]): Registry {
-  const profileMap = new Map<string, ProfileDescriptor>();
-  const adapterMap = new Map<string, AdapterDescriptor>();
+export function createRegistry<P extends ProfileDescriptor, A extends AdapterDescriptor>(
+  profiles: readonly P[],
+  adapters: readonly A[],
+): Registry<P, A> {
+  const profileMap = new Map<string, P>();
+  const adapterMap = new Map<string, A>();
   for (const p of profiles) {
     checkId("profile", p.id);
     if (profileMap.has(p.id)) throw new Error(`duplicate profile id ${JSON.stringify(p.id)}`);
@@ -60,5 +69,7 @@ export function createRegistry(profiles: readonly ProfileDescriptor[], adapters:
   return {
     profile: (id) => profileMap.get(id),
     adapter: (id) => adapterMap.get(id),
+    profiles: () => [...profileMap.values()],
+    adapters: () => [...adapterMap.values()],
   };
 }

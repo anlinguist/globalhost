@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { parseArgs } from "node:util";
+import { cloudBuildTrigger } from "@globalhost/adapter-cloud-build-trigger";
 import {
   createRegistry,
   MAX_FACTORY_YAML_BYTES,
@@ -8,6 +9,7 @@ import {
   type FactoryYamlError,
   type Registry,
 } from "@globalhost/core";
+import { webApp } from "@globalhost/profile-web-app";
 
 const USAGE = `Usage: globalhost <command> [options]
 
@@ -47,14 +49,14 @@ export interface FileIo {
 export interface CliDeps {
   /**
    * Profiles and adapters `validate` checks against. The CLI, not core, is where they are imported
-   * (FACTORY-YAML §7); empty until P1-03 registers the first ones.
+   * (FACTORY-YAML §7). Adding one is a package plus an entry in defaultDeps(); core doesn't change.
    */
   registry: Registry;
   io: FileIo;
 }
 
 export function defaultDeps(): CliDeps {
-  return { registry: createRegistry([], []), io: fs };
+  return { registry: createRegistry([webApp], [cloudBuildTrigger]), io: fs };
 }
 
 function readVersion(): string {

@@ -99,7 +99,7 @@ parts:
     preview: { enabled: true }
     release:
       - adapter: cloud-build-trigger
-        config: { project: numu-know, trigger: "<trigger-name>" }
+        config: { project: numu-know, trigger: numu-know-main }   # trigger name or id; region defaults to global
     dependsOn: []
 
 limits:
