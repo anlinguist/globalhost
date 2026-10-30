@@ -1,0 +1,25 @@
+# Composite preview: web and ext bind to the api part's preview outputs (PROFILES §2).
+version: 1
+product: composite
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: composite-dev, region: europe-west1 }
+parts:
+  api:
+    path: apps/api
+    profile: fake-api
+    config: { entry: src/server.ts }
+  web:
+    path: apps/web
+    profile: fake-web
+    dependsOn: [api]
+    preview:
+      bindings:
+        API_URL: "${parts.api.preview.url}"
+  ext:
+    path: apps/extension
+    profile: fake-ext
+    dependsOn: [api]
+    preview:
+      bindings: { API_URL: "${parts.api.preview.docsUrl}" }

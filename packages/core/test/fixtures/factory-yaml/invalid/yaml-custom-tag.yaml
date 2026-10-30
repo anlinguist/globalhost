@@ -1,0 +1,7 @@
+# A custom tag on a collection.
+# expect: <root> yaml_tag
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts: !include parts.yaml

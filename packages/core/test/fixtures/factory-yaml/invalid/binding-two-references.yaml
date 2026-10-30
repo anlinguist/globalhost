@@ -1,0 +1,19 @@
+# Two references (or any other ${...} form) are not one reference.
+# expect: parts.web.preview.bindings.API_URL binding_syntax
+# expect: parts.web.preview.bindings.AUTH_URL binding_syntax
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api: { path: api, profile: fake-api, config: { entry: main.ts } }
+  web:
+    path: web
+    profile: fake-web
+    dependsOn: [api]
+    preview:
+      bindings:
+        API_URL: "${parts.api.preview.url}${parts.api.preview.docsUrl}"
+        AUTH_URL: "${env.SECRET}"

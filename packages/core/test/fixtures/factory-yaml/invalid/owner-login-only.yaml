@@ -1,0 +1,12 @@
+# Owners are trusted by immutable id; a login alone can be renamed and re-registered.
+# expect: owners[0].id missing_key
+# expect: owners[1] invalid_type
+version: 1
+product: sample
+owners:
+  - { login: octo-owner }
+  - octo-other
+parts:
+  app:
+    path: .
+    profile: fake-ext

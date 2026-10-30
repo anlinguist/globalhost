@@ -1,0 +1,11 @@
+# baseBranch defaults to defaultBranch.
+version: 1
+product: trunky
+owners:
+  - { login: octo-owner, id: 1001 }
+git:
+  defaultBranch: trunk
+parts:
+  app:
+    path: .
+    profile: fake-ext

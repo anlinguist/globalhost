@@ -1,0 +1,16 @@
+# A binding can only set an input the profile declares, not NODE_OPTIONS.
+# expect: parts.web.preview.bindings.NODE_OPTIONS binding_input_unknown
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api: { path: api, profile: fake-api, config: { entry: main.ts } }
+  web:
+    path: web
+    profile: fake-web
+    dependsOn: [api]
+    preview:
+      bindings: { NODE_OPTIONS: "${parts.api.preview.url}" }

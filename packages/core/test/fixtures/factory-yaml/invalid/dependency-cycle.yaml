@@ -1,0 +1,11 @@
+# A three-part cycle, reported once at its alphabetically first part.
+# expect: parts.alpha.dependsOn dependency_cycle
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  alpha: { path: a, profile: fake-ext, dependsOn: [gamma] }
+  beta: { path: b, profile: fake-ext, dependsOn: [alpha] }
+  gamma: { path: c, profile: fake-ext, dependsOn: [beta] }
+  delta: { path: d, profile: fake-ext, dependsOn: [alpha] }

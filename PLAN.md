@@ -47,7 +47,7 @@ pnpm + Turborepo, TypeScript strict, Node 24, vitest, eslint (with `no-restricte
 Vendor `skills/security-audit`; `.github/workflows/security-audit.yml` runs it on demand (`workflow_dispatch`) on `main` via `claude -p` (quick profile, $15 cap). The agent job holds no write credentials. Reports go to a private bucket, and a separate no-checkout job files them as issues in `globalhost-ops`. GCP setup lives in `infra/bootstrap/security-audit.sh` (moves to Pulumi in P1-04).
 **AC:** zizmor (auditor persona) and actionlint pass. Owner setup is done: bootstrap script, repo variables, `security-audit` and `security-audit-publish` environments restricted to `main`, Anthropic WIF connected (four repo variables), and the `globalhost-ops` token value set. A `workflow_dispatch` run on `main` files an issue in `globalhost-ops`, and neither the Actions log nor the artifacts contain report text. The audit job can't use the publisher SA (its OIDC subject is rejected).
 
-### P1-02 `factory.yaml` schema + validator
+### P1-02 `factory.yaml` schema + validator ✅ (2026-10-30)
 Implement docs/FACTORY-YAML.md (rationale in ADR-0013) in `packages/core`: `parseFactoryYaml`, `validateFactoryConfig`, `createRegistry`, the `ProfileDescriptor`/`AdapterDescriptor`/`Registry` types and the normalized `FactoryConfig` type. Add `schemas/factory.schema.json` and `globalhost validate [path] [--json]`. New dependencies are `zod` 4.6.7 and `yaml` 2.9.1 in core, exact pins, both with no dependencies of their own.
 **AC:**
 - **Fixtures** live in `packages/core/test/fixtures/factory-yaml/`, with fake profiles and adapters only.

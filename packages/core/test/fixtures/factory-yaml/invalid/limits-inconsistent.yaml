@@ -1,0 +1,11 @@
+# perRunUsd above dailyUsd.
+# expect: limits.perRunUsd limits_inconsistent
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+limits: { perRunUsd: 30, dailyUsd: 20 }

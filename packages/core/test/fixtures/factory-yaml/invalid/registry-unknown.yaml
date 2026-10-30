@@ -1,0 +1,19 @@
+# Ids not in the registry, and an adapter the profile doesn't allow.
+# expect: parts.api.profile unknown_profile
+# expect: parts.app.release[0].adapter unknown_adapter
+# expect: parts.app.release[1].adapter adapter_not_allowed
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: app
+    profile: fake-ext
+    release:
+      - adapter: fake-ftp
+      - adapter: fake-run
+        config: { service: x }
+  api:
+    path: api
+    profile: fake-flask

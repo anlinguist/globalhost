@@ -1,0 +1,12 @@
+# Listing a baseline pattern is redundant but allowed; the normalized lists are deduplicated, baseline first.
+version: 1
+product: locked
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+guardrails:
+  loadBearing: ["src/auth/**", "src/auth/**", "*.config.ts"]
+  immutable: [".github/**", "migrations/**", "**/secrets?.json", "factory.yaml"]

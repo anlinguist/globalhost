@@ -1,0 +1,12 @@
+# Binding keys must match the input-name pattern, which rejects __proto__.
+# expect: parts.web.preview.bindings.__proto__ invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  web:
+    path: web
+    profile: fake-web
+    preview:
+      bindings: { __proto__: "${parts.api.preview.url}" }

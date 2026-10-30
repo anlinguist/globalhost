@@ -1,0 +1,16 @@
+# The output must be one the provider's profile declares.
+# expect: parts.web.preview.bindings.API_URL binding_output_unknown
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api: { path: api, profile: fake-api, config: { entry: main.ts } }
+  web:
+    path: web
+    profile: fake-web
+    dependsOn: [api]
+    preview:
+      bindings: { API_URL: "${parts.api.preview.secretUrl}" }

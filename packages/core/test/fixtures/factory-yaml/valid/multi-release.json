@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "product": "shipper",
+  "owners": [
+    {
+      "login": "octo-owner",
+      "id": 1001
+    },
+    {
+      "login": "Second-Owner",
+      "id": 2002
+    }
+  ],
+  "autonomy": "L1",
+  "project": null,
+  "git": {
+    "defaultBranch": "main",
+    "baseBranch": "main"
+  },
+  "environments": {
+    "dev": {
+      "gcpProject": "shipper-dev",
+      "region": "us-east4"
+    },
+    "prod": {
+      "gcpProject": "shipper-prod",
+      "region": "us-east4"
+    },
+    "staging": {
+      "gcpProject": "shipper-staging",
+      "region": "us-east4"
+    }
+  },
+  "parts": {
+    "api": {
+      "path": "services/api",
+      "profile": "fake-api",
+      "config": {
+        "entry": "main.go"
+      },
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [
+        {
+          "adapter": "fake-deploy",
+          "config": {
+            "project": "shipper-prod",
+            "trigger": "deploy-api"
+          }
+        },
+        {
+          "adapter": "fake-run",
+          "config": {
+            "service": "api",
+            "region": "us-central1"
+          }
+        }
+      ],
+      "dependsOn": []
+    }
+  },
+  "limits": {
+    "maxConcurrentBuilders": 1,
+    "perRunUsd": 4,
+    "perRunMinutes": 45,
+    "dailyUsd": 20
+  },
+  "guardrails": {
+    "loadBearing": [],
+    "immutable": [
+      ".github/**",
+      "factory.yaml",
+      "CODEOWNERS",
+      "docs/CODEOWNERS"
+    ]
+  },
+  "autoMerge": [],
+  "notifications": {
+    "blocking": "push",
+    "previews": "digest",
+    "routine": "digest"
+  }
+}

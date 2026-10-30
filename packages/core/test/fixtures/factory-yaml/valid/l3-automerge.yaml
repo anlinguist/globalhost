@@ -1,0 +1,11 @@
+# autoMerge is allowed at L3.
+version: 1
+product: auto
+owners:
+  - { login: octo-owner, id: 1001 }
+autonomy: L3
+autoMerge: [renovate:patch, renovate:minor-dev, lint-fix]
+parts:
+  lib:
+    path: .
+    profile: fake-ext

@@ -1,0 +1,12 @@
+# No negation: a product can't carve holes in the immutable baseline.
+# expect: guardrails.immutable[0] invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+guardrails:
+  immutable: ["!.github/workflows/**"]

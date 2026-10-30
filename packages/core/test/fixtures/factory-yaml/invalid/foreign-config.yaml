@@ -1,0 +1,23 @@
+# Part and adapter configs fail their (fake) schemas; nested issues keep their own paths.
+# expect: parts.api.config.entry profile_config
+# expect: parts.api.config.extra profile_config
+# expect: parts.api.release[0].config.trigger adapter_config
+# expect: parts.web.config.port profile_config
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api:
+    path: api
+    profile: fake-api
+    config: { extra: 1 }
+    release:
+      - adapter: fake-deploy
+        config: { project: p }
+  web:
+    path: web
+    profile: fake-web
+    config: { port: 70000 }
