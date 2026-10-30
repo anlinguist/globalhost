@@ -1,0 +1,11 @@
+name: globalhost-factory
+description: globalhost factory infrastructure in GCP project globalhost-factory (PLAN P1-04)
+runtime:
+  name: nodejs
+  options:
+    # Pulumi runs the compiled ESM output (`pnpm build` first); no ts-node at deploy time.
+    typescript: false
+main: dist/src/index.js
+backend:
+  # Created by infra/bootstrap/pulumi-state.sh, not by this program (ADR-0008).
+  url: gs://globalhost-pulumi-state

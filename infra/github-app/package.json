@@ -1,0 +1,15 @@
+{
+  "name": "@globalhost/infra-github-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "create-app": "node src/create-app.ts",
+    "token": "node src/token.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

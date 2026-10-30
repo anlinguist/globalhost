@@ -1,0 +1,16 @@
+# Stack `prod`. `pulumi stack init` adds `secretsprovider` and `encryptedkey` here (both safe to commit:
+# the data key is encrypted with the KMS key and useless without it). Identifiers only; no secret values.
+# billingAccount is set by the owner with `pulumi config set --secret`, so it is stored encrypted.
+config:
+  gcp:project: globalhost-factory
+  gcp:region: us-central1
+  # Budgets API calls need a quota project when run with user credentials.
+  gcp:billingProject: globalhost-factory
+  gcp:userProjectOverride: "true"
+  globalhost-factory:githubOwnerId: "47403803"
+  # Product repos whose `globalhost` environment may impersonate sa:gh-dispatch.
+  # Pinned by immutable repository ID; `ref` must be the repo's default branch.
+  globalhost-factory:dispatchRepos:
+    - name: anlinguist/numu-know
+      id: "338675328"
+      defaultBranch: main
