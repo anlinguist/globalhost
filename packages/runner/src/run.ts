@@ -5,6 +5,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
 import { createRepoBundle, inspectResultBundle, type RepoBundle } from "./git.js";
+import { ensureSkill } from "./skills.js";
 import type { GitHubReader } from "./github.js";
 import {
   countMessages,
@@ -57,6 +58,8 @@ export interface StartSpec {
   /** Owners by immutable GitHub user ID (ADR-0013). Defaults to the repo's owner account. */
   ownerIds?: number[];
   guidance?: string;
+  /** Absolute skill directories (skills/<name>) from the parts' profiles; attached to the agent, pinned. */
+  skillDirs?: string[];
   approvedPlan?: string;
 }
 
@@ -92,7 +95,9 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
   const bundle = await (deps.cloneRepo ?? createRepoBundle)(repo.clone_url, repo.default_branch, deps.githubToken);
   try {
     deps.log(`base ${repo.default_branch}@${bundle.baseSha.slice(0, 12)}`);
-    const def = roleDefinition(spec.role, spec.model);
+    const skills = [];
+    for (const dir of spec.skillDirs ?? []) skills.push(await ensureSkill(deps.api, dir));
+    const def = roleDefinition(spec.role, spec.model, skills);
     const agent = await ensureAgent(deps.api, def, definitionHash(def));
     const environmentId = await ensureEnvironment(deps.api, spec.environment ?? DEFAULT_ENVIRONMENT);
     const fileId = await deps.api.uploadFile(bundle.bundlePath);

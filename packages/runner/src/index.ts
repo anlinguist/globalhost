@@ -6,3 +6,4 @@ export * from "./managed-agents.js";
 export * from "./prompt.js";
 export * from "./records.js";
 export * from "./run.js";
+export * from "./skills.js";

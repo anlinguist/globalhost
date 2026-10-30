@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { cloudBuildTrigger } from "@globalhost/adapter-cloud-build-trigger";
 import {
@@ -60,6 +62,15 @@ export interface CliDeps {
 /** Every profile and adapter the factory knows. Adding one is a package plus an entry here; core doesn't change. */
 export const PROFILES: readonly Profile[] = [webApp];
 const ADAPTERS: readonly DeployAdapter[] = [cloudBuildTrigger];
+
+/** The factory checkout this CLI runs from (src/ and dist/ are both three levels down). */
+const FACTORY_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+
+/**
+ * Every registered profile's skill directory. Agents always carry all of them, so the agent definition is the
+ * same for every caller; a skill loads only when its description fits the task.
+ */
+export const SKILL_DIRS: readonly string[] = [...new Set(PROFILES.flatMap((p) => p.skills.map((s) => resolve(FACTORY_ROOT, s.path))))];
 
 export function defaultDeps(): CliDeps {
   return { registry: createRegistry(PROFILES, ADAPTERS), io: fs };

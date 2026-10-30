@@ -10,6 +10,7 @@ import type {
   SessionEvent,
   SessionInfo,
   SessionSpec,
+  SkillInfo,
 } from "../src/managed-agents.js";
 
 export class FakeApi implements ManagedAgentsApi {
@@ -27,16 +28,29 @@ export class FakeApi implements ManagedAgentsApi {
   interrupted = 0;
   private nextId = 1;
 
+  skills: (SkillInfo & { displayName: string; files: string[] })[] = [];
+
+  async findSkill(displayName: string) {
+    return this.skills.find((s) => s.displayName === displayName);
+  }
+  async createSkill(displayName: string, files: readonly { path: string; data: Buffer }[]) {
+    const s = { id: `skill_${this.nextId++}`, latestVersion: `skillver_${this.nextId++}`, displayName, files: files.map((f) => f.path) };
+    this.skills.push(s);
+    return s;
+  }
   async findAgent(name: string) {
     return this.agents.find((a) => a.name === name);
   }
+  agentSkills = new Map<string, RoleDefinition["skills"]>();
   async createAgent(def: RoleDefinition, metadata: Record<string, string>) {
     const a = { id: `agent_${this.nextId++}`, version: 1, name: def.agentName, metadata };
+    this.agentSkills.set(a.id, def.skills);
     this.agents.push(a);
     return a;
   }
-  async updateAgent(id: string, _def: RoleDefinition, metadata: Record<string, string>) {
+  async updateAgent(id: string, def: RoleDefinition, metadata: Record<string, string>) {
     const a = this.agents.find((x) => x.id === id)!;
+    this.agentSkills.set(id, def.skills);
     a.version++;
     a.metadata = metadata;
     return { ...a };
