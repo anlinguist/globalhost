@@ -2,7 +2,8 @@
 // written by the agent, so it's untrusted: it's parsed strictly, capped, and only ever shown as data.
 import { z } from "zod";
 
-const text = (max: number) => z.string().max(max);
+// Agent-written text is clipped, not rejected: one over-long check name shouldn't fail a run that did the work.
+const text = (max: number) => z.string().transform((s) => (s.length > max ? `${s.slice(0, max - 1)}…` : s));
 
 export const AgentReportSchema = z
   .object({
