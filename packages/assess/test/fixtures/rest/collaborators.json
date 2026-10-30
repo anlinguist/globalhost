@@ -1,0 +1,7 @@
+{
+  "_source": "Hand-written in the shape of an authenticated GET /repos/{owner}/{repo}/collaborators (REST 2022-11-28); the recorded anonymous call returns 401 (collaborators-401.json)",
+  "body": [
+    { "login": "anlinguist", "id": 47403803, "type": "User", "site_admin": false, "role_name": "admin", "permissions": { "admin": true, "push": true, "pull": true } },
+    { "login": "helper-dev", "id": 5550001, "type": "User", "site_admin": false, "role_name": "write", "permissions": { "admin": false, "push": true, "pull": true } }
+  ]
+}

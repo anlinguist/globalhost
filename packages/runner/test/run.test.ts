@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { GitHubReader } from "../src/github.js";
 import { RunRecordSchema } from "../src/records.js";
-import { decideStatus, resumeRun, startRun, type RunDeps } from "../src/run.js";
+import { decideStatus, resumeRun, startAssessment, startRun, type RunDeps } from "../src/run.js";
 import { FakeApi } from "./fake-api.js";
 
 const OWNER = { login: "owner", id: 47403803 };
@@ -170,6 +170,78 @@ describe("startRun (builder)", () => {
     expect(record.status).toBe("failed");
     expect(record.report).toBeUndefined();
     expect(record.problems).toContain("report.json is not valid JSON in the expected shape");
+  });
+});
+
+describe("startAssessment", () => {
+  const assessSpec = (outDir: string) => ({
+    runId: "assess-1",
+    repo: "anlinguist/demo",
+    budgetUsd: 3,
+    timeoutMinutes: 5,
+    outDir,
+    facts: '<untrusted source="assessment-facts">\n{"branches": []}\n</untrusted>',
+    ownerNotes: "- Decide what to do with `staging`.",
+  });
+
+  function assessorSession(api: FakeApi, extra: { filename: string; data: string }[] = []) {
+    api.onSend = () => {
+      const id = [...api.sessions.keys()].at(-1)!;
+      const at = new Date().toISOString();
+      const files = [
+        { filename: "report.json", data: JSON.stringify({ outcome: "done", summary: "Assessed.", readiness: [{ id: "build", points: 15, evidence: "ok" }] }) },
+        { filename: "assessment.md", data: "## Stack & parts\n\nA Next.js app.\n" },
+        ...extra,
+      ];
+      for (const [i, f] of files.entries()) {
+        api.outputs.push({ id: `a${i}`, filename: f.filename, sizeBytes: f.data.length, createdAt: at, data: Buffer.from(f.data) });
+      }
+      api.finishTurn(id, "end_turn", 120);
+    };
+  }
+
+  it("runs the assessor with no issue, collects assessment.md, and never fetches a bundle", async () => {
+    const api = new FakeApi();
+    assessorSession(api, [
+      { filename: "factory.yaml", data: "version: 1\n" },
+      { filename: "result.bundle", data: "not for assessors" },
+      { filename: "plan.md", data: "not for assessors" },
+    ]);
+    const outDir = join(dir, "out");
+    const record = await startAssessment(assessSpec(outDir), deps(api));
+
+    expect(record).toMatchObject({ role: "assessor", issue: null, status: "succeeded", costUsd: 1.2 });
+    expect(record.outputs).toEqual({ assessmentBytes: 33, factoryYamlBytes: 11 });
+    expect(readFileSync(join(outDir, "assessment.md"), "utf8")).toContain("A Next.js app.");
+    expect(() => readFileSync(join(outDir, "result.bundle"))).toThrow();
+    expect(() => readFileSync(join(outDir, "plan.md"))).toThrow();
+    expect(RunRecordSchema.parse(JSON.parse(readFileSync(join(outDir, "run.json"), "utf8")))).toEqual(record);
+
+    const session = [...api.sessions.values()][0]!;
+    expect(session.metadata).toMatchObject({ globalhost_role: "assessor", globalhost_issue: "" });
+    expect(api.agents.map((a) => a.name)).toEqual(["globalhost-assessor"]);
+    const message = api.sent[0]!;
+    expect(message).toContain("# Task: assessor for anlinguist/demo");
+    expect(message).toContain("Decide what to do with `staging`.");
+    expect(message).toContain('<untrusted source="assessment-facts">');
+    expect(message).not.toMatch(/gh[pousr]_|github_pat_|sk-ant-|Authorization/i);
+  });
+
+  it("fails an assessment with no assessment.md", async () => {
+    const api = new FakeApi();
+    api.onSend = () => {
+      const id = [...api.sessions.keys()].at(-1)!;
+      const data = Buffer.from(JSON.stringify({ outcome: "done", summary: "" }));
+      api.outputs.push({ id: "r", filename: "report.json", sizeBytes: data.length, createdAt: new Date().toISOString(), data });
+      api.finishTurn(id, "end_turn");
+    };
+    const record = await startAssessment(assessSpec(join(dir, "out")), deps(api));
+    expect(record.status).toBe("failed");
+    expect(record.problems).toContain("no assessment.md");
+  });
+
+  it("refuses to run the assessor through startRun", async () => {
+    await expect(startRun({ ...spec(join(dir, "out")), role: "assessor" }, deps(new FakeApi()))).rejects.toThrow("startAssessment");
   });
 });
 

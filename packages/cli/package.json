@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@globalhost/adapter-cloud-build-trigger": "workspace:*",
+    "@globalhost/assess": "workspace:*",
     "@globalhost/core": "workspace:*",
     "@globalhost/dispatch": "workspace:*",
     "@globalhost/profile-web-app": "workspace:*",

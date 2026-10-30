@@ -43,6 +43,8 @@ const STATUS_LINE: Record<RunRecord["status"], string> = {
 };
 
 export function runReport(record: RunRecord, extra: string[] = []): string {
+  // Assessments are posted by `globalhost assess` as an onboarding issue, never through the dispatcher.
+  if (record.role === "assessor") throw new Error("the dispatcher doesn't publish assessments");
   const lines = [
     `**globalhost ${record.role}** ${STATUS_LINE[record.status]}`,
     "",

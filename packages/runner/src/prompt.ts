@@ -95,6 +95,49 @@ export function buildTaskMessage(ctx: TaskContext): string {
   return out.join("\n");
 }
 
+export interface AssessContext {
+  repo: string;
+  defaultBranch: string;
+  baseSha: string;
+  /** Harness-gathered facts as markdown; repo-derived text in it is already fenced by the caller. */
+  facts: string;
+  /** Owner-authored notes, e.g. open items to raise in the assessment. */
+  ownerNotes?: string;
+}
+
+/** The assessor's task: the repo, the owner's notes, and the facts trusted code gathered (ONBOARDING Stage 1). */
+export function buildAssessTaskMessage(ctx: AssessContext): string {
+  const out: string[] = [];
+  out.push(`# Task: assessor for ${ctx.repo}`, "", UNTRUSTED_PREAMBLE, "");
+  out.push(
+    "## Repository",
+    "",
+    `- Clone it with \`git clone ${REPO_BUNDLE_PATH} /workspace/repo\` and work in /workspace/repo.`,
+    `- The default branch is \`${ctx.defaultBranch}\`; the base commit is \`${ctx.baseSha}\`.`,
+    "- The bundle holds only the default branch. Other branches are summarized in the facts below.",
+    "",
+  );
+  if (ctx.ownerNotes?.trim()) {
+    out.push(
+      "## Owner's open items",
+      "",
+      "The owner wrote these. Raise each one under Risks & asks, with what you found about it.",
+      "",
+      sanitizeUntrusted(ctx.ownerNotes),
+      "",
+    );
+  }
+  out.push("## Facts gathered by the harness", "", ctx.facts.trim(), "");
+  out.push(
+    "## Outputs",
+    "",
+    `1. \`${OUTPUTS}/assessment.md\``,
+    `2. \`${OUTPUTS}/report.json\` as described in your instructions, with \`readiness\`.`,
+    `3. Optionally \`${OUTPUTS}/factory.yaml\`, if you'd change the proposal.`,
+  );
+  return out.join("\n");
+}
+
 /** A follow-up turn on the same session: owner feedback from a PR or issue comment. */
 export function buildFeedbackMessage(ctx: Pick<TaskContext, "role" | "branch" | "baseSha">, feedback: string): string {
   const lines = [

@@ -17,7 +17,7 @@ import {
   type OutputFile,
   type SessionEvent,
 } from "./managed-agents.js";
-import { REPO_BUNDLE_MOUNT, buildFeedbackMessage, buildTaskMessage } from "./prompt.js";
+import { REPO_BUNDLE_MOUNT, buildAssessTaskMessage, buildFeedbackMessage, buildTaskMessage } from "./prompt.js";
 import { AgentReportSchema, RunRecordSchema, type AgentReport, type RunRecord, type RunStatus } from "./records.js";
 
 export const DEFAULT_ENVIRONMENT: EnvironmentSpec = { name: "globalhost-default", allowedHosts: [] };
@@ -27,6 +27,15 @@ const OUTPUT_LIMITS: Record<string, number> = {
   "report.json": 256 * 1024,
   "plan.md": 256 * 1024,
   "result.bundle": 100 * 1024 * 1024,
+  "assessment.md": 256 * 1024,
+  // The factory.yaml parser's own cap (MAX_FACTORY_YAML_BYTES).
+  "factory.yaml": 64 * 1024,
+};
+/** Which of those each role may hand back (plus screenshots). An assessor's result.bundle is never even fetched. */
+const ROLE_OUTPUTS: Record<RoleId, readonly string[]> = {
+  planner: ["report.json", "plan.md"],
+  builder: ["report.json", "result.bundle"],
+  assessor: ["report.json", "assessment.md", "factory.yaml"],
 };
 const SCREENSHOT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$/;
 const SCREENSHOT_LIMIT = 10 * 1024 * 1024;
@@ -84,7 +93,49 @@ const META = {
   model: "globalhost_model",
 } as const;
 
+interface SessionLaunch {
+  runId: string;
+  role: RoleId;
+  repo: string;
+  /** Null for an assessment. */
+  issue: number | null;
+  budgetUsd: number;
+  model?: string;
+  environment?: EnvironmentSpec;
+  skillDirs?: string[];
+}
+
+/** Syncs the role's agent (with its pinned skills) and environment, uploads the bundle, and opens the session. */
+async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle): Promise<{ sessionId: string; model: string }> {
+  const skills = [];
+  for (const dir of l.skillDirs ?? []) skills.push(await ensureSkill(deps.api, dir));
+  const def = roleDefinition(l.role, l.model, skills);
+  const agent = await ensureAgent(deps.api, def, definitionHash(def));
+  const environmentId = await ensureEnvironment(deps.api, l.environment ?? DEFAULT_ENVIRONMENT);
+  const fileId = await deps.api.uploadFile(bundle.bundlePath);
+
+  const sessionId = await deps.api.createSession({
+    agent,
+    environmentId,
+    budgetCents: l.budgetUsd * 100,
+    title: l.issue === null ? `${l.repo} ${l.role}` : `${l.repo}#${l.issue} ${l.role}`,
+    metadata: {
+      [META.run]: l.runId,
+      [META.repo]: l.repo,
+      [META.issue]: l.issue === null ? "" : String(l.issue),
+      [META.role]: l.role,
+      [META.base]: bundle.baseSha,
+      [META.budget]: String(l.budgetUsd),
+      [META.model]: def.model,
+    },
+    files: [{ fileId, mountPath: REPO_BUNDLE_MOUNT }],
+  });
+  deps.log(`session ${sessionId} (agent ${def.agentName} v${agent.version}, budget $${l.budgetUsd})`);
+  return { sessionId, model: def.model };
+}
+
 export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecord> {
+  if (spec.role === "assessor") throw new Error("the assessor runs through startAssessment, not on an issue");
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const repo = await deps.github.repo(spec.repo);
@@ -95,31 +146,7 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
   const bundle = await (deps.cloneRepo ?? createRepoBundle)(repo.clone_url, repo.default_branch, deps.githubToken);
   try {
     deps.log(`base ${repo.default_branch}@${bundle.baseSha.slice(0, 12)}`);
-    const skills = [];
-    for (const dir of spec.skillDirs ?? []) skills.push(await ensureSkill(deps.api, dir));
-    const def = roleDefinition(spec.role, spec.model, skills);
-    const agent = await ensureAgent(deps.api, def, definitionHash(def));
-    const environmentId = await ensureEnvironment(deps.api, spec.environment ?? DEFAULT_ENVIRONMENT);
-    const fileId = await deps.api.uploadFile(bundle.bundlePath);
-
-    const sessionId = await deps.api.createSession({
-      agent,
-      environmentId,
-      budgetCents: spec.budgetUsd * 100,
-      title: `${spec.repo}#${spec.issue} ${spec.role}`,
-      metadata: {
-        [META.run]: spec.runId,
-        [META.repo]: spec.repo,
-        [META.issue]: String(spec.issue),
-        [META.role]: spec.role,
-        [META.base]: bundle.baseSha,
-        [META.budget]: String(spec.budgetUsd),
-        [META.model]: def.model,
-      },
-      files: [{ fileId, mountPath: REPO_BUNDLE_MOUNT }],
-    });
-    deps.log(`session ${sessionId} (agent ${def.agentName} v${agent.version}, budget $${spec.budgetUsd})`);
-
+    const { sessionId, model } = await openSession(deps, spec, bundle);
     const message = buildTaskMessage({
       role: spec.role,
       repo: spec.repo,
@@ -138,7 +165,61 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
       issue: spec.issue,
       sessionId,
       bundle,
-      model: def.model,
+      model,
+      message,
+      priorMessages: 0,
+      budgetUsd: spec.budgetUsd,
+      timeoutMinutes: spec.timeoutMinutes,
+      outDir: spec.outDir,
+      startedAt,
+    });
+  } finally {
+    await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
+  }
+}
+
+export interface AssessSpec {
+  runId: string;
+  repo: string;
+  budgetUsd: number;
+  timeoutMinutes: number;
+  outDir: string;
+  model?: string;
+  environment?: EnvironmentSpec;
+  skillDirs?: string[];
+  /**
+   * Facts the caller gathered with trusted code, as markdown. The caller must already have fenced everything
+   * repo-derived in it (names, paths, descriptions) with fenceUntrusted; it goes into the message as is.
+   */
+  facts: string;
+  /** Owner-authored notes (e.g. open items to raise); sanitized, not fenced. */
+  ownerNotes?: string;
+}
+
+/** Runs the assessor on a repo's default branch (ONBOARDING Stage 1). Outputs: assessment.md, report.json. */
+export async function startAssessment(spec: AssessSpec, deps: RunDeps): Promise<RunRecord> {
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const repo = await deps.github.repo(spec.repo);
+  const bundle = await (deps.cloneRepo ?? createRepoBundle)(repo.clone_url, repo.default_branch, deps.githubToken);
+  try {
+    deps.log(`base ${repo.default_branch}@${bundle.baseSha.slice(0, 12)}`);
+    const { sessionId, model } = await openSession(deps, { ...spec, role: "assessor", issue: null }, bundle);
+    const message = buildAssessTaskMessage({
+      repo: spec.repo,
+      defaultBranch: repo.default_branch,
+      baseSha: bundle.baseSha,
+      facts: spec.facts,
+      ownerNotes: spec.ownerNotes,
+    });
+    return await driveTurn(deps, {
+      runId: spec.runId,
+      role: "assessor",
+      repo: spec.repo,
+      issue: null,
+      sessionId,
+      bundle,
+      model,
       message,
       priorMessages: 0,
       budgetUsd: spec.budgetUsd,
@@ -198,7 +279,7 @@ interface Turn {
   runId: string;
   role: RoleId;
   repo: string;
-  issue: number;
+  issue: number | null;
   sessionId: string;
   bundle: RepoBundle;
   model: string;
@@ -233,7 +314,14 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
   const session = await deps.api.retrieveSession(turn.sessionId);
   await mkdir(turn.outDir, { recursive: true });
   const problems: string[] = [];
-  const files = await collectOutputs(deps.api, turn.sessionId, turn.outDir, turn.priorMessages > 0 ? sentAt - CLOCK_SKEW_MS : 0, problems);
+  const files = await collectOutputs(
+    deps.api,
+    turn.sessionId,
+    turn.outDir,
+    ROLE_OUTPUTS[turn.role],
+    turn.priorMessages > 0 ? sentAt - CLOCK_SKEW_MS : 0,
+    problems,
+  );
 
   let report: AgentReport | undefined;
   if (files.has("report.json")) {
@@ -251,7 +339,7 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
         turn.bundle.bareDir,
         join(turn.outDir, "result.bundle"),
         turn.bundle.baseSha,
-        branchFor(turn.issue),
+        branchFor(turn.issue ?? 0),
       );
     } catch (err) {
       problems.push(`result.bundle rejected: ${(err as Error).message}`);
@@ -261,6 +349,11 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
   if (turn.role === "planner") {
     if (files.has("plan.md")) outputs.planBytes = files.get("plan.md")!.length;
     else problems.push("no plan.md");
+  }
+  if (turn.role === "assessor") {
+    if (files.has("assessment.md")) outputs.assessmentBytes = files.get("assessment.md")!.length;
+    else problems.push("no assessment.md");
+    if (files.has("factory.yaml")) outputs.factoryYamlBytes = files.get("factory.yaml")!.length;
   }
 
   const record: RunRecord = {
@@ -304,6 +397,7 @@ export function decideStatus(
   if (report?.outcome === "blocked") return "blocked";
   if (report?.outcome !== "done") return "failed";
   if (role === "builder") return outputs.bundle ? "succeeded" : "failed";
+  if (role === "assessor") return outputs.assessmentBytes ? "succeeded" : "failed";
   return outputs.planBytes ? "succeeded" : "failed";
 }
 
@@ -312,6 +406,7 @@ async function collectOutputs(
   api: ManagedAgentsApi,
   sessionId: string,
   outDir: string,
+  accepted: readonly string[],
   notBefore: number,
   problems: string[],
 ): Promise<Map<string, Buffer>> {
@@ -331,7 +426,7 @@ async function collectOutputs(
   const files = new Map<string, Buffer>();
   let screenshots = 0;
   for (const [name, f] of newest) {
-    const limit = OUTPUT_LIMITS[name] ?? (SCREENSHOT_RE.test(name) ? SCREENSHOT_LIMIT : undefined);
+    const limit = (accepted.includes(name) ? OUTPUT_LIMITS[name] : undefined) ?? (SCREENSHOT_RE.test(name) ? SCREENSHOT_LIMIT : undefined);
     if (limit === undefined) continue;
     if (limit === SCREENSHOT_LIMIT && ++screenshots > MAX_SCREENSHOTS) continue;
     if (f.sizeBytes > limit) {
