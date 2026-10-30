@@ -11,6 +11,8 @@ issues.labeled / issue_comment
   └─ dispatch  (environment `globalhost`; id-token: write)
        WIF → GCP as sa:globalhost-gh-dispatch
        kill switch, daily budget, branch claim, builder slot      (gs://globalhost-control)
+       each part's profile detects on a REST snapshot of the default branch
+         → guidance + network environment for the run
        Managed Agents session via the GitHub OIDC → Anthropic rule (ADR-0014)
        archive outputs                                            (gs://globalhost-runs)
        App installation token (key from Secret Manager, minted per write)

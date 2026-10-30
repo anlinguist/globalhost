@@ -1,11 +1,11 @@
 // `globalhost dispatch <gate|run>`: the steps of the installed workflow (P1-07), run by
 // packages/action inside a product repo's GitHub Actions job. Not meant for interactive use.
 import { dispatchStep, gateStep, writeOutputs } from "@globalhost/dispatch";
-import { defaultDeps, printable } from "./main.js";
+import { PROFILES, defaultDeps, printable } from "./main.js";
 
 export async function dispatchCommand(argv: readonly string[], env: NodeJS.ProcessEnv, err: (t: string) => void): Promise<number> {
   const log = (line: string) => err(`${printable(line)}\n`);
-  const deps = { env, registry: defaultDeps().registry, log };
+  const deps = { env, registry: defaultDeps().registry, profiles: PROFILES, log };
   try {
     if (argv[1] === "gate" && argv.length === 2) {
       const out = await gateStep(deps);

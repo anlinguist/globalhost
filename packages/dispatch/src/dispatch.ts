@@ -6,7 +6,7 @@
 // The agent never runs in the job: it runs in the Managed Agents sandbox and returns a bundle.
 import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { gate, parseFactoryYaml, validateFactoryConfig, type FactoryConfig, type GateEvent, type Registry } from "@globalhost/core";
+import { gate, parseFactoryYaml, validateFactoryConfig, type FactoryConfig, type GateEvent, type Profile, type Registry } from "@globalhost/core";
 import {
   GitHubReader,
   anthropicClient,
@@ -16,13 +16,13 @@ import {
   resumeRun,
   sdkApi,
   startRun,
-  type EnvironmentSpec,
   type ManagedAgentsApi,
   type RunRecord,
 } from "@globalhost/runner";
 import { z } from "zod";
 import { ControlPlane, ObjectStore, RUNS_BUCKET, accessSecret, gcloudAccessToken, type AccessToken } from "./gcp.js";
 import { CommentSchema, GitHubClient, GitHubError, installationToken, latestMarker, listComments } from "./github.js";
+import { githubSnapshot, profileRunSettings } from "./profile-settings.js";
 import { LABELS, publish } from "./publish.js";
 
 export interface Env {
@@ -34,8 +34,8 @@ export interface DispatchDeps {
   registry: Registry;
   log: (line: string) => void;
   fetchImpl?: typeof fetch;
-  /** Profile-specific run settings for a repo's config; P1-03 supplies these. */
-  runSettings?: (config: FactoryConfig) => { guidance?: string; environment?: EnvironmentSpec };
+  /** Full profiles for the parts' profile ids; they supply each run's guidance and network environment. */
+  profiles?: readonly Profile[];
   // Test seams.
   api?: ManagedAgentsApi;
   gcpToken?: AccessToken;
@@ -212,7 +212,7 @@ export async function dispatchStep(deps: DispatchDeps): Promise<RunRecord | unde
     const api = deps.api ?? sdkApi(anthropicClient(federationIdsFromEnv(env as NodeJS.ProcessEnv), githubActionsIdentity(env as NodeJS.ProcessEnv, deps.fetchImpl)));
     const runId = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${role}-${issue}-${need(env, "GITHUB_RUN_ID")}`;
     const outDir = join(need(env, "RUNNER_TEMP"), "globalhost", runId);
-    const settings = deps.runSettings?.(config) ?? {};
+    const settings = deps.profiles ? await profileRunSettings(deps.profiles, config, await githubSnapshot(reader, repo, config.git.defaultBranch)) : {};
     const runDeps = {
       api,
       github: new GitHubReader(env.GITHUB_TOKEN, deps.fetchImpl),
