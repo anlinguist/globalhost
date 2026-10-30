@@ -1,0 +1,69 @@
+{
+  "builds": [
+    {
+      "id": "7d0f4a52-91c3-4b8e-a6d1-3e5f7a9b0c21",
+      "status": "SUCCESS",
+      "source": {},
+      "createTime": "2026-10-29T21:14:05.118274Z",
+      "startTime": "2026-10-29T21:14:06.902311Z",
+      "finishTime": "2026-10-29T21:19:41.550127Z",
+      "results": { "buildStepImages": ["sha256:1a2b", "sha256:3c4d", "sha256:5e6f"], "buildStepOutputs": ["", "", ""] },
+      "steps": [
+        { "name": "gcr.io/cloud-builders/docker", "id": "Build", "status": "SUCCESS" },
+        { "name": "gcr.io/cloud-builders/docker", "id": "Push", "status": "SUCCESS" },
+        { "name": "gcr.io/google.com/cloudsdktool/cloud-sdk", "id": "Deploy", "status": "SUCCESS" }
+      ],
+      "timeout": "600s",
+      "projectId": "example-prod",
+      "logsBucket": "gs://123456789012.cloudbuild-logs.googleusercontent.com",
+      "sourceProvenance": {},
+      "buildTriggerId": "0f6b1c3e-5d2a-4f7e-9a8b-1c2d3e4f5a6b",
+      "options": { "substitutionOption": "ALLOW_LOOSE", "logging": "CLOUD_LOGGING_ONLY", "dynamicSubstitutions": true },
+      "logUrl": "https://console.cloud.google.com/cloud-build/builds/7d0f4a52-91c3-4b8e-a6d1-3e5f7a9b0c21?project=123456789012",
+      "substitutions": {
+        "REPO_NAME": "example-app",
+        "REVISION_ID": "1111111111111111111111111111111111111111",
+        "COMMIT_SHA": "1111111111111111111111111111111111111111",
+        "SHORT_SHA": "1111111",
+        "BRANCH_NAME": "main",
+        "REF_NAME": "main",
+        "TRIGGER_NAME": "deploy-main",
+        "TRIGGER_BUILD_CONFIG_PATH": "cloudbuild.yaml",
+        "_SERVICE_NAME": "example-app",
+        "_REGION": "us-central1"
+      },
+      "tags": ["gcp-cloud-build-deploy-cloud-run", "trigger-0f6b1c3e-5d2a-4f7e-9a8b-1c2d3e4f5a6b"],
+      "queueTtl": "3600s",
+      "serviceAccount": "projects/example-prod/serviceAccounts/123456789012-compute@developer.gserviceaccount.com",
+      "name": "projects/123456789012/locations/global/builds/7d0f4a52-91c3-4b8e-a6d1-3e5f7a9b0c21"
+    },
+    {
+      "id": "2b9e6c71-0a4d-4e5f-8c3b-6d7e8f9a0b12",
+      "status": "FAILURE",
+      "statusDetail": "Build step failure: build step 0 \"gcr.io/cloud-builders/docker\" failed: step exited with non-zero status: 1",
+      "source": {},
+      "createTime": "2026-10-28T16:40:22.004118Z",
+      "startTime": "2026-10-28T16:40:23.771932Z",
+      "finishTime": "2026-10-28T16:42:10.312877Z",
+      "timeout": "600s",
+      "projectId": "example-prod",
+      "sourceProvenance": {},
+      "buildTriggerId": "0f6b1c3e-5d2a-4f7e-9a8b-1c2d3e4f5a6b",
+      "logUrl": "https://console.cloud.google.com/cloud-build/builds/2b9e6c71-0a4d-4e5f-8c3b-6d7e8f9a0b12?project=123456789012",
+      "failureInfo": { "type": "USER_BUILD_STEP", "detail": "Build step failure: build step 0 \"gcr.io/cloud-builders/docker\" failed: step exited with non-zero status: 1" },
+      "substitutions": {
+        "REPO_NAME": "example-app",
+        "REVISION_ID": "2222222222222222222222222222222222222222",
+        "COMMIT_SHA": "2222222222222222222222222222222222222222",
+        "SHORT_SHA": "2222222",
+        "BRANCH_NAME": "main",
+        "REF_NAME": "main",
+        "TRIGGER_NAME": "deploy-main",
+        "_SERVICE_NAME": "example-app",
+        "_REGION": "us-central1"
+      },
+      "name": "projects/123456789012/locations/global/builds/2b9e6c71-0a4d-4e5f-8c3b-6d7e8f9a0b12"
+    }
+  ],
+  "nextPageToken": "page-token-after-2b9e6c71"
+}

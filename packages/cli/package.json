@@ -12,7 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@globalhost/adapter-cloud-build-trigger": "workspace:*",
     "@globalhost/core": "workspace:*",
+    "@globalhost/profile-web-app": "workspace:*",
     "@globalhost/roles": "workspace:*",
     "@globalhost/runner": "workspace:*"
   }

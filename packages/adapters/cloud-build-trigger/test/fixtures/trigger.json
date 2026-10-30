@@ -1,0 +1,18 @@
+{
+  "id": "0f6b1c3e-5d2a-4f7e-9a8b-1c2d3e4f5a6b",
+  "name": "deploy-main",
+  "createTime": "2025-03-14T18:02:11.482193Z",
+  "github": {
+    "owner": "example-owner",
+    "name": "example-app",
+    "push": { "branch": "^main$" }
+  },
+  "substitutions": {
+    "_SERVICE_NAME": "example-app",
+    "_REGION": "us-central1"
+  },
+  "filename": "cloudbuild.yaml",
+  "resourceName": "projects/example-prod/locations/global/triggers/0f6b1c3e-5d2a-4f7e-9a8b-1c2d3e4f5a6b",
+  "serviceAccount": "projects/example-prod/serviceAccounts/123456789012-compute@developer.gserviceaccount.com",
+  "tags": ["gcp-cloud-build-deploy-cloud-run", "gcp-cloud-build-deploy-cloud-run-managed", "example-app"]
+}

@@ -114,7 +114,7 @@ preview:
 ```yaml
 release:
   - adapter: cloud-build-trigger
-    config: { project: numu-know, trigger: "<trigger-name>" }
+    config: { project: numu-know, trigger: numu-know-main }   # trigger name or id; region defaults to global
 ```
 
 Each target is `{ adapter, config }`:
@@ -223,11 +223,14 @@ export interface AdapterDescriptor {
   id: string;
   configSchema: z.ZodType;
 }
-export interface Registry {
-  profile(id: string): ProfileDescriptor | undefined;
-  adapter(id: string): AdapterDescriptor | undefined;
+// Generic so the runner gets full Profile/DeployAdapter objects back; the validator needs only descriptors.
+export interface Registry<P extends ProfileDescriptor = ProfileDescriptor, A extends AdapterDescriptor = AdapterDescriptor> {
+  profile(id: string): P | undefined;
+  adapter(id: string): A | undefined;
+  profiles(): P[];
+  adapters(): A[];
 }
-export function createRegistry(profiles: ProfileDescriptor[], adapters: AdapterDescriptor[]): Registry; // rejects duplicate ids
+export function createRegistry<P, A>(profiles: P[], adapters: A[]): Registry<P, A>; // rejects duplicate ids
 ```
 
 Profile and adapter ids match `^[a-z][a-z0-9-]{0,39}$`, in the registry (`createRegistry` throws otherwise) and in `factory.yaml` (`invalid_value` in stage 1). Profile `preview.inputs` and `preview.outputs` must match the binding input and output patterns (§3.5.1). Core re-exports its `z`, so descriptors build their schemas with the same zod version the validator runs.
@@ -290,7 +293,7 @@ Codes are stable, because `--json` consumers depend on them:
   - `0`: valid.
   - `1`: invalid, including a file over 64 KiB (`yaml_too_large`, decided from `fstat` without reading).
   - `2`: usage error, or the file is missing, unreadable or not a regular file.
-- **Registry:** the CLI builds it from the profile and adapter packages, so the CLI (not core) is where they are imported. `run(argv, deps)` takes the registry (and the file-system calls) as injectable dependencies, so P1-03 registers its packages in `defaultDeps()` and tests pass fakes. Until P1-03 adds the first profile, the registry is empty and any real file fails with `unknown_profile`.
+- **Registry:** the CLI builds it from the profile and adapter packages, so the CLI (not core) is where they are imported. `run(argv, deps)` takes the registry (and the file-system calls) as injectable dependencies, so `defaultDeps()` registers the profile and adapter packages (P1-03: `web-app`, `cloud-build-trigger`) and tests pass fakes.
 
 ## 8. Versioning
 
