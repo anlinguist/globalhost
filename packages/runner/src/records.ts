@@ -45,9 +45,10 @@ export type BundleSummary = z.infer<typeof BundleSummarySchema>;
 export const RunRecordSchema = z.object({
   version: z.literal(1),
   runId: z.string(),
-  role: z.enum(["planner", "builder"]),
+  role: z.enum(["planner", "builder", "assessor"]),
   repo: z.string(),
-  issue: z.number().int(),
+  /** The issue the run works on; null for an assessment, which covers the whole repo. */
+  issue: z.number().int().nullable(),
   baseSha: z.string(),
   sessionId: z.string(),
   agent: z.object({ id: z.string(), version: z.number().int() }),
@@ -68,6 +69,9 @@ export const RunRecordSchema = z.object({
   outputs: z.object({
     bundle: BundleSummarySchema.optional(),
     planBytes: z.number().int().optional(),
+    assessmentBytes: z.number().int().optional(),
+    /** The assessor's optional factory.yaml; the caller validates it before using it. */
+    factoryYamlBytes: z.number().int().optional(),
   }),
   report: AgentReportSchema.optional(),
   /** Harness-side problems with the outputs (missing, oversized, invalid). */

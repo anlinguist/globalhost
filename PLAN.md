@@ -122,6 +122,7 @@ Triggers:
 - zizmor reports no findings.
 
 ### P1-08 numu-know assessment (L0)
+**Status (2026-10-30):** code done (`packages/assess`, the `assessor` role, `globalhost assess`). The deterministic checks, the readiness split (harness vs. assessor items) and the public-repo rule for secret findings are in `packages/assess/README.md`. Tests use recorded GitHub responses and gitleaks output, and hand-written gcloud shapes; nothing calls GCP or Anthropic. The AC is met by the owner's live run: a dry run with `--gcp-project numu-know --asks-file docs/decisions/0005-first-profile-and-pilot.md`, review, then `--post-from`.
 Run `globalhost assess anlinguist/numu-know` (assessor role + deterministic checks: gitleaks, Cloud Build triggers, Cloud Run services, Firestore usage, branches).
 **AC:** an onboarding issue is posted with all ONBOARDING §1 sections, a readiness score, a proposed `factory.yaml`, and the open items from ADR-0005.
 

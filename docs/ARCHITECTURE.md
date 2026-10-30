@@ -61,6 +61,8 @@ pnpm + Turborepo monorepo:
 | `packages/core` | `factory.yaml` parser + schema (zod) + validator against an injected profile/adapter registry, label state machine, trust policy, path policy, budget accounting, Profile/DeployAdapter interfaces |
 | `packages/cli` | `globalhost` CLI: `assess`, `install`, `validate`, `run` (local), `pause`/`resume`, `budget`, `preview`, `cleanup` |
 | `packages/runner` | Harness + container image for Cloud Run Jobs |
+| `packages/dispatch` | Dispatcher + publisher behind the installed `globalhost.yml` workflow |
+| `packages/assess` | Onboarding assessment: deterministic checks (GitHub, git, gitleaks, gcloud), readiness score, proposed `factory.yaml`, onboarding issue body |
 | `packages/roles` | Role prompts + tool policies (planner, builder, reviewer, triager, …) |
 | `packages/profiles/*` | `web-app`, `chrome-extension`, `service` (see PROFILES.md) |
 | `packages/adapters/*` | Deploy adapters (`cloud-run`, `cloud-build-trigger`, `chrome-web-store`, …) |
@@ -117,7 +119,7 @@ The runner SA reads no secrets: it authenticates to Anthropic with its own Googl
 | reviewer (P2) | PR opened/updated by builder | PR review (comment/request-changes) with structured findings vs. spec | no |
 | triager (P5) | scanner finding / Sentry issue | label + classification comment | no |
 | fixer (P4) | `factory:autofix` (from triage/Sentry) | draft PR with regression test | yes |
-| assessor | `globalhost assess` | onboarding issue | no |
+| assessor | `globalhost assess` (owner, local) | `assessment.md` + readiness scores → onboarding issue, composed and posted by trusted code (`packages/assess`) | no (read-only; builds and tests only in its sandbox, no bundle) |
 
 Patterns borrowed (ADR-0001): label contract + handoff comment, fail-closed gate script, cold verifier with revert-the-fix proof, structured `REVIEW.json`.
 
@@ -202,7 +204,9 @@ Rules:
 | `sa:runner` (**not built**; Cloud Run fallback only) | Cloud Run Job | would: write `gs://globalhost-runs/<run>`; its identity token accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
 | `sa:globalhost-budget-pause` | Cloud Function `globalhost-budget-pause` (runtime and Pub/Sub trigger identity) | read/write `gs://globalhost-control/state.json` only (IAM condition); invoke its own function | anything else |
 | `sa:globalhost-fn-build` | Cloud Build for that function | write logs; push to Artifact Registry `globalhost-functions`; read the function source bucket and Cloud Functions' own staging bucket `gcf-v2-sources-<number>-<region>` (project grant conditioned on that bucket name) | anything else |
-| `sa:globalhost-local` | impersonated by the owner for `globalhost run` | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014) | any GCP role; anything else |
+| Owner's `GITHUB_TOKEN` (local, optional) | the owner's shell, for `globalhost run` / `globalhost assess` | read private repos; with `assess --post`, open the one onboarding issue (Issues write) | reach any agent session: the harness uses it only for REST calls and clones in trusted code |
+| Owner's gcloud login (local) | `globalhost assess --gcp-project` | read-only `list` calls: Cloud Build triggers, Cloud Run services, Firestore databases, service-account keys | be passed to the agent; only names, branches and URLs are kept (env vars and substitutions are dropped) |
+| `sa:globalhost-local` | impersonated by the owner for `globalhost run` and `globalhost assess` | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014) | any GCP role; anything else |
 | `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
 | `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |

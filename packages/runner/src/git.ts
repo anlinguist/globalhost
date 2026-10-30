@@ -34,7 +34,8 @@ function gitEnv(token?: string): NodeJS.ProcessEnv {
   return env;
 }
 
-async function git(args: string[], opts: { cwd?: string; token?: string } = {}): Promise<string> {
+/** git with hooks off and no user or system config; exported for other trusted callers (assessments). */
+export async function git(args: string[], opts: { cwd?: string; token?: string } = {}): Promise<string> {
   const { stdout } = await run("git", ["-c", "core.hooksPath=/dev/null", ...args], {
     cwd: opts.cwd,
     env: gitEnv(opts.token),
@@ -50,9 +51,23 @@ export interface RepoBundle {
   baseSha: string;
 }
 
+const CLONE_URL = /^https:\/\/github\.com\/[^\s]+\.git$/;
+
+/**
+ * Bare-clones every branch (full history, no tags, no checkout), for read-only inspection such as a secret scan.
+ * Returns the bare repo's directory; the caller removes its parent when done.
+ */
+export async function bareCloneAll(cloneUrl: string, token?: string): Promise<string> {
+  if (!CLONE_URL.test(cloneUrl)) throw new Error(`unexpected clone URL: ${cloneUrl}`);
+  const dir = await mkdtemp(join(tmpdir(), "globalhost-assess-"));
+  const bareDir = join(dir, "repo.git");
+  await git(["clone", "--quiet", "--bare", "--no-tags", "--", cloneUrl, bareDir], { token });
+  return bareDir;
+}
+
 /** Bare-clones one branch and bundles it with HEAD set, so `git clone` of the bundle checks it out. */
 export async function createRepoBundle(cloneUrl: string, branch: string, token?: string): Promise<RepoBundle> {
-  if (!/^https:\/\/github\.com\/[^\s]+\.git$/.test(cloneUrl)) throw new Error(`unexpected clone URL: ${cloneUrl}`);
+  if (!CLONE_URL.test(cloneUrl)) throw new Error(`unexpected clone URL: ${cloneUrl}`);
   const dir = await mkdtemp(join(tmpdir(), "globalhost-run-"));
   const bareDir = join(dir, "repo.git");
   await git(["clone", "--quiet", "--bare", "--single-branch", "--no-tags", "--branch", branch, "--", cloneUrl, bareDir], {

@@ -1,0 +1,27 @@
+{
+  "_source": "Hand-written in the shape of `gcloud builds triggers list --format=json` (Cloud Build v1 BuildTrigger); not recorded: tests never call GCP. Names follow ADR-0005 (main → numu-know, staging → staging-numu-know). The substitution value stands in for a secret that must never be kept.",
+  "body": [
+    {
+      "id": "0f0e0d0c-0000-4000-8000-000000000001",
+      "name": "numu-know-main",
+      "description": "Deploy main to Cloud Run",
+      "createTime": "2024-03-01T00:00:00Z",
+      "filename": "cloudbuild.yaml",
+      "github": { "owner": "anlinguist", "name": "numu-know", "push": { "branch": "^main$" } },
+      "substitutions": { "_ALGOLIA_ADMIN_KEY": "SUBSTITUTION-VALUE-MUST-NOT-BE-KEPT" },
+      "serviceAccount": "projects/numu-know/serviceAccounts/builder@numu-know.iam.gserviceaccount.com"
+    },
+    {
+      "id": "0f0e0d0c-0000-4000-8000-000000000002",
+      "name": "staging-numu-know",
+      "filename": "cloudbuild.yaml",
+      "github": { "owner": "anlinguist", "name": "numu-know", "push": { "branch": "^staging$" } }
+    },
+    {
+      "id": "0f0e0d0c-0000-4000-8000-000000000003",
+      "name": "old-pr-check",
+      "disabled": true,
+      "github": { "owner": "anlinguist", "name": "numu-know", "pullRequest": { "branch": ".*" } }
+    }
+  ]
+}

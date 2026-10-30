@@ -1,0 +1,27 @@
+{
+  "_source": "Recorded 2026-10-30: unauthenticated GET https://api.github.com/repos/anlinguist/numu-know/contributors?per_page=100",
+  "body": [
+    {
+      "login": "anlinguist",
+      "id": 47403803,
+      "node_id": "MDQ6VXNlcjQ3NDAzODAz",
+      "avatar_url": "https://avatars.githubusercontent.com/u/47403803?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/anlinguist",
+      "html_url": "https://github.com/anlinguist",
+      "followers_url": "https://api.github.com/users/anlinguist/followers",
+      "following_url": "https://api.github.com/users/anlinguist/following{/other_user}",
+      "gists_url": "https://api.github.com/users/anlinguist/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/anlinguist/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/anlinguist/subscriptions",
+      "organizations_url": "https://api.github.com/users/anlinguist/orgs",
+      "repos_url": "https://api.github.com/users/anlinguist/repos",
+      "events_url": "https://api.github.com/users/anlinguist/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/anlinguist/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false,
+      "contributions": 17
+    }
+  ]
+}

@@ -24,6 +24,8 @@ Adopting an existing repo is a first-class workflow: `globalhost adopt <owner/re
 | Multi-repo | if part of a project, proposed consolidation or managed multi-repo (§6) |
 | Risks & asks | things the owner must decide |
 
+On a public repo the issue gives secret findings as counts and rule names only; file paths, commits and key identities stay in the owner's local run directory (`facts.json`), per §8. Implementation notes: `packages/assess/README.md`.
+
 **Agent-readiness rubric (100):** builds from clean checkout (15) · typecheck/lint configured (10) · automated tests exist (15) · tests cover critical paths (15) · reproducible local dev / seed data (10) · non-prod environment separate from prod data (15) · docs/CLAUDE.md (5) · no live secrets in repo/history (10) · CI exists (5).
 
 ### Stage 2 — Install PR (owner reviews closely)

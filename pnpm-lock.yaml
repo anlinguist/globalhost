@@ -61,11 +61,42 @@ importers:
         specifier: workspace:*
         version: link:../../core
 
+  packages/assess:
+    dependencies:
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../core
+      '@globalhost/dispatch':
+        specifier: workspace:*
+        version: link:../dispatch
+      '@globalhost/runner':
+        specifier: workspace:*
+        version: link:../runner
+      '@globalhost/sanitize':
+        specifier: workspace:*
+        version: link:../sanitize
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@globalhost/adapter-cloud-build-trigger':
+        specifier: workspace:*
+        version: link:../adapters/cloud-build-trigger
+      '@globalhost/profile-web-app':
+        specifier: workspace:*
+        version: link:../profiles/web-app
+
   packages/cli:
     dependencies:
       '@globalhost/adapter-cloud-build-trigger':
         specifier: workspace:*
         version: link:../adapters/cloud-build-trigger
+      '@globalhost/assess':
+        specifier: workspace:*
+        version: link:../assess
       '@globalhost/core':
         specifier: workspace:*
         version: link:../core

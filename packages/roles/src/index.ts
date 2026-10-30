@@ -3,8 +3,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-export type RoleId = "planner" | "builder";
-export const ROLE_IDS: readonly RoleId[] = ["planner", "builder"];
+export type RoleId = "planner" | "builder" | "assessor";
+export const ROLE_IDS: readonly RoleId[] = ["planner", "builder", "assessor"];
+/** Roles that work on an issue (`globalhost run`, the dispatcher). The assessor works on a whole repo. */
+export const ISSUE_ROLE_IDS: readonly RoleId[] = ["planner", "builder"];
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
 
@@ -66,6 +68,17 @@ export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL, skills
         system,
         toolConfigs: NO_WEB,
         requiredOutputs: ["result.bundle", "report.json"],
+        skills: [...skills],
+      };
+    case "assessor":
+      return {
+        id,
+        agentName: "globalhost-assessor",
+        model,
+        system,
+        // Read-only like the planner: it may build and test in its sandbox, but it never edits or bundles.
+        toolConfigs: [...NO_WEB, { name: "edit", enabled: false }],
+        requiredOutputs: ["assessment.md", "report.json"],
         skills: [...skills],
       };
   }
