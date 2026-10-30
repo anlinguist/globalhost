@@ -2,7 +2,7 @@
 // especially waiting through dropped event streams, is testable against a fake.
 import { createReadStream } from "node:fs";
 import { basename } from "node:path";
-import type Anthropic from "@anthropic-ai/sdk";
+import { toFile, type default as Anthropic } from "@anthropic-ai/sdk";
 import type { RoleDefinition } from "@globalhost/roles";
 import { MANAGED_AGENTS_BETA } from "./auth.js";
 
@@ -56,7 +56,15 @@ export interface SessionSpec {
   files: { fileId: string; mountPath: string }[];
 }
 
+export interface SkillInfo {
+  id: string;
+  /** Version ID; pins the skill in an agent definition. */
+  latestVersion: string;
+}
+
 export interface ManagedAgentsApi {
+  findSkill(displayName: string): Promise<SkillInfo | undefined>;
+  createSkill(displayName: string, files: readonly { path: string; data: Buffer }[]): Promise<SkillInfo>;
   findAgent(name: string): Promise<AgentInfo | undefined>;
   createAgent(def: RoleDefinition, metadata: Record<string, string>): Promise<AgentInfo>;
   updateAgent(id: string, def: RoleDefinition, metadata: Record<string, string>): Promise<AgentInfo>;
@@ -114,18 +122,32 @@ export function sdkApi(client: Anthropic): ManagedAgentsApi {
     name: a.name,
     metadata: a.metadata,
   });
+  const skills = (def: RoleDefinition) => def.skills.map((p) => ({ type: "custom" as const, skill_id: p.skillId, version: p.version }));
   return {
+    async findSkill(displayName) {
+      for await (const sk of client.skills.list({ source: "custom" })) {
+        if (sk.display_name === displayName) return { id: sk.id, latestVersion: sk.latest_version_id };
+      }
+      return undefined;
+    },
+    async createSkill(displayName, files) {
+      const sk = await client.skills.create({
+        display_name: displayName,
+        files: await Promise.all(files.map((f) => toFile(f.data, f.path))),
+      });
+      return { id: sk.id, latestVersion: sk.latest_version_id };
+    },
     async findAgent(name) {
       for await (const a of beta.agents.list()) if (a.name === name) return agentInfo(a);
       return undefined;
     },
     async createAgent(def, metadata) {
       return agentInfo(
-        await beta.agents.create({ name: def.agentName, model: def.model, system: def.system, tools: toolset(def), metadata }),
+        await beta.agents.create({ name: def.agentName, model: def.model, system: def.system, tools: toolset(def), skills: skills(def), metadata }),
       );
     },
     async updateAgent(id, def, metadata) {
-      return agentInfo(await beta.agents.update(id, { model: def.model, system: def.system, tools: toolset(def), metadata }));
+      return agentInfo(await beta.agents.update(id, { model: def.model, system: def.system, tools: toolset(def), skills: skills(def), metadata }));
     },
     async findEnvironment(name) {
       for await (const e of beta.environments.list()) if (e.name === name) return { id: e.id, name: e.name };

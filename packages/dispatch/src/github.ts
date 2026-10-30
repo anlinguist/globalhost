@@ -7,7 +7,8 @@ const API = "https://api.github.com";
 
 export class GitHubClient {
   constructor(
-    private readonly token: string,
+    /** Undefined for anonymous reads of public repos (local runs without GITHUB_TOKEN). */
+    private readonly token: string | undefined,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
@@ -19,7 +20,7 @@ export class GitHubClient {
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
         "user-agent": "globalhost-dispatch",
-        authorization: `Bearer ${this.token}`,
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),

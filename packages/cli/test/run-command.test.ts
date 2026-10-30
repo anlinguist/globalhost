@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCommand, type RunIo } from "../src/run-command.js";
 
@@ -53,5 +56,41 @@ describe("globalhost run (argument handling)", () => {
     const r = io(env);
     await runCommand(["run", "--resume", "sesn_\u001b[2J", "--feedback", "x"], r);
     expect(r.stderr.includes("\u001b")).toBe(false);
+  });
+});
+
+describe("globalhost roles sync", () => {
+  it("uploads the registered profiles' skills once and pins them on every role's agent", async () => {
+    const skills: { displayName: string; files: string[] }[] = [];
+    const agents: { name: string; skills: unknown }[] = [];
+    const api = {
+      findSkill: async (name: string) => (skills.some((s) => s.displayName === name) ? { id: "skill_1", latestVersion: "v1" } : undefined),
+      createSkill: async (displayName: string, files: readonly { path: string }[]) => {
+        skills.push({ displayName, files: files.map((f) => f.path) });
+        return { id: "skill_1", latestVersion: "v1" };
+      },
+      findAgent: async () => undefined,
+      createAgent: async (def: { agentName: string; skills: unknown }) => {
+        agents.push({ name: def.agentName, skills: def.skills });
+        return { id: `agent_${agents.length}`, version: 1, name: def.agentName, metadata: {} };
+      },
+    } as unknown as RunIo["api"];
+    const r = Object.assign(io(), { api });
+    expect(await runCommand(["roles", "sync"], r)).toBe(0);
+    expect(skills).toHaveLength(1);
+    expect(skills[0]!.displayName).toMatch(/^globalhost-web-app [0-9a-f]{12}$/);
+    expect(skills[0]!.files).toContain("web-app/SKILL.md");
+    expect(agents.map((a) => a.name)).toEqual(["globalhost-planner", "globalhost-builder"]);
+    for (const a of agents) expect(a.skills).toEqual([{ skillId: "skill_1", version: "v1" }]);
+  });
+});
+
+describe("globalhost run --config", () => {
+  it("rejects an invalid factory.yaml before starting anything", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cfg-"));
+    writeFileSync(join(dir, "factory.yaml"), "version: 1\nowners: [{ login: anlinguist }]\n");
+    const r = Object.assign(io(), { api: {} as RunIo["api"], cwd: dir });
+    expect(await runCommand(["run", "anlinguist/numu-know", "10", "--role", "planner", "--config", "factory.yaml"], r)).toBe(2);
+    expect(r.stderr).toContain("factory.yaml:");
   });
 });

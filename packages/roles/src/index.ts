@@ -13,6 +13,12 @@ export interface ToolConfig {
   enabled: boolean;
 }
 
+/** An uploaded custom skill, pinned to one version so a run's instructions are reproducible. */
+export interface SkillPin {
+  skillId: string;
+  version: string;
+}
+
 export interface RoleDefinition {
   id: RoleId;
   /** Agent name in the Console workspace; also the sync key. */
@@ -23,6 +29,8 @@ export interface RoleDefinition {
   toolConfigs: ToolConfig[];
   /** Files the role must leave in /mnt/session/outputs/. */
   requiredOutputs: string[];
+  /** Profile skills (skills/<name>) the agent can load on demand. */
+  skills: SkillPin[];
 }
 
 function prompt(name: string): string {
@@ -36,7 +44,7 @@ const NO_WEB: ToolConfig[] = [
   { name: "web_search", enabled: false },
 ];
 
-export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL): RoleDefinition {
+export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL, skills: readonly SkillPin[] = []): RoleDefinition {
   const system = `${prompt("common")}\n\n${prompt(id)}`;
   switch (id) {
     case "planner":
@@ -48,6 +56,7 @@ export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL): RoleD
         // The planner writes only its outputs; it has no reason to edit files in place.
         toolConfigs: [...NO_WEB, { name: "edit", enabled: false }],
         requiredOutputs: ["plan.md", "report.json"],
+        skills: [...skills],
       };
     case "builder":
       return {
@@ -57,12 +66,13 @@ export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL): RoleD
         system,
         toolConfigs: NO_WEB,
         requiredOutputs: ["result.bundle", "report.json"],
+        skills: [...skills],
       };
   }
 }
 
 /** Stable hash of everything that defines the agent; a change means a new agent version. */
 export function definitionHash(def: RoleDefinition): string {
-  const material = JSON.stringify({ model: def.model, system: def.system, tools: def.toolConfigs });
+  const material = JSON.stringify({ model: def.model, system: def.system, tools: def.toolConfigs, skills: def.skills });
   return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }

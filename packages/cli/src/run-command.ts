@@ -5,11 +5,14 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { parseFactoryYaml, validateFactoryConfig, type FactoryConfig } from "@globalhost/core";
+import { GitHubClient, githubSnapshot, profileRunSettings, type RunSettings } from "@globalhost/dispatch";
 import { ROLE_IDS, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
 import {
   GitHubReader,
   anthropicClient,
   ensureAgent,
+  ensureSkill,
   federationIdsFromEnv,
   googleImpersonatedIdentity,
   parseRepo,
@@ -20,7 +23,7 @@ import {
   type RunRecord,
   type SessionEvent,
 } from "@globalhost/runner";
-import { printable } from "./main.js";
+import { PROFILES, SKILL_DIRS, defaultDeps, printable } from "./main.js";
 
 export const RUN_USAGE = `Usage:
   globalhost run <owner/repo> <issue> --role <planner|builder> [options]
@@ -32,6 +35,8 @@ Options:
   --timeout <minutes>   Wall-clock limit for this turn (default 45)
   --model <id>          Model for the role's agent (default: the role's default)
   --plan-file <path>    Builder: an approved plan to start from
+  --config <path>       A factory.yaml for the repo (e.g. a draft before it's committed): its parts' profile
+                        guidance and network environment are used, and its owners unless --owner-id is given
   --owner-id <id>       Owner GitHub user ID; repeatable (default: the repo owner's account)
   --out <dir>           Where outputs go (default .globalhost/runs/<run-id>)
   --verbose             Also print the agent's messages
@@ -47,9 +52,11 @@ export interface RunIo {
   err: (text: string) => void;
   env: NodeJS.ProcessEnv;
   cwd: string;
-  /** Test seam: defaults to the real SDK with keyless auth. */
+  /** Test seams: default to the real SDK with keyless auth, GitHub, and the registered profiles' skills. */
   api?: ManagedAgentsApi;
   github?: GitHubReader;
+  fetchImpl?: typeof fetch;
+  skillDirs?: readonly string[];
 }
 
 class UsageError extends Error {}
@@ -77,7 +84,10 @@ function eventPrinter(io: RunIo, verbose: boolean): (e: SessionEvent) => void {
   return (e) => {
     if (e.type === "agent.tool_use" || e.type === "agent.mcp_tool_use") io.err(`  · ${printable(e.toolName ?? "tool")}\n`);
     else if (e.type === "session.status_idle") io.err(`  · idle (${printable(e.stopReason ?? "")})\n`);
-    else if (e.type === "agent.message" && verbose && e.text) io.err(`\n${printable(e.text).slice(0, 2000)}\n\n`);
+    else if (e.type === "agent.message" && verbose && e.text) {
+      // Escape per line so the message keeps its line breaks but can't drive the terminal.
+      io.err(`\n${e.text.slice(0, 2000).split("\n").map(printable).join("\n")}\n\n`);
+    }
   };
 }
 
@@ -119,6 +129,7 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
         timeout: { type: "string" },
         model: { type: "string" },
         "plan-file": { type: "string" },
+        config: { type: "string" },
         "owner-id": { type: "string", multiple: true },
         out: { type: "string" },
         resume: { type: "string" },
@@ -167,6 +178,7 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
       if (!Number.isSafeInteger(issue) || issue < 1) throw new UsageError("issue must be a positive integer");
       const role = values.role as RoleId;
       if (!ROLE_IDS.includes(role)) throw new UsageError(`--role must be one of ${ROLE_IDS.join(", ")}`);
+      const settings = values.config ? await localSettings(io, resolve(io.cwd, values.config), repo) : undefined;
       const ownerIds = values["owner-id"]?.map((raw) => {
         const id = Number(raw);
         if (!Number.isSafeInteger(id) || id < 1) throw new UsageError("--owner-id must be a GitHub user ID");
@@ -184,7 +196,10 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
           timeoutMinutes,
           outDir,
           model: values.model,
-          ownerIds,
+          ownerIds: ownerIds ?? settings?.config.owners.map((o) => o.id),
+          guidance: settings?.run.guidance,
+          environment: settings?.run.environment,
+          skillDirs: [...(io.skillDirs ?? SKILL_DIRS)],
           approvedPlan: values["plan-file"] ? await readFile(values["plan-file"], "utf8") : undefined,
         },
         deps,
@@ -202,11 +217,24 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
   }
 }
 
+/** The same profile settings the dispatcher builds, from a local factory.yaml and the repo's default branch. */
+async function localSettings(io: RunIo, path: string, repo: string): Promise<{ config: FactoryConfig; run: RunSettings }> {
+  const parsed = parseFactoryYaml(await readFile(path));
+  if (!parsed.ok) throw new UsageError(`${path}: ${parsed.errors.map((e) => `${e.path} ${e.message}`).join("; ")}`);
+  const result = validateFactoryConfig(parsed.value, defaultDeps().registry);
+  if (!result.ok) throw new UsageError(`${path}: ${result.errors.map((e) => `${e.path || "(root)"} ${e.message}`).join("; ")}`);
+  const gh = new GitHubClient(io.env.GITHUB_TOKEN || undefined, io.fetchImpl);
+  const snapshot = await githubSnapshot(gh, repo, result.config.git.defaultBranch);
+  return { config: result.config, run: await profileRunSettings(PROFILES, result.config, snapshot) };
+}
+
 async function rolesCommand(argv: readonly string[], io: RunIo): Promise<number> {
   if (argv[0] !== "sync" || argv.length > 1) throw new UsageError("expected: globalhost roles sync");
   const api = makeApi(io);
+  const skills = [];
+  for (const dir of io.skillDirs ?? SKILL_DIRS) skills.push(await ensureSkill(api, dir));
   for (const id of ROLE_IDS) {
-    const def = roleDefinition(id);
+    const def = roleDefinition(id, undefined, skills);
     const agent = await ensureAgent(api, def, definitionHash(def));
     io.out(`${def.agentName}  ${agent.id}  v${agent.version}\n`);
   }

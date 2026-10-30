@@ -28,5 +28,8 @@ describe("role definitions", () => {
     expect(definitionHash(a)).toBe(definitionHash(roleDefinition("builder")));
     expect(definitionHash(a)).not.toBe(definitionHash(roleDefinition("builder", "claude-sonnet-5-5")));
     expect(definitionHash(a)).not.toBe(definitionHash(roleDefinition("planner")));
+    const pinned = roleDefinition("builder", undefined, [{ skillId: "skill_1", version: "1" }]);
+    expect(definitionHash(a)).not.toBe(definitionHash(pinned));
+    expect(definitionHash(pinned)).not.toBe(definitionHash(roleDefinition("builder", undefined, [{ skillId: "skill_1", version: "2" }])));
   });
 });

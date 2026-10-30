@@ -36,6 +36,8 @@ export interface DispatchDeps {
   fetchImpl?: typeof fetch;
   /** Full profiles for the parts' profile ids; they supply each run's guidance and network environment. */
   profiles?: readonly Profile[];
+  /** Absolute skill directories attached to every agent (packages/runner skills.ts). */
+  skillDirs?: readonly string[];
   // Test seams.
   api?: ManagedAgentsApi;
   gcpToken?: AccessToken;
@@ -239,6 +241,7 @@ export async function dispatchStep(deps: DispatchDeps): Promise<RunRecord | unde
             approvedPlan,
             guidance: settings.guidance,
             environment: settings.environment,
+            skillDirs: deps.skillDirs ? [...deps.skillDirs] : undefined,
           },
           runDeps,
         );

@@ -43,6 +43,10 @@ pnpm globalhost run anlinguist/numu-know 12 --role builder --plan-file .globalho
 pnpm globalhost run --resume sesn_… --feedback "Use the existing Button component instead."
 ```
 
+Add `--config <factory.yaml>` to give a local run the same profile guidance and network environment the dispatcher would build. The file can be a draft that isn't committed to the product repo yet; its owners are used unless `--owner-id` is given.
+
+**Skills.** Every registered profile's skill directory (`skills/<name>`) is uploaded as a Managed Agents custom skill and pinned, by version, on both role agents. A skill is named by a hash of its files (`globalhost-web-app <hash>`), so an unchanged skill is reused and an edit uploads a new one and bumps the agents' versions. All agents carry all profile skills, so `roles sync`, local runs and the dispatcher produce the same agent definition.
+
 Outputs land in `.globalhost/runs/<run-id>/`, which is gitignored. To look at a builder's work, fetch its bundle into a clone of the product repo:
 ```
 git fetch <out>/result.bundle factory/issue-12:factory/issue-12
