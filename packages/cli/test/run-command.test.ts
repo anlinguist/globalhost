@@ -39,6 +39,7 @@ describe("globalhost run (argument handling)", () => {
 
   it.each([
     [["run", "anlinguist/numu-know", "10", "--role", "deployer"], "--role must be one of"],
+    [["run", "anlinguist/numu-know", "10", "--role", "assessor"], "--role must be one of planner, builder"],
     [["run", "anlinguist/numu-know", "0", "--role", "planner"], "issue must be a positive integer"],
     [["run", "../etc", "1", "--role", "planner"], "not an owner/name repo slug"],
     [["run", "anlinguist/numu-know", "1", "--role", "planner", "--budget", "400"], "--budget must be a number"],
@@ -80,7 +81,7 @@ describe("globalhost roles sync", () => {
     expect(skills).toHaveLength(1);
     expect(skills[0]!.displayName).toMatch(/^globalhost-web-app [0-9a-f]{12}$/);
     expect(skills[0]!.files).toContain("web-app/SKILL.md");
-    expect(agents.map((a) => a.name)).toEqual(["globalhost-planner", "globalhost-builder"]);
+    expect(agents.map((a) => a.name)).toEqual(["globalhost-planner", "globalhost-builder", "globalhost-assessor"]);
     for (const a of agents) expect(a.skills).toEqual([{ skillId: "skill_1", version: "v1" }]);
   });
 });

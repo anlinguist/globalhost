@@ -1,0 +1,8 @@
+{
+  "_source": "Recorded 2026-10-30: unauthenticated GET https://api.github.com/repos/anlinguist/numu-know/collaborators?per_page=100 (HTTP 401)",
+  "body": {
+    "message": "Requires authentication",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "401"
+  }
+}

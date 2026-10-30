@@ -22,7 +22,17 @@
     },
     "@globalhost/cli#test": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/ONBOARDING.md"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/docs/ONBOARDING.md",
+        "$TURBO_ROOT$/docs/decisions/0005-first-profile-and-pilot.md",
+        "$TURBO_ROOT$/packages/runner/test/**",
+        "$TURBO_ROOT$/packages/assess/test/fixtures/**"
+      ]
+    },
+    "@globalhost/assess#test": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/profiles/web-app/test/fixtures/**"]
     }
   }
 }

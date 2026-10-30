@@ -1,0 +1,12 @@
+{
+  "_source": "Hand-written in the shape of `gcloud firestore databases list --format=json` (Firestore Admin v1 Database); not recorded: tests never call GCP.",
+  "body": [
+    {
+      "name": "projects/numu-know/databases/(default)",
+      "uid": "00000000-0000-4000-8000-000000000000",
+      "locationId": "nam5",
+      "type": "FIRESTORE_NATIVE",
+      "concurrencyMode": "PESSIMISTIC"
+    }
+  ]
+}

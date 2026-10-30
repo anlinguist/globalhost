@@ -1,0 +1,25 @@
+{
+  "_source": "Recorded 2026-10-30: gitleaks 8.30.1 `gitleaks git <bare clone> --report-format json --redact` over a throwaway local repo holding a generated token (never a real credential)",
+  "body": [
+    {
+      "RuleID": "github-pat",
+      "Description": "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.",
+      "StartLine": 1,
+      "EndLine": 1,
+      "StartColumn": 16,
+      "EndColumn": 55,
+      "Match": "REDACTED",
+      "Secret": "REDACTED",
+      "File": "config.js",
+      "SymlinkFile": "",
+      "Commit": "40323e58ad2d7cf0c75868fb5783d5b81ddba580",
+      "Entropy": 4.853056,
+      "Author": "t",
+      "Email": "t@e",
+      "Date": "2026-10-30T20:31:46Z",
+      "Message": "one",
+      "Tags": [],
+      "Fingerprint": "40323e58ad2d7cf0c75868fb5783d5b81ddba580:config.js:github-pat:1"
+    }
+  ]
+}

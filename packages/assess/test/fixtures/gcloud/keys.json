@@ -1,0 +1,16 @@
+{
+  "_source": "Hand-written in the shape of `gcloud iam service-accounts keys list --format=json` (IAM v1 ServiceAccountKey); not recorded: tests never call GCP. Key IDs are made up.",
+  "body": [
+    {
+      "name": "projects/demo-proj/serviceAccounts/deployer@demo-proj.iam.gserviceaccount.com/keys/0123456789abcdef0123456789abcdef01234567",
+      "keyType": "USER_MANAGED",
+      "validAfterTime": "2023-01-01T00:00:00Z",
+      "validBeforeTime": "9999-12-31T23:59:59Z"
+    },
+    {
+      "name": "projects/demo-proj/serviceAccounts/deployer@demo-proj.iam.gserviceaccount.com/keys/fedcba9876543210fedcba9876543210fedcba98",
+      "keyType": "SYSTEM_MANAGED",
+      "disabled": true
+    }
+  ]
+}

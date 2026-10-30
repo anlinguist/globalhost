@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseFactoryYaml, validateFactoryConfig, type FactoryConfig } from "@globalhost/core";
 import { GitHubClient, githubSnapshot, profileRunSettings, type RunSettings } from "@globalhost/dispatch";
-import { ROLE_IDS, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
+import { ISSUE_ROLE_IDS, ROLE_IDS, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
 import {
   GitHubReader,
   anthropicClient,
@@ -59,16 +59,16 @@ export interface RunIo {
   skillDirs?: readonly string[];
 }
 
-class UsageError extends Error {}
+export class UsageError extends Error {}
 
-function positiveNumber(name: string, raw: string | undefined, fallback: number, max: number): number {
+export function positiveNumber(name: string, raw: string | undefined, fallback: number, max: number): number {
   if (raw === undefined) return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0 || n > max) throw new UsageError(`--${name} must be a number in (0, ${max}]`);
   return n;
 }
 
-function makeApi(io: RunIo): ManagedAgentsApi {
+export function makeApi(io: RunIo): ManagedAgentsApi {
   if (io.api) return io.api;
   const sa = io.env.GLOBALHOST_LOCAL_SA;
   if (!sa) throw new UsageError("GLOBALHOST_LOCAL_SA is not set (see packages/runner/README.md)");
@@ -80,7 +80,7 @@ function runId(role: string, issue: number): string {
   return `${stamp}-${role}-${issue}-${randomBytes(3).toString("hex")}`;
 }
 
-function eventPrinter(io: RunIo, verbose: boolean): (e: SessionEvent) => void {
+export function eventPrinter(io: RunIo, verbose: boolean): (e: SessionEvent) => void {
   return (e) => {
     if (e.type === "agent.tool_use" || e.type === "agent.mcp_tool_use") io.err(`  · ${printable(e.toolName ?? "tool")}\n`);
     else if (e.type === "session.status_idle") io.err(`  · idle (${printable(e.stopReason ?? "")})\n`);
@@ -177,7 +177,7 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
       const issue = Number(issueRaw);
       if (!Number.isSafeInteger(issue) || issue < 1) throw new UsageError("issue must be a positive integer");
       const role = values.role as RoleId;
-      if (!ROLE_IDS.includes(role)) throw new UsageError(`--role must be one of ${ROLE_IDS.join(", ")}`);
+      if (!ISSUE_ROLE_IDS.includes(role)) throw new UsageError(`--role must be one of ${ISSUE_ROLE_IDS.join(", ")}`);
       const settings = values.config ? await localSettings(io, resolve(io.cwd, values.config), repo) : undefined;
       const ownerIds = values["owner-id"]?.map((raw) => {
         const id = Number(raw);

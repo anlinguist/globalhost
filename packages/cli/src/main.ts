@@ -20,6 +20,7 @@ const USAGE = `Usage: globalhost <command> [options]
 Commands:
   validate [path]  Check a factory.yaml (default ./factory.yaml) against docs/FACTORY-YAML.md
                    Exit codes: 0 valid, 1 invalid, 2 usage error or unreadable file
+  assess <repo>    Assess a repo for onboarding; writes the onboarding issue (globalhost assess --help)
   run              Run a factory role on an issue from this machine (globalhost run --help)
   roles sync       Create or update the role agents in Managed Agents
 

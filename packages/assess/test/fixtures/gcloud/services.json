@@ -1,0 +1,28 @@
+{
+  "_source": "Hand-written in the shape of `gcloud run services list --format=json` (Knative Service, Cloud Run Admin API v1); not recorded: tests never call GCP. The env value stands in for a secret that must never be kept.",
+  "body": [
+    {
+      "apiVersion": "serving.knative.dev/v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "numu-know",
+        "namespace": "123456789012",
+        "labels": { "cloud.googleapis.com/location": "us-central1" },
+        "annotations": { "run.googleapis.com/ingress": "all" }
+      },
+      "spec": {
+        "template": {
+          "spec": {
+            "containers": [
+              {
+                "image": "us-central1-docker.pkg.dev/numu-know/cloud-run-source-deploy/numu-know:latest",
+                "env": [{ "name": "KLAVIYO_KEY", "value": "ENV-VALUE-MUST-NOT-BE-KEPT" }]
+              }
+            ]
+          }
+        }
+      },
+      "status": { "url": "https://numu-know-abc123-uc.a.run.app", "latestReadyRevisionName": "numu-know-00042-xyz" }
+    }
+  ]
+}
