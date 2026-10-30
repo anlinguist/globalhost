@@ -1,0 +1,14 @@
+# A pattern can't be both load-bearing and immutable, including the baseline (compared ignoring case).
+# expect: guardrails.loadBearing[0] guardrail_conflict
+# expect: guardrails.loadBearing[1] guardrail_conflict
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+guardrails:
+  loadBearing: ["src/db/**", "Factory.yaml", "src/ok/**"]
+  immutable: ["src/db/**"]

@@ -1,0 +1,15 @@
+# No brace or bracket expansion, and ** must be a whole segment.
+# expect: guardrails.loadBearing[0] invalid_value
+# expect: guardrails.loadBearing[1] invalid_value
+# expect: guardrails.loadBearing[2] invalid_value
+# expect: guardrails.loadBearing[3] invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+guardrails:
+  loadBearing: ["src/{a,b}/**", "src/[ab].ts", "src/**.ts", "./src/**"]

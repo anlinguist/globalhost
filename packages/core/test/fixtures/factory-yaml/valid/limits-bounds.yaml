@@ -1,0 +1,14 @@
+# Limits at their extremes; perRunUsd equal to dailyUsd is fine, and 0.07 has two decimals despite float error.
+version: 1
+product: bounded
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+limits:
+  maxConcurrentBuilders: 5
+  perRunUsd: 0.07
+  perRunMinutes: 180
+  dailyUsd: 0.07

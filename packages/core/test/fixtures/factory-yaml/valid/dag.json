@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "product": "diamond",
+  "owners": [
+    {
+      "login": "octo-owner",
+      "id": 1001
+    }
+  ],
+  "autonomy": "L1",
+  "project": "diamond-suite",
+  "git": {
+    "defaultBranch": "main",
+    "baseBranch": "main"
+  },
+  "environments": {
+    "dev": {
+      "gcpProject": "diamond-dev",
+      "region": "us-central1"
+    }
+  },
+  "parts": {
+    "base": {
+      "path": "libs/base",
+      "profile": "fake-ext",
+      "config": {},
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [],
+      "dependsOn": []
+    },
+    "left": {
+      "path": "apps/left",
+      "profile": "fake-ext",
+      "config": {},
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [],
+      "dependsOn": [
+        "base"
+      ]
+    },
+    "right": {
+      "path": "apps/right",
+      "profile": "fake-ext",
+      "config": {},
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [],
+      "dependsOn": [
+        "base"
+      ]
+    },
+    "top": {
+      "path": "apps/top",
+      "profile": "fake-web",
+      "config": {
+        "port": 3000,
+        "routes": [
+          "/"
+        ]
+      },
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [],
+      "dependsOn": [
+        "left",
+        "right"
+      ]
+    }
+  },
+  "limits": {
+    "maxConcurrentBuilders": 1,
+    "perRunUsd": 4,
+    "perRunMinutes": 45,
+    "dailyUsd": 20
+  },
+  "guardrails": {
+    "loadBearing": [],
+    "immutable": [
+      ".github/**",
+      "factory.yaml",
+      "CODEOWNERS",
+      "docs/CODEOWNERS"
+    ]
+  },
+  "autoMerge": [],
+  "notifications": {
+    "blocking": "digest",
+    "previews": "none",
+    "routine": "none"
+  }
+}

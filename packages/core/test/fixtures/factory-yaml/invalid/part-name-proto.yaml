@@ -1,0 +1,10 @@
+# __proto__ fails the part-name pattern and never touches a prototype.
+# expect: parts.__proto__ invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  __proto__:
+    path: .
+    profile: fake-ext

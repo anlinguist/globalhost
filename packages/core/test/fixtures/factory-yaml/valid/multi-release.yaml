@@ -1,0 +1,20 @@
+# Several release targets on one part; adapter config defaults are applied.
+version: 1
+product: shipper
+owners:
+  - { login: octo-owner, id: 1001 }
+  - { login: Second-Owner, id: 2002 }
+environments:
+  dev: { gcpProject: shipper-dev, region: us-east4 }
+  prod: { gcpProject: shipper-prod, region: us-east4 }
+  staging: { gcpProject: shipper-staging, region: us-east4 }
+parts:
+  api:
+    path: services/api
+    profile: fake-api
+    config: { entry: main.go }
+    release:
+      - adapter: fake-deploy
+        config: { project: shipper-prod, trigger: deploy-api }
+      - adapter: fake-run
+        config: { service: api }

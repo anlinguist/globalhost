@@ -1,0 +1,12 @@
+# autoMerge requires L3.
+# expect: autoMerge automerge_requires_l3
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+autonomy: L2
+autoMerge: [renovate:patch]
+parts:
+  app:
+    path: .
+    profile: fake-ext

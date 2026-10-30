@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "product": "auto",
+  "owners": [
+    {
+      "login": "octo-owner",
+      "id": 1001
+    }
+  ],
+  "autonomy": "L3",
+  "project": null,
+  "git": {
+    "defaultBranch": "main",
+    "baseBranch": "main"
+  },
+  "environments": {},
+  "parts": {
+    "lib": {
+      "path": ".",
+      "profile": "fake-ext",
+      "config": {},
+      "preview": {
+        "enabled": true,
+        "bindings": {}
+      },
+      "release": [],
+      "dependsOn": []
+    }
+  },
+  "limits": {
+    "maxConcurrentBuilders": 1,
+    "perRunUsd": 4,
+    "perRunMinutes": 45,
+    "dailyUsd": 20
+  },
+  "guardrails": {
+    "loadBearing": [],
+    "immutable": [
+      ".github/**",
+      "factory.yaml",
+      "CODEOWNERS",
+      "docs/CODEOWNERS"
+    ]
+  },
+  "autoMerge": [
+    "renovate:patch",
+    "renovate:minor-dev",
+    "lint-fix"
+  ],
+  "notifications": {
+    "blocking": "push",
+    "previews": "digest",
+    "routine": "digest"
+  }
+}

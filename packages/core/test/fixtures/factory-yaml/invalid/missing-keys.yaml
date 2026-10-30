@@ -1,0 +1,9 @@
+# Required keys at the top level and in parts and environments.
+# expect: environments.dev.region missing_key
+# expect: parts missing_key
+# expect: product missing_key
+version: 1
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev }

@@ -1,0 +1,7 @@
+# Entry-count limits: no parts at all; more than 10 owners.
+# expect: owners invalid_value
+# expect: parts invalid_value
+version: 1
+product: sample
+owners: [{ login: o0, id: 1 }, { login: o1, id: 2 }, { login: o2, id: 3 }, { login: o3, id: 4 }, { login: o4, id: 5 }, { login: o5, id: 6 }, { login: o6, id: 7 }, { login: o7, id: 8 }, { login: o8, id: 9 }, { login: o9, id: 10 }, { login: o10, id: 11 }]
+parts: {}

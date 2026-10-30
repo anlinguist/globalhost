@@ -1,0 +1,27 @@
+# Right type, failing a rule.
+# expect: autoMerge[0] invalid_value
+# expect: autonomy invalid_value
+# expect: environments.Dev invalid_value
+# expect: environments.dev.gcpProject invalid_value
+# expect: environments.dev.region invalid_value
+# expect: notifications.routine invalid_value
+# expect: owners[0].id invalid_value
+# expect: owners[0].login invalid_value
+# expect: product invalid_value
+# expect: project invalid_value
+# expect: version invalid_value
+version: 2
+product: Sample_App
+owners:
+  - { login: -octo, id: 0 }
+autonomy: L4
+project: x
+environments:
+  dev: { gcpProject: dev, region: us central }
+  Dev: { gcpProject: sample-dev, region: us-central1 }
+autoMerge: [renovate:major]
+notifications: { routine: email }
+parts:
+  app:
+    path: .
+    profile: fake-ext

@@ -1,0 +1,13 @@
+# Right key, wrong type. "1" is a string; yes is a string in YAML 1.2.
+# expect: autonomy invalid_type
+# expect: environments invalid_type
+# expect: parts.app.preview.enabled invalid_type
+# expect: version invalid_type
+version: "1"
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+autonomy: 3
+environments: [dev]
+parts:
+  app: { path: ., profile: fake-ext, preview: { enabled: yes } }

@@ -1,0 +1,14 @@
+# Neither the default nor the base branch may be an agent branch (the publisher can push there).
+# expect: git.baseBranch invalid_value
+# expect: git.defaultBranch invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+git:
+  defaultBranch: factory/main
+  baseBranch: Factory/release
+parts:
+  app:
+    path: .
+    profile: fake-ext

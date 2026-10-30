@@ -1,0 +1,13 @@
+# The agent branch prefix is fixed at factory/.
+# expect: git.branchPrefix branch_prefix_fixed
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+git:
+  defaultBranch: main
+  branchPrefix: bots/
+parts:
+  app:
+    path: .
+    profile: fake-ext

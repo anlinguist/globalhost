@@ -1,0 +1,16 @@
+# Equal or nested paths (compared ignoring case); "." contains everything.
+# expect: parts.b.path path_overlap
+# expect: parts.c.path path_overlap
+# expect: parts.c.path path_overlap
+# expect: parts.d.path path_overlap
+# expect: parts.d.path path_overlap
+# expect: parts.d.path path_overlap
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  a: { path: apps, profile: fake-ext }
+  b: { path: apps/web, profile: fake-ext }
+  c: { path: Apps, profile: fake-ext }
+  d: { path: ., profile: fake-ext }

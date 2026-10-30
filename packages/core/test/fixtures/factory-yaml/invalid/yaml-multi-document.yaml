@@ -1,0 +1,19 @@
+# Two documents: which one is the config would be ambiguous.
+# expect: <root> yaml_multi_document
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+---
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext

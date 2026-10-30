@@ -1,0 +1,9 @@
+# A part needs path and profile.
+# expect: parts.app.path missing_key
+# expect: parts.app.profile missing_key
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app: {}

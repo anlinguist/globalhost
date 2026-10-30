@@ -1,0 +1,15 @@
+# Dev sharing prod's project would let previews touch prod data.
+# expect: environments.dev.gcpProject env_shares_prod_project
+# expect: environments.qa.gcpProject env_shares_prod_project
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
+  dev: { gcpProject: sample-prod, region: us-central1 }
+  qa: { gcpProject: sample-prod, region: us-east1 }
+parts:
+  app:
+    path: .
+    profile: fake-ext

@@ -1,0 +1,25 @@
+# Provider with preview disabled, and bindings on a consumer whose preview is disabled.
+# expect: parts.ext.preview.bindings.API_URL binding_preview_disabled
+# expect: parts.web.preview.bindings.API_URL binding_preview_disabled
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api: { path: api, profile: fake-api, config: { entry: main.ts } }
+  off: { path: off, profile: fake-api, config: { entry: main.ts }, preview: { enabled: false } }
+  web:
+    path: web
+    profile: fake-web
+    dependsOn: [off]
+    preview:
+      bindings: { API_URL: "${parts.off.preview.url}" }
+  ext:
+    path: ext
+    profile: fake-ext
+    dependsOn: [api]
+    preview:
+      enabled: false
+      bindings: { API_URL: "${parts.api.preview.url}" }

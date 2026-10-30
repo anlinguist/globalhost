@@ -1,0 +1,11 @@
+# A duplicate key would silently override the first value.
+# expect: <root> yaml_duplicate_key
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+    path: apps/other

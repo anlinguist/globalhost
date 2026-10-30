@@ -11,6 +11,14 @@
     },
     "test": {
       "dependsOn": ["^build"]
+    },
+    "@globalhost/core#test": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/schemas/**", "$TURBO_ROOT$/eslint.config.js"]
+    },
+    "@globalhost/cli#test": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/ONBOARDING.md"]
     }
   }
 }
