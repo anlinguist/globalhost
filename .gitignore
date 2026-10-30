@@ -9,3 +9,7 @@ coverage/
 
 # google-github-actions/auth credential files (CI only)
 gha-creds-*.json
+
+# globalhost run outputs (local)
+.globalhost/
+.claude/worktrees/

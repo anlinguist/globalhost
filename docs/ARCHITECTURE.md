@@ -202,6 +202,7 @@ Rules:
 | `sa:runner` (**not built**; Cloud Run fallback only) | Cloud Run Job | would: write `gs://globalhost-runs/<run>`; its identity token accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
 | `sa:globalhost-budget-pause` | Cloud Function `globalhost-budget-pause` (runtime and Pub/Sub trigger identity) | read/write `gs://globalhost-control/state.json` only (IAM condition); invoke its own function | anything else |
 | `sa:globalhost-fn-build` | Cloud Build for that function | write logs; push to Artifact Registry `globalhost-functions`; read the function source bucket | anything else |
+| `sa:globalhost-local` | impersonated by the owner for `globalhost run` | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014) | any GCP role; anything else |
 | `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
 | `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |

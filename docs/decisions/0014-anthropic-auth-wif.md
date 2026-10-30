@@ -17,7 +17,8 @@ ADR-0004 had unattended runs authenticate with an API key from the linked Consol
    | Security audit (ADR-0012) | GitHub Actions, environment `security-audit` | immutable subject, claims, CEL (as built) |
    | Dispatcher creating Managed Agents sessions (ADR-0011) | GitHub Actions, a dedicated environment in each product repo | immutable subject `repo:<owner>@<id>/<repo>@<id>:environment:<env>`, `ref` = default branch |
    | Cloud Run Job runner (fallback) | Google identity token for `sa:runner` from the metadata server | `sub` = SA unique ID **and** `email`, audience `https://api.anthropic.com` |
-   | P1-00 spike (local, throwaway) | Google identity token for `sa:globalhost-spike`, minted by the owner through SA impersonation | same as the runner row |
+   | Local runs (`globalhost run`, owner's machine) | Google identity token for `sa:globalhost-local` (no GCP roles), minted by the owner through `generateIdToken` | same as the runner row |
+| P1-00 spike (local, throwaway) | Google identity token for `sa:globalhost-spike`, minted by the owner through SA impersonation | same as the runner row |
 
    A Managed Agents session itself holds no Anthropic credential. The dispatcher creates and drives it.
 2. **ADR-0004 stands otherwise:** the linked org and credit, auto-reload off, workspaces with spend limits, the factory caps, and the model-per-role rules are unchanged. Its decision 1 now reads "unattended runs authenticate with WIF tokens for service accounts in the linked org".
