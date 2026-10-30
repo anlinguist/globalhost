@@ -141,7 +141,8 @@ New Firebase/GCP project `numu-know-dev`:
 - Firestore, Auth (email/Google test users), seed script (`pnpm seed:dev`) with representative non-user fixture content (stories, dictionary entries);
 - Algolia: separate dev index (or search stubbed in preview);
 - Klaviyo: disabled in preview (env flag).
-**AC:** `pnpm seed:dev` is idempotent, and a fresh dev project serves the app with realistic content. No prod data is copied (assert: seed reads only from repo fixtures).
+- **Swap numu-know's `factory.yaml` `previewEnv` to the dev project's Firebase web config.** Until then it holds the production web config (owner, 2026-10-30): public values, and harmless while only agent sandboxes use them (no Firebase egress), but they must be replaced before P1-11 enables previews, which can reach Firebase.
+**AC:** `pnpm seed:dev` is idempotent, and a fresh dev project serves the app with realistic content. No prod data is copied (assert: seed reads only from repo fixtures). numu-know's `previewEnv` names `numu-know-dev`, and P1-11 refuses to enable previews while any `previewEnv` value names the prod project.
 
 ### P1-11 Preview pipeline (web-app)
 - `globalhost-preview.yml`: build image with dev config, push to AR, deploy `numu-know-web-preview` revision tagged `pr-<n>` (no traffic) in `numu-know-dev` with the `access-guard` sidecar;
