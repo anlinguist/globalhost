@@ -74,7 +74,11 @@ export async function loadConfig(gh: GitHubClient, repo: string, registry: Regis
 
 const EventSchema = z.object({
   sender: z.object({ id: z.number().int(), type: z.string() }),
-  issue: z.object({ number: z.number().int(), pull_request: z.unknown().optional() }),
+  issue: z.object({
+    number: z.number().int(),
+    pull_request: z.unknown().optional(),
+    labels: z.array(z.object({ name: z.string() })).default([]),
+  }),
   label: z.object({ name: z.string() }).optional(),
   comment: z.object({ id: z.number().int(), body: z.string().nullable() }).optional(),
 });
@@ -107,7 +111,8 @@ export async function gateStep(deps: DispatchDeps): Promise<GateOutputs> {
       }));
       pullRequest = { number: pr.number, headRef: pr.head.ref, headRepoIsBase: pr.head.repo?.full_name === repo };
     }
-    gateEvent = { kind: "comment", senderId: event.sender.id, senderType: event.sender.type, pullRequest, body: event.comment.body ?? "" };
+    const issue = pullRequest ? undefined : { number: event.issue.number, labels: event.issue.labels.map((l) => l.name) };
+    gateEvent = { kind: "comment", senderId: event.sender.id, senderType: event.sender.type, pullRequest, issue, body: event.comment.body ?? "" };
   } else {
     return { action: "ignore", reason: `unsupported event ${eventName}` };
   }
@@ -122,6 +127,7 @@ export async function gateStep(deps: DispatchDeps): Promise<GateOutputs> {
   const decision = gate(gateEvent, config.owners.map((o) => o.id));
   if (decision.action === "ignore") return { action: "ignore", reason: decision.reason };
   if (decision.action === "start") return { action: "start", role: decision.role, issue: decision.issue };
+  if (decision.role === "planner") return { action: "resume", role: "planner", issue: decision.issue, comment: event.comment!.id };
   return { action: "resume", role: "builder", issue: decision.issue, pr: decision.pullRequest, comment: event.comment!.id };
 }
 
@@ -140,7 +146,21 @@ const intEnv = (env: Env, name: string): number | undefined => {
   return Number(raw);
 };
 
+/**
+ * Runs the dispatch step. If it fails after it can write to GitHub (sign-in, API or harness errors), it says so on
+ * the issue or PR with a link to the Actions run and labels the issue factory:failed, then rethrows so the job fails.
+ */
 export async function dispatchStep(deps: DispatchDeps): Promise<RunRecord | undefined> {
+  const onError: { report?: (err: unknown) => Promise<void> } = {};
+  try {
+    return await runDispatch(deps, onError);
+  } catch (err) {
+    await onError.report?.(err).catch(() => undefined);
+    throw err;
+  }
+}
+
+async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown) => Promise<void> }): Promise<RunRecord | undefined> {
   const { env, log } = deps;
   const repo = RepoSlug.parse(need(env, "GITHUB_REPOSITORY"));
   const action = need(env, "GLOBALHOST_ACTION");
@@ -172,6 +192,15 @@ export async function dispatchStep(deps: DispatchDeps): Promise<RunRecord | unde
 
   const pr = action === "resume" ? intEnv(env, "GLOBALHOST_PR") : undefined;
   const target = pr ?? issue;
+  onError.report = async () => {
+    // Only fixed text and the run link: error messages can carry API responses, so they stay in the Actions log.
+    const runUrl = `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}/actions/runs/${need(env, "GITHUB_RUN_ID")}`;
+    const { gh } = await writer();
+    await gh.request("POST", `/repos/${repo}/issues/${target}/comments`, {
+      body: `**globalhost:** the ${role} run stopped on a factory error (not the agent's). Details are in the [Actions run](${runUrl}).`,
+    });
+    await gh.request("POST", `/repos/${repo}/issues/${issue}/labels`, { labels: [LABELS.failed] });
+  };
   if (await control.paused()) return refuse(target, "the factory is paused (`globalhost resume` to continue). Nothing ran.");
   const spent = await control.spentTodayUsd(repo);
   if (spent + config.limits.perRunUsd > config.limits.dailyUsd) {
@@ -194,14 +223,22 @@ export async function dispatchStep(deps: DispatchDeps): Promise<RunRecord | unde
     approvedPlan = plan?.comment.body?.replace(/<!-- globalhost:run [^\n]* -->/g, "").trim();
   }
   if (action === "resume") {
-    if (!pr) throw new Error("resume without a PR");
+    // Builder: steering on its PR. Planner: a reply on the planned issue, to revise the plan.
+    if (role === "builder" && !pr) throw new Error("builder resume without a PR");
     const commentId = intEnv(env, "GLOBALHOST_COMMENT");
     const c = await reader.request("GET", `/repos/${repo}/issues/comments/${commentId}`, undefined, CommentSchema);
     // Re-check the author here: this job doesn't trust anything but its own reads.
     if (!ownerIds.includes(c.user.id) || c.user.type !== "User") throw new Error("steering comment is not by an owner");
     feedback = c.body ?? "";
-    const prev = latestMarker(await listComments(reader, repo, pr), botLogin, "builder");
-    if (!prev) return refuse(pr, "no earlier builder session found on this PR, so there's nothing to steer. Re-apply `factory:build` on the issue to start fresh.");
+    const prev = latestMarker(await listComments(reader, repo, target), botLogin, role);
+    if (!prev) {
+      return refuse(
+        target,
+        role === "builder"
+          ? "no earlier builder session found on this PR, so there's nothing to steer. Re-apply `factory:build` on the issue to start fresh."
+          : "no earlier plan found on this issue, so there's nothing to revise. Apply `factory:plan` to start a plan.",
+      );
+    }
     resumeFrom = { session: prev.marker.session, costUsd: prev.marker.costUsd };
   }
 

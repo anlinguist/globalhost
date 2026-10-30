@@ -108,11 +108,12 @@ Per ADR-0011 (accepted), `packages/runner` is session-driving code behind a `Run
 - `git config --list` and `env` inside the agent shell show no credentials.
 
 ### P1-07 Dispatcher + publisher (installed workflow + composite action)
-**Status (2026-10-30):** code done (`packages/dispatch`, `packages/action`, `templates/.github/workflows/globalhost.yml`, path policy + trust gate in core). Run and publish share one job, since the agent runs in Managed Agents, not in Actions. The live AC (test-account label, real PR, real pause) runs once P1-04/P1-05 are applied and numu-know is set up per `packages/dispatch/README.md`.
+**Status (2026-10-30):** live on numu-know: an owner's `factory:plan` on #13 produced a plan comment end to end (GCP and Anthropic sign-in by WIF, kill switch, budget, archive, publish). Also: an owner's reply on a `factory:planned`/`factory:blocked` issue resumes the planner's session to revise the plan, and a dispatcher failure is reported on the issue with a link to the run. Code: `packages/dispatch`, `packages/action`, `templates/.github/workflows/globalhost.yml`, path policy + trust gate in core. Run and publish share one job, since the agent runs in Managed Agents, not in Actions. The live AC (test-account label, real PR, real pause) runs once P1-04/P1-05 are applied and numu-know is set up per `packages/dispatch/README.md`.
 `templates/.github/workflows/globalhost.yml` + `packages/action` (composite action pinned by SHA). Implements trust gate, kill switch/budget check, concurrency + GCS lock, WIF → execute job → wait, publisher with path policy, branch claim, draft PR template, run report comment, labels.
 Triggers:
 - `issues.labeled` (`factory:plan`, `factory:build`);
 - `issue_comment` by the owner on a `factory/*` PR (re-run builder on that branch with the comment as steering; comments starting `>` or containing `[no-factory]` are ignored).
+- `issue_comment` by the owner on an issue labeled `factory:planned` or `factory:blocked` (resume the planner's session to revise the plan; same opt-outs).
 **AC:**
 - label by a non-owner (test account) → no run, no comment;
 - owner label → run → PR within the cap;
@@ -187,6 +188,7 @@ Owner files three small numu-know issues (e.g. a copy/UX tweak, a bug, a small f
 
 - PWA on Cloudflare Pages + Worker at `app.globalhost.ai`, behind Access; GitHub App user-to-server auth (acts as the owner).
 - Inbox from GitHub queries; approve/redirect/discard/ship mapped 1:1 to label/comment/close/merge.
+- **Planning happens in the app** (owner, 2026-10-30). Either as a conversation that maps onto the issue's plan comments (reply → planner revises), or, for a net-new feature, a pre-issue planning session whose result *creates* the issue and promotes it straight to build. Either way the approval is the owner's action, made through user-to-server auth, so the trust gate sees the owner as sender; the factory's own bot identity never counts as an owner.
 - Web Push with tiers (blocking immediate, previews in a daily digest, routine weekly); digest generation.
 - Chat agent (API key) with GitHub/Pulumi/Sentry read tools; wireframe and screenshot rendering inline.
 - Revisit ADR-0009 (Entire Trails).

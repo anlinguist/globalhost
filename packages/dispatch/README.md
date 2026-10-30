@@ -29,9 +29,12 @@ issues.labeled / issue_comment
 | An owner applies `factory:plan` | Planner run. The plan is posted as an issue comment, and the issue is labeled `factory:planned`. |
 | An owner applies `factory:build` | Builder run, which starts from the latest plan if there is one. It pushes `factory/issue-<n>`, opens a draft PR, and labels the issue `factory:in-review`. |
 | An owner comments on a `factory/*` PR | The builder's session resumes with the comment as feedback, plus a budget top-up of `limits.perRunUsd`. A comment starting with `>`, or containing `[no-factory]`, is ignored. |
+| An owner replies on an issue labeled `factory:planned` or `factory:blocked` | The planner's session resumes with the reply as feedback (same budget top-up) and posts a revised plan. Same opt-outs as PR steering. |
 | Anything by a non-owner | Nothing. No run and no comment. |
 
 The session ID travels in a hidden marker on the bot's run-report comment. Only markers on comments by the App's bot user are trusted, and agent text has `<!--` neutralized before it's posted.
+
+**Failures** of the dispatcher itself (sign-in, API or harness errors) are reported on the issue or PR with a link to the Actions run, and the issue is labeled `factory:failed`; the error text stays in the run log.
 
 **Refusals** are posted as a comment, and nothing runs. They happen when:
 - the factory is paused;

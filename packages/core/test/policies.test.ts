@@ -94,6 +94,11 @@ describe("trust gate", () => {
     ["a prototype-named label", label({ label: "__proto__" })],
     ["a label on a PR", label({ isPullRequest: true })],
     ["a comment on an issue", comment({ pullRequest: undefined })],
+    ["a comment on an unplanned issue", comment({ pullRequest: undefined, issue: { number: 12, labels: ["bug", "factory:plan"] } })],
+    ["a non-owner's reply to a plan", comment({ senderId: 1, pullRequest: undefined, issue: { number: 12, labels: ["factory:planned"] } })],
+    ["a bot reply to a plan", comment({ senderType: "Bot", pullRequest: undefined, issue: { number: 12, labels: ["factory:planned"] } })],
+    ["a quoted reply to a plan", comment({ body: "> the plan says\nok", pullRequest: undefined, issue: { number: 12, labels: ["factory:planned"] } })],
+    ["a lookalike label", comment({ pullRequest: undefined, issue: { number: 12, labels: ["factory:planned-ish", "Factory:Planned"] } })],
     ["a non-owner's comment", comment({ senderId: 1 })],
     ["a bot comment with an owner's id", comment({ senderType: "Bot" })],
     ["a comment on a non-factory PR", comment({ pullRequest: { number: 30, headRef: "feature/x", headRepoIsBase: true } })],
@@ -104,6 +109,15 @@ describe("trust gate", () => {
     ["an empty comment", comment({ body: "   " })],
   ])("ignores %s", (_name, event) => {
     expect(gate(event, OWNERS).action).toBe("ignore");
+  });
+
+  it.each(["factory:planned", "factory:blocked"])("resumes the planner on an owner's reply to an issue labeled %s", (l) => {
+    expect(gate(comment({ pullRequest: undefined, issue: { number: 12, labels: ["bug", l] }, body: "Skip the refactor." }), OWNERS)).toEqual({
+      action: "resume",
+      role: "planner",
+      issue: 12,
+      feedback: "Skip the refactor.",
+    });
   });
 
   it("resumes the builder on an owner's PR comment", () => {
