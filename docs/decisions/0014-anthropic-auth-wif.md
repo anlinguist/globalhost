@@ -15,7 +15,7 @@ ADR-0004 had unattended runs authenticate with an API key from the linked Consol
    | Caller | OIDC identity | Rule match |
    |---|---|---|
    | Security audit (ADR-0012) | GitHub Actions, environment `security-audit` | immutable subject, claims, CEL (as built) |
-   | Dispatcher creating Managed Agents sessions (ADR-0011) | GitHub Actions, environment `globalhost` in each product repo | **one rule for all of the owner's repos** (amendment below): subject prefix `repo:anlinguist@47403803/*:environment:globalhost`, `repository_owner_id`, CEL limiting it to `globalhost.yml` on `issues`/`issue_comment` |
+   | Dispatcher creating Managed Agents sessions (ADR-0011) | GitHub Actions, environment `globalhost` in each product repo | **one rule for all of the owner's repos** (amendment below): subject prefix `repo:anlinguist@47403803/`, claims `repository_owner_id` and `environment` = `globalhost`, CEL limiting it to `globalhost.yml` on `issues`/`issue_comment` |
    | Cloud Run Job runner (fallback) | Google identity token for `sa:runner` from the metadata server | `sub` = SA unique ID **and** `email`, audience `https://api.anthropic.com` |
    | Local runs (`globalhost run`, owner's machine) | Google identity token for `sa:globalhost-local` (no GCP roles), minted by the owner through `generateIdToken` | same as the runner row |
 | P1-00 spike (local, throwaway) | Google identity token for `sa:globalhost-spike`, minted by the owner through SA impersonation | same as the runner row |
@@ -27,8 +27,8 @@ ADR-0004 had unattended runs authenticate with an API key from the linked Consol
 ### Amendment (2026-10-30): one dispatcher rule for all product repos
 
 A rule per product repo meant a Console visit for every repo onboarded. The dispatcher instead has one rule, `globalhost-dispatch`, matching:
-- subject prefix `repo:anlinguist@47403803/*:environment:globalhost`, which needs the repo's ID-based OIDC subjects turned on (`actions/oidc/customization/sub`, `use_immutable_subject: true`); a repo without it sends a name-based subject and fails closed;
-- claim `repository_owner_id` = `47403803`;
+- subject prefix `repo:anlinguist@47403803/` (pattern `repo:anlinguist@47403803/*`; the Console treats `*` only as a trailing "starts with", so the environment can't be matched inside the subject). This needs the repo's ID-based OIDC subjects turned on (`actions/oidc/customization/sub`, `use_immutable_subject: true`); a repo without it sends a name-based subject and fails closed;
+- claims `repository_owner_id` = `47403803` and `environment` = `globalhost`;
 - CEL: `event_name` in `issues`/`issue_comment`, and `job_workflow_ref` is an `anlinguist/*` repo's `.github/workflows/globalhost.yml` on a branch. Those events always run on the default branch, so no `ref` claim (default branches differ between repos).
 
 What a per-repo rule would add is protection against one of the owner's own repos misusing an environment named `globalhost`. The worst case is spend from `globalhost-runners`, up to its limit. Everything else the dispatcher touches (control and runs buckets, the App key) is behind the GCP side, which still trusts only the repo IDs listed in `infra/factory` (`dispatchRepos`), so adding a repo stays a reviewed change.
