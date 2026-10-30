@@ -1,0 +1,5 @@
+# YAML 1.2 core schema: yes/no/on/off stay strings; quoted keys, flow style and comments are fine.
+"version": 1
+product: 'scalars'
+owners: [{login: octo-owner, id: 1001}]
+parts: {app: {path: ., profile: fake-ext, config: {answer: yes, toggle: on, off: no, hex: 0x1F, nothing: ~}}}

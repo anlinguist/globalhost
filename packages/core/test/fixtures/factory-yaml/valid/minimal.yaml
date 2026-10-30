@@ -1,0 +1,9 @@
+# Only the four required keys; everything else takes its default. A non-hosted part needs no dev environment.
+version: 1
+product: ab
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext

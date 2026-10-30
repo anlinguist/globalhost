@@ -1,0 +1,14 @@
+# Ceilings catch typos like 400 for 4.00; money has at most 2 decimals.
+# expect: limits.dailyUsd invalid_value
+# expect: limits.maxConcurrentBuilders invalid_value
+# expect: limits.perRunMinutes invalid_value
+# expect: limits.perRunUsd invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+limits: { maxConcurrentBuilders: 0, perRunUsd: 400, perRunMinutes: 4.5, dailyUsd: 1.005 }

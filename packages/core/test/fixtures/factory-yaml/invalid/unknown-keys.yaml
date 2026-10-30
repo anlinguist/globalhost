@@ -1,0 +1,15 @@
+# Every object is closed, so typos fail loudly.
+# expect: parts.app.dependOn unknown_key
+# expect: parts.app.preview.enable unknown_key
+# expect: team unknown_key
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+team: core
+parts:
+  app:
+    path: .
+    profile: fake-ext
+    dependOn: []
+    preview: { enable: false }

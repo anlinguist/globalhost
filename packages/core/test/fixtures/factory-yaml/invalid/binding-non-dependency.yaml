@@ -1,0 +1,15 @@
+# The referenced part must be in dependsOn, so build order is explicit.
+# expect: parts.web.preview.bindings.API_URL binding_not_dependency
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  api: { path: api, profile: fake-api, config: { entry: main.ts } }
+  web:
+    path: web
+    profile: fake-web
+    preview:
+      bindings: { API_URL: "${parts.api.preview.url}" }

@@ -1,0 +1,9 @@
+﻿# A BOM and CRLF line endings are accepted; path segments may use . _ @ + -.
+version: 1
+product: windows
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: "apps/@scope+name/v1.2_x-y"
+    profile: fake-ext

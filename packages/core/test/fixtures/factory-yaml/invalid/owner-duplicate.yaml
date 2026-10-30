@@ -1,0 +1,13 @@
+# Repeated ids, and logins that differ only by case.
+# expect: owners[1].id owner_duplicate
+# expect: owners[2].login owner_duplicate
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+  - { login: someone, id: 1001 }
+  - { login: OCTO-OWNER, id: 3003 }
+parts:
+  app:
+    path: .
+    profile: fake-ext

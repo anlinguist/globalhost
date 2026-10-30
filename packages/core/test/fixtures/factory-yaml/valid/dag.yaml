@@ -1,0 +1,28 @@
+# A diamond-shaped dependency graph (no cycle) with sibling, non-overlapping paths.
+version: 1
+product: diamond
+owners:
+  - { login: octo-owner, id: 1001 }
+project: diamond-suite
+environments:
+  dev: { gcpProject: diamond-dev, region: us-central1 }
+parts:
+  base:
+    path: libs/base
+    profile: fake-ext
+  left:
+    path: apps/left
+    profile: fake-ext
+    dependsOn: [base]
+  right:
+    path: apps/right
+    profile: fake-ext
+    dependsOn: [base]
+  top:
+    path: apps/top
+    profile: fake-web
+    dependsOn: [left, right]
+notifications:
+  blocking: digest
+  previews: none
+  routine: none

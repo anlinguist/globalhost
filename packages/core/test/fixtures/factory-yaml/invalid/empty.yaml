@@ -1,0 +1,2 @@
+# An empty document is null, not a map.
+# expect: <root> invalid_type

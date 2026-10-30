@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/anlinguist/globalhost/main/schemas/factory.schema.json",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "product": {
+      "type": "string",
+      "pattern": "^(?=.{2,31}$)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "owners": {
+      "minItems": 1,
+      "maxItems": 10,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "pattern": "^(?=.{1,39}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+          },
+          "id": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Immutable GitHub user ID; the trust gate compares this, never the login."
+          }
+        },
+        "required": [
+          "login",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "autonomy": {
+      "default": "L1",
+      "type": "string",
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    "project": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?=.{2,31}$)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "git": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "defaultBranch": {
+          "default": "main",
+          "type": "string",
+          "pattern": "^(?![-/])(?!.*\\/\\/)(?!.*\\.\\.)(?!.*(?:\\/|\\.lock)$)[A-Za-z0-9._/-]{1,100}$"
+        },
+        "baseBranch": {
+          "description": "Where factory PRs target. Defaults to defaultBranch.",
+          "type": "string",
+          "pattern": "^(?![-/])(?!.*\\/\\/)(?!.*\\.\\.)(?!.*(?:\\/|\\.lock)$)[A-Za-z0-9._/-]{1,100}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "environments": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]{0,15}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "gcpProject": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+          },
+          "region": {
+            "type": "string",
+            "pattern": "^[a-z]+-[a-z]+[0-9]+$"
+          }
+        },
+        "required": [
+          "gcpProject",
+          "region"
+        ],
+        "additionalProperties": false
+      },
+      "maxProperties": 8
+    },
+    "parts": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]{0,19}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^(?=.{1,200}$)(?:\\.|(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._@+-]+(?:\\/(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._@+-]+){0,9})$"
+          },
+          "profile": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,39}$"
+          },
+          "config": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {},
+            "description": "Validated by the profile's or adapter's own schema."
+          },
+          "preview": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "bindings": {
+                "default": {},
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "maxProperties": 20
+              }
+            },
+            "additionalProperties": false
+          },
+          "release": {
+            "default": [],
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "adapter": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Validated by the profile's or adapter's own schema."
+                }
+              },
+              "required": [
+                "adapter"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "dependsOn": {
+            "default": [],
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9]{0,19}$"
+            }
+          }
+        },
+        "required": [
+          "path",
+          "profile"
+        ],
+        "additionalProperties": false
+      },
+      "minProperties": 1,
+      "maxProperties": 20
+    },
+    "limits": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "maxConcurrentBuilders": {
+          "default": 1,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "perRunUsd": {
+          "default": 4,
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 50
+        },
+        "perRunMinutes": {
+          "default": 45,
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 180
+        },
+        "dailyUsd": {
+          "default": 20,
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "guardrails": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "loadBearing": {
+          "default": [],
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?=.{1,200}$)(?:\\*\\*(?=\\/|$)|(?!\\.{1,2}(?:\\/|$))(?:[A-Za-z0-9._@+?-]|\\*(?!\\*))+)(?:\\/(?:\\*\\*(?=\\/|$)|(?!\\.{1,2}(?:\\/|$))(?:[A-Za-z0-9._@+?-]|\\*(?!\\*))+)){0,9}$"
+          }
+        },
+        "immutable": {
+          "default": [],
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?=.{1,200}$)(?:\\*\\*(?=\\/|$)|(?!\\.{1,2}(?:\\/|$))(?:[A-Za-z0-9._@+?-]|\\*(?!\\*))+)(?:\\/(?:\\*\\*(?=\\/|$)|(?!\\.{1,2}(?:\\/|$))(?:[A-Za-z0-9._@+?-]|\\*(?!\\*))+)){0,9}$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "autoMerge": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "renovate:patch",
+          "renovate:minor-dev",
+          "lint-fix"
+        ]
+      }
+    },
+    "notifications": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "blocking": {
+          "default": "push",
+          "type": "string",
+          "enum": [
+            "push",
+            "digest",
+            "none"
+          ]
+        },
+        "previews": {
+          "default": "digest",
+          "type": "string",
+          "enum": [
+            "push",
+            "digest",
+            "none"
+          ]
+        },
+        "routine": {
+          "default": "digest",
+          "type": "string",
+          "enum": [
+            "push",
+            "digest",
+            "none"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "product",
+    "owners",
+    "parts"
+  ],
+  "additionalProperties": false,
+  "title": "globalhost factory.yaml v1",
+  "description": "Shape only; the validator (`globalhost validate`) is authoritative. Spec: docs/FACTORY-YAML.md."
+}

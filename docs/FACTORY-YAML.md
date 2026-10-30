@@ -52,10 +52,12 @@ owners:
 
 | Key | Default | Rules |
 |---|---|---|
-| `defaultBranch` | `main` | Branch name (below). |
+| `defaultBranch` | `main` | Branch name (below). Must not start with `factory/`. |
 | `baseBranch` | value of `defaultBranch` | Branch name; where factory PRs target. Must not start with `factory/`. |
 
 **Branch name:** 1–100 characters from `[A-Za-z0-9._/-]`. It must not start with `-` or `/`, end with `/` or `.lock`, or contain `//` or `..`.
+
+Neither branch may start with `factory/` (compared ignoring case). The publisher can push to `factory/*`, so a default branch there would let an agent's push reach prod without a merge (CLAUDE.md #6).
 
 There is no `branchPrefix`. Agent branches are always `factory/…`, because the publisher may push only there (CLAUDE.md #3). A `branchPrefix` key gets a dedicated error explaining this, not just "unknown key".
 
@@ -87,7 +89,7 @@ A map from part name to part, 1–20 entries.
 | `dependsOn` | no | `[]` | 0–20 unique part names. |
 
 **Part rules:**
-- **No path overlap.** Part paths must be distinct, and no part's path may contain another's (`.` with `apps/web`, or `apps` with `apps/web`). Each file belongs to at most one part, so change detection and path policy have one answer.
+- **No path overlap.** Part paths must be distinct, and no part's path may contain another's (`.` with `apps/web`, or `apps` with `apps/web`). Paths are compared ignoring case, so `Apps` and `apps` overlap too (one directory on a case-insensitive checkout). Each file belongs to at most one part, so change detection and path policy have one answer.
 - **`dependsOn`** entries must name declared parts, must not name the part itself, and must be acyclic across the whole file. A cycle error names the cycle, e.g. `web → api → web`.
 
 #### 3.5.1 `preview`
@@ -99,7 +101,7 @@ preview:
 ```
 
 - `enabled`: boolean, default `true`.
-- `bindings`: 0–20 entries, from an input name to exactly one reference of the form `${parts.<part>.preview.<output>}`. The whole string must be that one reference: no surrounding text, no second reference, no other `${…}` forms. That makes a binding a pure reference that can't splice text into a build.
+- `bindings`: 0–20 entries, from an input name (`^[A-Z][A-Z0-9_]{0,63}$`) to exactly one reference of the form `${parts.<part>.preview.<output>}`. The whole string must be that one reference: no surrounding text, no second reference, no other `${…}` forms. That makes a binding a pure reference that can't splice text into a build. `<part>` is a part name and `<output>` matches `^[a-z][a-zA-Z0-9]{0,39}$`; anything else is `binding_syntax`.
 
 **Binding rules:**
 - The key must be one of the inputs declared by the consuming part's profile (`preview.inputs`). Bindings can't set arbitrary environment variables such as `NODE_OPTIONS`.
@@ -165,7 +167,7 @@ Each target is `{ adapter, config }`:
 
 The validator's normalized output contains the union. A product can add protection but can't remove the baseline. There's no negation syntax, and listing a baseline pattern is allowed but redundant.
 
-Listing the same pattern in both `loadBearing` and `immutable` is an error, since the two lists mean contradictory things.
+Listing the same pattern in both `loadBearing` and `immutable` is an error, since the two lists mean contradictory things. The check uses the merged `immutable` list (so a baseline pattern in `loadBearing` is an error too) and ignores case, like guardrail matching. Exact repeats within one list are dropped from the normalized output.
 
 ### 3.9 `autoMerge`
 
@@ -189,8 +191,9 @@ Keys `blocking` (default `push`), `previews` (default `digest`) and `routine` (d
 - **No anchors, aliases or explicit tags (`!…`) at all.** That rules out alias-expansion ("billion laughs") attacks and custom types. `<<` is an ordinary key, so the closed objects reject it.
 - **Duplicate keys** are an error at any level.
 - **Nesting depth** of at most 32. Exceeding it is an error, not a crash.
-- **Map keys** must be strings. Every key becomes an own property, so a `__proto__` key never changes an object's prototype; a test pins this behavior of the YAML library. Part, environment and binding names also have to match their name patterns, which rejects `__proto__`, `constructor` and similar.
-- **Numbers** must be finite.
+- **Map keys** must be strings (`invalid_type` otherwise). The parser builds plain values from the YAML AST itself and defines every key as an own data property, so a `__proto__` key never changes an object's prototype; a test pins this. Part, environment and binding names also have to match their name patterns, which rejects `__proto__`, `constructor` and similar. (zod's records skip a `__proto__` key silently, so the validator checks these names on the raw value as well.)
+- **Numbers** must be finite (`.inf`, `.nan` and overflowing literals are `invalid_value` at their path).
+- **`yaml_*` errors** have the empty path (the whole document) and give a line and column in the message. Each `yaml_*` code is reported at most once, so a hostile file can't produce unbounded output.
 
 ## 5. Validation
 
@@ -227,11 +230,11 @@ export interface Registry {
 export function createRegistry(profiles: ProfileDescriptor[], adapters: AdapterDescriptor[]): Registry; // rejects duplicate ids
 ```
 
-Profile and adapter ids match `^[a-z][a-z0-9-]{0,39}$`.
+Profile and adapter ids match `^[a-z][a-z0-9-]{0,39}$`, in the registry (`createRegistry` throws otherwise) and in `factory.yaml` (`invalid_value` in stage 1). Profile `preview.inputs` and `preview.outputs` must match the binding input and output patterns (§3.5.1). Core re-exports its `z`, so descriptors build their schemas with the same zod version the validator runs.
 
 **Errors** are `{ path, code, message }`:
 - `path` is a dotted path with indexes (`parts.web.dependsOn[0]`). A key that isn't a plain identifier is JSON-quoted (`parts["Web-App"]`).
-- Errors are sorted by path, then by code.
+- Errors are sorted by path, then by code (plain string order), then by message. In stage 1, a value that breaks two rules of one field is reported once per code.
 - Messages quote at most 80 characters of any value from the file.
 
 Codes are stable, because `--json` consumers depend on them:
@@ -273,21 +276,21 @@ Codes are stable, because `--json` consumers depend on them:
 `schemas/factory.schema.json` is generated from the zod schema with zod's `toJSONSchema` (draft 2020-12, input shape, so keys that have defaults are optional).
 - Its `$id` is `https://raw.githubusercontent.com/anlinguist/globalhost/main/schemas/factory.schema.json`. Product repos can reference it for editor completion with `# yaml-language-server: $schema=<that URL>`.
 - It covers shape only. Part `config` is an open object, and none of the stage-2 rules are expressible in it. The validator is authoritative.
-- It is committed, and a test compares it with freshly generated output, so it can't drift. Regenerate it with `pnpm test -u`.
+- It is committed, and a test compares it with freshly generated output, so it can't drift. Regenerate it with `pnpm schema:update` (`pnpm test -u` doesn't reach vitest through turbo; `pnpm --filter @globalhost/core test -u` also regenerates the valid fixtures' recorded output).
 
 ## 7. CLI: `globalhost validate [path]`
 
 - `path` defaults to `./factory.yaml`.
 - The file must be a regular file. It is opened once, its size is checked with `fstat` before reading, and reads stop at 64 KiB + 1 byte.
 - **Output:**
-  - Human output is one line per error, `path: message`, followed by a summary line.
+  - Human output is one line per error, `path: message`, followed by a summary line. A document-level error (empty path) uses the file name as its path.
   - All text from the file passes through `printable()`, so control characters can't rewrite the terminal.
   - With `--json`, output is `{"ok": bool, "errors": [{path, code, message}]}` on stdout.
 - **Exit codes:**
   - `0`: valid.
-  - `1`: invalid.
+  - `1`: invalid, including a file over 64 KiB (`yaml_too_large`, decided from `fstat` without reading).
   - `2`: usage error, or the file is missing, unreadable or not a regular file.
-- **Registry:** the CLI builds it from the profile and adapter packages, so the CLI (not core) is where they are imported. Until P1-03 adds the first profile, the registry is empty and any real file fails with `unknown_profile`.
+- **Registry:** the CLI builds it from the profile and adapter packages, so the CLI (not core) is where they are imported. `run(argv, deps)` takes the registry (and the file-system calls) as injectable dependencies, so P1-03 registers its packages in `defaultDeps()` and tests pass fakes. Until P1-03 adds the first profile, the registry is empty and any real file fails with `unknown_profile`.
 
 ## 8. Versioning
 

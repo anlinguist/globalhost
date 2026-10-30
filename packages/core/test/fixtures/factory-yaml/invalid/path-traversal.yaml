@@ -1,0 +1,10 @@
+# A part path may not climb out of the repo.
+# expect: parts.app.path invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: ../x
+    profile: fake-ext

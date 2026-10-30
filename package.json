@@ -12,7 +12,8 @@
     "test": "turbo run test",
     "lint": "eslint . && pnpm lint:actions",
     "lint:actions": "zizmor --offline .github && actionlint",
-    "globalhost": "turbo run build --filter=@globalhost/cli --output-logs=errors-only && node packages/cli/dist/bin.js"
+    "globalhost": "turbo run build --filter=@globalhost/cli --output-logs=errors-only && node packages/cli/dist/bin.js",
+    "schema:update": "pnpm --filter @globalhost/core schema:update"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

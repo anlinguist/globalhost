@@ -1,0 +1,10 @@
+# An anchor plus a << merge key: anchors are rejected outright.
+# expect: <root> yaml_alias
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+defaults: &defaults { path: ., profile: fake-ext }
+parts:
+  app:
+    <<: *defaults

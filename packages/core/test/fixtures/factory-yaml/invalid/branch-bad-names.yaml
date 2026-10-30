@@ -1,0 +1,14 @@
+# Branch-name rules.
+# expect: git.baseBranch invalid_value
+# expect: git.defaultBranch invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+git:
+  defaultBranch: "release/../main"
+  baseBranch: "main.lock"
+parts:
+  app:
+    path: .
+    profile: fake-ext

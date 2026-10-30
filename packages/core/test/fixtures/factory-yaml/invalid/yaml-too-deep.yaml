@@ -1,0 +1,11 @@
+# 33 levels of nesting (the root map is level 1).
+# expect: <root> yaml_too_deep
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+deep: [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]

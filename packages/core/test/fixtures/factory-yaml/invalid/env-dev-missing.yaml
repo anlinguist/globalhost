@@ -1,0 +1,10 @@
+# A hosted preview needs a dev environment to deploy into.
+# expect: environments env_dev_missing
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
+parts:
+  web: { path: ., profile: fake-web }

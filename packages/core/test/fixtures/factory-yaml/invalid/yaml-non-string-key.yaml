@@ -1,0 +1,8 @@
+# Map keys must be strings; 1 is an integer in the YAML 1.2 core schema.
+# expect: parts invalid_type
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  1: { path: ., profile: fake-ext }

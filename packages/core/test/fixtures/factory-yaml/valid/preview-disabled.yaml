@@ -1,0 +1,10 @@
+# A hosted profile with its preview disabled: no dev environment is required.
+version: 1
+product: quiet
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  web:
+    path: web
+    profile: fake-web
+    preview: { enabled: false }

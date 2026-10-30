@@ -1,0 +1,9 @@
+# dependsOn entries are unique.
+# expect: parts.app.dependsOn[1] invalid_value
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app: { path: app, profile: fake-ext, dependsOn: [lib, lib] }
+  lib: { path: lib, profile: fake-ext }
