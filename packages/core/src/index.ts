@@ -75,4 +75,4 @@ export {
   type PathPolicyInput,
   type PathPolicyResult,
 } from "./path-policy.js";
-export { gate, START_LABELS, type GateDecision, type GateEvent, type StartLabel } from "./trust-gate.js";
+export { gate, REPLAN_LABELS, START_LABELS, type GateDecision, type GateEvent, type StartLabel } from "./trust-gate.js";

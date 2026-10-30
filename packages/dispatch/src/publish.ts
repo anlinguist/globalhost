@@ -139,18 +139,23 @@ export async function publish(ctx: PublishContext): Promise<PublishResult> {
 
   if (record.status === "succeeded" || (record.status === "blocked" && record.role === "planner" && record.outputs.planBytes)) {
     if (record.role === "planner") {
-      const plan = await readFile(join(ctx.outDir, "plan.md"), "utf8");
+      const plan = (await readFile(join(ctx.outDir, "plan.md"), "utf8")).trim();
       const body = [
-        `## Plan for #${issue}`,
-        "",
+        // The planner usually titles its own plan; add one only when it didn't.
+        ...(/^#{1,3} /.test(plan) ? [] : [`## Plan for #${issue}`, ""]),
         asPostable(plan, 50_000),
         "",
         "---",
         "",
-        runReport(record, ["", `Apply \`${LABELS.build}\` to build this plan, or comment and re-apply \`${LABELS.plan}\` to re-plan.`]),
+        runReport(record, [
+          "",
+          `Apply \`${LABELS.build}\` to build this plan, or reply here to revise it (the planner picks up where it left off; start a reply with \`>\` or add \`[no-factory]\` to just comment).`,
+        ]),
       ].join("\n");
       await comment(gh, repo, issue, body);
       await removeLabel(gh, repo, issue, startLabel);
+      // A revised plan replaces whichever state the last one left.
+      await removeLabel(gh, repo, issue, record.status === "blocked" ? LABELS.planned : LABELS.blocked);
       await addLabels(gh, repo, issue, [record.status === "blocked" ? LABELS.blocked : LABELS.planned]);
       return { outcome: record.status === "blocked" ? "blocked" : "planned" };
     }

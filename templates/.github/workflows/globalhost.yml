@@ -1,6 +1,6 @@
 # globalhost dispatcher (rendered into product repos by `globalhost install`; ARCHITECTURE §2.3).
-# Only an owner's factory:plan / factory:build label, or an owner's comment on a factory/* PR, starts
-# work. Owners are matched by immutable user ID from factory.yaml on the default branch.
+# Only an owner's factory:plan / factory:build label, an owner's comment on a factory/* PR, or an owner's
+# reply on a planned issue starts work. Owners are matched by immutable user ID from factory.yaml on the default branch.
 # Repo variables (identifiers, not secrets): ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_FEDERATION_RULE_ID,
 # ANTHROPIC_SERVICE_ACCOUNT_ID, ANTHROPIC_WORKSPACE_ID, GLOBALHOST_WIF_PROVIDER, GLOBALHOST_DISPATCH_SA,
 # GLOBALHOST_APP_ID, GLOBALHOST_APP_SLUG.
@@ -9,7 +9,7 @@ name: globalhost
 on:
   issues:
     types: [labeled]
-  # Owner steering on factory PRs. Safe here: no job checks out or runs PR code; the gate matches the
+  # Owner steering on factory PRs, and replies that revise a plan. Safe here: no job checks out or runs PR code; the gate matches the
   # commenter's user ID against owners, and the agent runs in the Managed Agents sandbox.
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
@@ -26,7 +26,10 @@ jobs:
     # Cheap pre-filter only; the real trust gate is in the step.
     if: >-
       (github.event_name == 'issues' && startsWith(github.event.label.name, 'factory:'))
-      || (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.type == 'User')
+      || (github.event_name == 'issue_comment' && github.event.comment.user.type == 'User'
+          && (github.event.issue.pull_request
+              || contains(github.event.issue.labels.*.name, 'factory:planned')
+              || contains(github.event.issue.labels.*.name, 'factory:blocked')))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

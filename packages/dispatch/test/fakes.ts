@@ -40,7 +40,8 @@ export class FakeCloud {
   calls: Call[] = [];
   routes = new Map<string, unknown>();
   objects = new Map<string, { body: string; generation: number }>();
-  comments: { issue: number; body: string }[] = [];
+  /** Posted comments; `user` defaults to the App's bot (what the publisher posts as). */
+  comments: { issue: number; body: string; user?: typeof BOT }[] = [];
   labels = new Map<number, Set<string>>();
   pulls: { number: number; head: string; base: string; title: string; draft: boolean }[] = [];
   private gen = 1;
@@ -70,7 +71,7 @@ export class FakeCloud {
     }
     if (method === "GET" && (m = /\/issues\/(\d+)\/comments$/.exec(url.pathname))) {
       return Response.json(
-        this.comments.filter((c) => c.issue === Number(m![1])).map((c, i) => ({ id: i + 1, body: c.body, user: BOT })),
+        this.comments.filter((c) => c.issue === Number(m![1])).map((c, i) => ({ id: i + 1, body: c.body, user: c.user ?? BOT })),
       );
     }
     if (method === "POST" && (m = /\/issues\/(\d+)\/labels$/.exec(url.pathname))) {
