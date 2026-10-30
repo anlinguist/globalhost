@@ -86,7 +86,7 @@ Phase 2+ may move steps 4–5 into a Cloud Run "publisher" job to save Actions m
 
 ### 2.4 Runner
 
-> **Proposed primary host: Claude Managed Agents** (ADR-0011): hosted sandbox with Node/pnpm/Chromium, server-side per-session budget, `limited` egress, vault secrets substituted at egress, resumable sessions, funded by the Max credit. Same contract as below: read-only inputs in, bundle + `run.json` out, trusted publisher pushes. The Cloud Run Job described below is the fallback host behind the same `RunnerHost` interface.
+> **Primary host: Claude Managed Agents** (ADR-0011, accepted after spike P1-00): hosted sandbox with Node/pnpm/Chromium, server-side per-session budget, `limited` egress, vault secrets substituted at egress, resumable sessions, funded by the Max credit. Same contract as below: read-only inputs in, bundle + `run.json` out, trusted publisher pushes. The Cloud Run Job described below is the fallback host behind the same `RunnerHost` interface.
 
 #### Fallback: Cloud Run Job
 
