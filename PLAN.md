@@ -86,6 +86,7 @@ Created via the manifest flow from `infra/github-app/src/create-app.ts`. Permiss
 **AC:** `infra/github-app/src/token.ts` mints a read-only token (contents/issues/PRs read) and a write token. The write token can't push to `.github/workflows/*` (verified: 403) and the read token can't push at all (commands in `infra/github-app/README.md`).
 
 ### P1-06 Runner harness on Managed Agents (planner & builder roles)
+**Status (2026-10-30):** harness, roles and `globalhost run` / `roles sync` done; the AC items that need live sessions (fixture bundle applies, $0.10 cap, `env` shows no creds, transcript treats injection as data) are checked on the first owner run with `sa:globalhost-local`. Unit tests cover stream drop, quiet streams, stale idle events, cap mapping, bundle rejection and injection fencing.
 Per ADR-0011 (accepted), `packages/runner` is session-driving code behind a `RunnerHost` interface. There is no container image. It covers:
 - role agents in `packages/roles`, synced as versioned agent definitions:
   - planner: read-only tools; outputs a plan comment in markdown plus an acceptance-test list;

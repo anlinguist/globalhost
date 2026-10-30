@@ -1,0 +1,23 @@
+{
+  "name": "@globalhost/runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.134.0",
+    "@globalhost/roles": "workspace:*",
+    "@globalhost/sanitize": "workspace:*",
+    "zod": "4.6.7"
+  }
+}
