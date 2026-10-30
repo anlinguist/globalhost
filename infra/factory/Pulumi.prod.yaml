@@ -14,3 +14,7 @@ config:
     - name: anlinguist/numu-know
       id: "338675328"
       defaultBranch: main
+  globalhost-factory:billingAccount:
+    secure: v1:Zc/Y0xN5ABtVwYJl:yat2q/uZGaOUg1i/AmGrUjUdX42iKiHt43oNCDmv0NWJh6Zq
+secretsprovider: gcpkms://projects/globalhost-factory/locations/global/keyRings/pulumi/cryptoKeys/state
+encryptedkey: CiQAJkobxthngidnKOwAS5IqoIxB1TJFnROdFK4DuoJtI+u63ewSSQBZ/gBb9uiz7NSW9JMdS8Ribo2OnuldxvM3svXEwBP5MISxWmWcwB73+snpTQW7+fL8J9dtzyVbB2JSyKLXoP75NzPGcYdxBrc=
