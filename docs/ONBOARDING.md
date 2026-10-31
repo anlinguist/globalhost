@@ -60,10 +60,10 @@ Rotate first (new key/credential, update consumers, disable old, verify, delete 
 |---|---|---|
 | **L0 observe** | run scans, open issues/comments | owner approves install PR |
 | **L1 on request** | plan/build only on owner-filed issues with an owner-applied label | CI green on default branch; characterization tests for critical paths; working preview; ≥5 factory PRs merged with ≤1 redirect avg |
-| **L2 full loop** | planner auto-runs on new owner issues; reviewer gates; builder runs after plan approval; owner gate before merge | ≥20 merged factory PRs; 0 rollbacks/incidents caused in 30 days; visual/contract baselines established |
-| **L3 trusted** | auto-merge for categories listed in `autoMerge` (e.g. Renovate patch, lint fixes) when CI + reviewer pass | — |
+| **L2 panel in shadow** | planner auto-runs on new owner issues; builder runs after plan approval; the review panel runs on every PR and the merge policy records what it *would* do; owner still merges | ≥20 merged factory PRs with the panel's would-have decisions matching the owner's; reviewer eval thresholds met; safe releases (canary + auto-rollback) for every prod part; 0 rollbacks/incidents caused in 30 days |
+| **L3 agent merge** | the merge policy merges owner-originated work that passes the panel; the owner is pulled in only by escalation triggers | — |
 
-Never at any level: auto-merge of guardrail-tripping changes (`manifest-permissions`, `openapi-breaking`, migrations, new deps), auto-fix PRs, or anything touching auth/payments paths listed as `loadBearing`. Demotion is immediate on any incident.
+Panel, merge policy and triggers: ADR-0015. Never without the owner, at any level: work triggered or shaped by untrusted input (auto-fixes, scanner findings, others' issues), or anything that trips an escalation trigger (`loadBearing`/auth/payments paths, `factory.yaml`, `.github/**`, prod IAM/infra, destructive migrations, breaking APIs, extension permissions, new deps, reviewer disagreement). Demotion is immediate on any incident.
 
 ## 3. Trigger policy (public repos)
 
@@ -114,7 +114,7 @@ guardrails:
   loadBearing: ["app/api/**", "proxy.ts", "lib/firebase*"]   # always needs:owner-approval
   immutable: []                   # agents can never change; .github/**, factory.yaml and CODEOWNERS are always included
 
-autoMerge: []                     # L3 only, e.g. ["renovate:patch"]
+autoMerge: []                     # L3 only; superseded by ADR-0015's merge policy when it lands
 
 notifications:
   blocking: push                  # push | digest | none

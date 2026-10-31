@@ -8,7 +8,7 @@ globalhost is a personal software factory. AI agents plan, build, preview, and m
 
 1. **GitHub is the source of truth.** Issues = queue, labels = state, comments = steering, PRs = output. The factory keeps no state that can't be rebuilt from GitHub + Pulumi state + run artifacts.
 2. **Merging is the only path to prod.** No agent identity can deploy to prod. Prod credentials are bound (via Workload Identity Federation conditions) to a release workflow running on the default branch.
-3. **Builder ≠ grader.** The run that writes code never approves it. Reviewer runs are fresh, with a clean checkout of the exact head SHA and read-only credentials.
+3. **Builder ≠ grader.** The run that writes code never approves it. Reviewer runs are fresh, with a clean checkout of the exact head SHA and read-only credentials. At L3 a deterministic merge policy, not an agent, decides merges from their verdicts (ADR-0015).
 4. **Agents hold no write credentials.** The agent process gets an Anthropic key and a read-only checkout. A *trusted harness* (code we wrote, not influenced by model output) turns the agent's output into a branch + PR after policy checks.
 5. **Profiles, not special cases.** The core knows about parts, profiles, adapters, and autonomy levels — never about Next.js, manifests, or OpenAPI.
 6. **Rigid kernel, fluid stack** (ADR-0010). The factory enforces only the loop, trust, credentials, budgets and audit. Stack choices belong to each product and can change at any time; vendors plug in as integrations (MCP + IaC + scoped secrets). Agents act freely in dev; prod changes need a merge or an owner-approved `ops:` request. The end-to-end flow is in `docs/SDLC.md`.
@@ -186,7 +186,7 @@ Only `factory:plan`, `factory:build`, and `approved:*` start or unblock work, an
 Rules:
 1. **Triggering:** only owner actions start runs. On public repos, issues/comments from others never trigger; they can be pulled in only when the owner labels them, and even then their text is untrusted.
 2. **Framing:** untrusted text passes through `packages/sanitize` (strip control/bidi/zero-width chars, cap length, mask secrets) and is fenced in a `<untrusted source="…">` block with a standing instruction that it is data.
-3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`.
+3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`. At L3 its PR can be merged by the merge policy only if every relevant reviewer passes it independently, it trips no escalation trigger, its intent came from an owner, and the release can roll back (ADR-0015).
 4. **Network:** agent egress limited to an allowlist (Anthropic API, npm/pnpm registry, GitHub read for clone) using Claude Code sandbox network rules. Arbitrary `WebFetch` disabled for builders; planners may fetch from an allowlisted docs list.
 5. **Dependencies:** lockfiles required; new direct dependencies trip `needs:owner-approval` (`approved:deps`). Runner image and Actions pinned by digest/SHA.
 6. **Workflow hardening:** zizmor + actionlint + gitleaks (full history) in CI, tools pinned by SHA-256; no `pull_request_target` with checkout of PR head; minimal `permissions:` per job; no caches saved from PR runs; GitHub secret scanning + push protection on public repos.
@@ -230,7 +230,7 @@ Budget alerts at 40/80/100% of $25 on the factory+dev projects; the 100% alert p
 
 ### 5.3 Branch protection without paid GitHub
 
-See ADR-0006. Public repos get rulesets on free (require PR, require checks, block force-push, restrict who can push to default). Private repos on a free personal account don't enforce protection, so the guarantees there come from: the App lacking workflow permission, the publisher only ever pushing `factory/*`, and release credentials bound to the default branch + release workflow. The owner remains the only actor who merges.
+See ADR-0006. Public repos get rulesets on free (require PR, require checks, block force-push, restrict who can push to default). Private repos on a free personal account don't enforce protection, so the guarantees there come from: the App lacking workflow permission, the publisher only ever pushing `factory/*`, and release credentials bound to the default branch + release workflow. The owner remains the only actor who merges until ADR-0015's merge policy lands, and then only on public repos where the ruleset enforces its required checks.
 
 ## 6. Cost controls
 

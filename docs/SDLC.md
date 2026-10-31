@@ -18,7 +18,7 @@
  LEARN (continuous): redirects → product memory + skills; run metrics → evals; track record → autonomy level
 ```
 
-◆A = **intent gate** (approve the plan). ◆B = **taste gate** (approve the result). These two gates are where you're needed. Everything between them runs on its own, inside caps.
+◆A = **intent gate** (approve the plan). ◆B = **taste gate** (approve the result). Below L3 both are yours. At L3 (ADR-0015) ◆B is optional: a review panel and a deterministic merge policy ship owner-originated work, and you're pulled in only by escalation triggers, or whenever you choose to look.
 
 ## Stage by stage
 
@@ -29,10 +29,10 @@
 | ◆A | **Intent gate** | you: `factory:build`, a redirect comment, or close | you | — | approve, pick a wireframe ("go with B, tighter spacing"), or redirect |
 | 2 | **Build** | gate A label | builder (one run; fan-out to subagents in Phase 6) | acceptance tests first, then code, IaC/scripts, product-memory updates. May provision **dev** resources via integration MCP servers (ADR-0010) | none unless the agent asks (`factory:blocked` + question) |
 | 3 | **Verify** | PR push | CI | core checks + profile verify (Playwright/visual, extension on target sites, contract tests/oasdiff) + guardrails | only if a guardrail trips (`needs:owner-approval`): permissions, breaking API, migrations, new deps, load-bearing paths |
-| 4 | **Review** | CI green | reviewer (fresh run, read-only, sees builder's session via Entire) | structured review vs spec; builder fix loop (≤2 rounds) | — |
+| 4 | **Review** | CI green | review panel: function, security, performance/cost (fresh runs, read-only; blocking findings re-verified; ADR-0015) | structured verdicts; merge policy decides merge / builder fix loop (≤2 rounds) / escalate | only on escalation |
 | 5 | **Preview** | review passes | profile preview contracts | composite environment for *this* PR (e.g. API pr-42 + web pr-42 + extension zip bound to it), seeded dev data, screenshots/GIF, API docs; listed in your daily digest (or pushed if urgent) | open on phone behind Access |
-| ◆B | **Taste gate** | you | you | — | comment to redirect (→ back to 2; the redirect is also written into product memory), or **ship** |
-| 6 | **Ship** | `factory:ship` / PWA ship / you merge | ship action | rebase, re-verify on latest main, merge (serialized per repo) | one tap |
+| ◆B | **Taste gate** | you (below L3, or escalated) | you | — | comment to redirect (→ back to 2; the redirect is also written into product memory), or **ship**. At L3, optional |
+| 6 | **Ship** | `factory:ship` / G.Host ship / you merge / merge policy (L3) | ship action | rebase, re-verify on latest main, merge (serialized per repo) | one tap |
 | 7 | **Release** | push to default branch | release workflow + deploy adapter (prod creds live only here) | prod deploy: canary → full or auto-rollback; prod IaC/migrations applied (expand first); store uploads → trusted testers → staged rollout; async gates tracked | approve store promotions / staged-rollout increases if configured |
 | 8 | **Operate** | continuous | watchers, fixer | Sentry/OTel/PostHog signals → deduped issues; auto-rollback on error spikes; auto-fix **draft** PRs with regression tests (re-enter at 3) | blocking alerts only |
 | 9 | **Maintain** | schedules | Renovate, scanners, triager, janitor | dep updates (auto-merge only at L3 for allowlisted classes), security fixes/mitigations, orphan cleanup, budget reports, doc refresh | weekly digest |
@@ -66,7 +66,7 @@ Starting a new product is stages 0–1 at the portfolio level: an issue in the f
 
 ## What the factory refuses to do, at any autonomy level
 
-- Merge its own PRs outside L3 allowlisted classes; auto-merge auto-fixes.
+- Merge its own PRs below L3, or merge anything that came from untrusted input or trips an escalation trigger (ADR-0015).
 - Deploy to prod or mutate prod vendors without a merge or an approved `ops:` request.
 - Act on instructions from anyone but the owner.
 - Exceed run, daily, or monthly budgets (it pauses and asks).

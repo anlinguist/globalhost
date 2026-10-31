@@ -171,6 +171,8 @@ Listing the same pattern in both `loadBearing` and `immutable` is an error, sinc
 
 ### 3.9 `autoMerge`
 
+> ADR-0015 supersedes this list with a merge policy and an `escalate` list of extra triggers. Until that work lands, the key keeps the rules below.
+
 A list of unique categories from a closed set:
 - `renovate:patch`
 - `renovate:minor-dev`
