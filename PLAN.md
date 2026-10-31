@@ -187,11 +187,13 @@ Owner files three small numu-know issues (e.g. a copy/UX tweak, a bug, a small f
 
 ## Phase 3 — Factory agent PWA (outline)
 
+The app and its chat agent are called **G.Host** (owner, 2026-10-30); the factory, repo, CLI and domains stay `globalhost`. Name, mark and colors: docs/BRAND.md.
+
 - PWA on Cloudflare Pages + Worker at `app.globalhost.ai`, behind Access; GitHub App user-to-server auth (acts as the owner).
 - Inbox from GitHub queries; approve/redirect/discard/ship mapped 1:1 to label/comment/close/merge.
 - **Planning happens in the app** (owner, 2026-10-30). Either as a conversation that maps onto the issue's plan comments (reply → planner revises), or, for a net-new feature, a pre-issue planning session whose result *creates* the issue and promotes it straight to build. Either way the approval is the owner's action, made through user-to-server auth, so the trust gate sees the owner as sender; the factory's own bot identity never counts as an owner.
 - Web Push with tiers (blocking immediate, previews in a daily digest, routine weekly); digest generation.
-- Chat agent (API key) with GitHub/Pulumi/Sentry read tools; wireframe and screenshot rendering inline.
+- G.Host chat agent (API key) with GitHub/Pulumi/Sentry read tools; wireframe and screenshot rendering inline.
 - Revisit ADR-0009 (Entire Trails).
 
 ## Phase 4 — Observability, auto-fix, safe releases (outline)
