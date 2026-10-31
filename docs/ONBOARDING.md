@@ -60,10 +60,10 @@ Rotate first (new key/credential, update consumers, disable old, verify, delete 
 |---|---|---|
 | **L0 observe** | run scans, open issues/comments | owner approves install PR |
 | **L1 on request** | plan/build only on owner-filed issues with an owner-applied label | CI green on default branch; characterization tests for critical paths; working preview; ≥5 factory PRs merged with ≤1 redirect avg |
-| **L2 panel in shadow** | planner auto-runs on new owner issues; builder runs after plan approval; the review panel runs on every PR and the merge policy records what it *would* do; owner still merges | ≥20 merged factory PRs with the panel's would-have decisions matching the owner's; reviewer eval thresholds met; safe releases (canary + auto-rollback) for every prod part; 0 rollbacks/incidents caused in 30 days |
-| **L3 agent merge** | the merge policy merges owner-originated work that passes the panel; the owner is pulled in only by escalation triggers | — |
+| **L2 shadow** | planner auto-runs on new owner issues; builder runs after plan approval; the reviewer and merge policy run on every factory PR and record what they *would* do; owner still merges | 20 PRs where the policy said merge and the owner merged that SHA unchanged; no `miss:security`; reviewer eval thresholds met; every prod part's adapter builds without prod credentials and rolls back; 0 incidents caused in 30 days |
+| **L3 agent merge** | the merge policy merges owner-originated, untainted work that passes review; the owner is pulled in only by escalation triggers | — |
 
-Panel, merge policy and triggers: ADR-0015. Never without the owner, at any level: work triggered or shaped by untrusted input (auto-fixes, scanner findings, others' issues), or anything that trips an escalation trigger (`loadBearing`/auth/payments paths, `factory.yaml`, `.github/**`, prod IAM/infra, destructive migrations, breaking APIs, extension permissions, new deps, reviewer disagreement). Demotion is immediate on any incident.
+Review, merge policy, provenance and the full trigger list: ADR-0015. L3 needs a ruleset that enforces the merge-policy check and adapters that build without prod credentials and roll back; it never applies to the factory repo. Never without the owner, at any level: work whose text didn't all come from an owner or whose run was tainted (auto-fixes, scanner findings, others' issues, Renovate), and anything that trips an ADR-0015 §8 trigger. Demotion to L2 is immediate on any incident: trusted code opens a `factory:demoted` issue, and only the owner closing it restores the level.
 
 ## 3. Trigger policy (public repos)
 

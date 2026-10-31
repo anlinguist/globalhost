@@ -116,7 +116,7 @@ The runner SA reads no secrets: it authenticates to Anthropic with its own Googl
 |---|---|---|---|
 | planner | label `factory:plan` (or new owner issue at L2+) | plan comment: approach, acceptance-test list, risks, wireframe options (UI), estimated cost | no |
 | builder | label `factory:build`; owner comment on `factory/*` PR | bundle → branch + PR | yes |
-| reviewer (P2) | PR opened/updated by builder | PR review (comment/request-changes) with structured findings vs. spec | no |
+| reviewer (P2; ADR-0015) | builder's `factory/*` PR opened/updated | function, security and performance verdicts (harness-validated, archived in GCS) + a GitHub review | no |
 | triager (P5) | scanner finding / Sentry issue | label + classification comment | no |
 | fixer (P4) | `factory:autofix` (from triage/Sentry) | draft PR with regression test | yes |
 | assessor | `globalhost assess` (owner, local) | `assessment.md` + readiness scores → onboarding issue, composed and posted by trusted code (`packages/assess`) | no (read-only; builds and tests only in its sandbox, no bundle) |
@@ -150,10 +150,10 @@ owner files issue ──▶ label factory:plan ──▶ planner run ──▶ p
         │                                       branch factory/issue-n + draft PR
         │                                                       ▼
         │                       CI (verify + guardrails) ─▶ preview deploy ─▶ PR comment
-        │                                         (P2) reviewer run ─▶ review
+        │                                  (P2) reviewer ─▶ merge policy
         │                                                       ▼
         └────────── owner comment on PR (re-runs builder) ◀── taste gate
-                                                                │ owner merges
+                                                                │ owner merges (L3: merge policy, ADR-0015)
                                                                 ▼
                                          release.yml ─▶ deploy adapter ─▶ status on PR/issue
 ```
@@ -166,10 +166,10 @@ owner files issue ──▶ label factory:plan ──▶ planner run ──▶ p
 | `factory:planned` | plan posted, awaiting owner | publisher |
 | `factory:build` | owner approves build | owner |
 | `factory:building` | run in progress (claim) | dispatcher |
-| `factory:in-review` | PR open, awaiting CI/review/owner | publisher |
+| `factory:in-review` | PR open, awaiting CI/review/owner (or the merge policy at L3) | publisher |
 | `factory:blocked` | agent needs an answer; question in comment | publisher |
 | `factory:failed` | run failed or hit a cap | publisher |
-| `needs:owner-approval` | a guardrail tripped (permissions, breaking API, immutable path) | CI guardrail check |
+| `needs:owner-approval` | a guardrail tripped (permissions, breaking API, immutable path), or the merge policy escalated (ADR-0015) | CI guardrail check; merge policy |
 | `approved:<guardrail>` | owner acknowledges a specific guardrail | owner |
 | `factory:autofix` | (P4) eligible for auto-fix run | triager |
 | `factory:paused` | per-repo pause | owner |
@@ -186,7 +186,7 @@ Only `factory:plan`, `factory:build`, and `approved:*` start or unblock work, an
 Rules:
 1. **Triggering:** only owner actions start runs. On public repos, issues/comments from others never trigger; they can be pulled in only when the owner labels them, and even then their text is untrusted.
 2. **Framing:** untrusted text passes through `packages/sanitize` (strip control/bidi/zero-width chars, cap length, mask secrets) and is fenced in a `<untrusted source="…">` block with a standing instruction that it is data.
-3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`. At L3 its PR can be merged by the merge policy only if every relevant reviewer passes it independently, it trips no escalation trigger, its intent came from an owner, and the release can roll back (ADR-0015).
+3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`. At L3 its PR can be merged by the merge policy only if every verdict passes on the reviewed SHA, it trips no escalation trigger (instruction files and the release execution set always do), all its text came from an owner, no run in its chain was tainted, and the release builds without prod credentials and can roll back. The check that allows the merge can only come from a separate merge App (ADR-0015).
 4. **Network:** agent egress limited to an allowlist (Anthropic API, npm/pnpm registry, GitHub read for clone) using Claude Code sandbox network rules. Arbitrary `WebFetch` disabled for builders; planners may fetch from an allowlisted docs list.
 5. **Dependencies:** lockfiles required; new direct dependencies trip `needs:owner-approval` (`approved:deps`). Runner image and Actions pinned by digest/SHA.
 6. **Workflow hardening:** zizmor + actionlint + gitleaks (full history) in CI, tools pinned by SHA-256; no `pull_request_target` with checkout of PR head; minimal `permissions:` per job; no caches saved from PR runs; GitHub secret scanning + push protection on public repos.
@@ -230,7 +230,7 @@ Budget alerts at 40/80/100% of $25 on the factory+dev projects; the 100% alert p
 
 ### 5.3 Branch protection without paid GitHub
 
-See ADR-0006. Public repos get rulesets on free (require PR, require checks, block force-push, restrict who can push to default). Private repos on a free personal account don't enforce protection, so the guarantees there come from: the App lacking workflow permission, the publisher only ever pushing `factory/*`, and release credentials bound to the default branch + release workflow. The owner remains the only actor who merges until ADR-0015's merge policy lands, and then only on public repos where the ruleset enforces its required checks.
+See ADR-0006. Public repos get rulesets on free (require PR, require checks, block force-push, restrict who can push to default). Private repos on a free personal account don't enforce protection, so the guarantees there come from: the App lacking workflow permission, the publisher only ever pushing `factory/*`, and release credentials bound to the default branch + release workflow. The owner remains the only actor who merges on these repos: ADR-0015 allows agent merge (L3) only where a ruleset enforces the merge-policy check.
 
 ## 6. Cost controls
 

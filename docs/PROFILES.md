@@ -197,4 +197,4 @@ A part may list several release targets (e.g. an extension shipping to Chrome, E
 
 ## 5. Profile-agnostic pieces (core)
 
-Every repo, regardless of profile, gets: `globalhost.yml` dispatcher, core CI (typecheck/lint/test/guardrails + zizmor/actionlint), Renovate (grouped, weekly, auto-merge only at L3 for patch/minor dev deps), CodeQL + secret scanning where available, `docs/product/` memory (SPEC.md, DESIGN.md, DECISIONS.md), and seed-data convention (`pnpm seed` against dev only).
+Every repo, regardless of profile, gets: `globalhost.yml` dispatcher, core CI (typecheck/lint/test/guardrails + zizmor/actionlint), Renovate (grouped, weekly; its PRs always reach the owner, ADR-0015), CodeQL + secret scanning where available, `docs/product/` memory (SPEC.md, DESIGN.md, DECISIONS.md), and seed-data convention (`pnpm seed` against dev only).

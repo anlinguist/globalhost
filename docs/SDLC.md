@@ -18,7 +18,7 @@
  LEARN (continuous): redirects → product memory + skills; run metrics → evals; track record → autonomy level
 ```
 
-◆A = **intent gate** (approve the plan). ◆B = **taste gate** (approve the result). Below L3 both are yours. At L3 (ADR-0015) ◆B is optional: a review panel and a deterministic merge policy ship owner-originated work, and you're pulled in only by escalation triggers, or whenever you choose to look.
+◆A = **intent gate** (approve the plan). ◆B = **taste gate** (approve the result). Below L3 both are yours. At L3 (ADR-0015) ◆B is optional: a reviewer and a deterministic merge policy ship owner-originated work, and you're pulled in only by escalation triggers, or whenever you choose to look.
 
 ## Stage by stage
 
@@ -27,15 +27,15 @@
 | 0 | **Signal** | issue opened (by you, or by watchers: Sentry, scanners, Renovate) | you / watchers / triager | an issue; untrusted sources are labeled and fenced | file ideas in any form; a phone note is fine |
 | 1 | **Shape** | label `factory:plan` (auto at L2+) | planner | plan comment: spec delta, acceptance tests, approach, risks, cost estimate; **UI**: 2–3 wireframe options rendered as screenshots; **API**: OpenAPI delta; **stack change**: options + migration/rollback plan | — |
 | ◆A | **Intent gate** | you: `factory:build`, a redirect comment, or close | you | — | approve, pick a wireframe ("go with B, tighter spacing"), or redirect |
-| 2 | **Build** | gate A label | builder (one run; fan-out to subagents in Phase 6) | acceptance tests first, then code, IaC/scripts, product-memory updates. May provision **dev** resources via integration MCP servers (ADR-0010) | none unless the agent asks (`factory:blocked` + question) |
+| 2 | **Build** | gate A label | builder (one run; fan-out to subagents in Phase 6) | acceptance tests first, then code, IaC/scripts. Product-memory updates go in their own PR (ADR-0015). May provision **dev** resources via integration MCP servers (ADR-0010) | none unless the agent asks (`factory:blocked` + question) |
 | 3 | **Verify** | PR push | CI | core checks + profile verify (Playwright/visual, extension on target sites, contract tests/oasdiff) + guardrails | only if a guardrail trips (`needs:owner-approval`): permissions, breaking API, migrations, new deps, load-bearing paths |
-| 4 | **Review** | CI green | review panel: function, security, performance/cost (fresh runs, read-only; blocking findings re-verified; ADR-0015) | structured verdicts; merge policy decides merge / builder fix loop (≤2 rounds) / escalate | only on escalation |
-| 5 | **Preview** | review passes | profile preview contracts | composite environment for *this* PR (e.g. API pr-42 + web pr-42 + extension zip bound to it), seeded dev data, screenshots/GIF, API docs; listed in your daily digest (or pushed if urgent) | open on phone behind Access |
-| ◆B | **Taste gate** | you (below L3, or escalated) | you | — | comment to redirect (→ back to 2; the redirect is also written into product memory), or **ship**. At L3, optional |
+| 4 | **Review** | CI green | reviewer (fresh run, read-only; judges from the diff, spec and CI artifacts; verifier on findings; ADR-0015) | function, security and performance verdicts; merge policy decides merge / builder fix loop (≤2 rounds) / escalate | only on escalation |
+| 5 | **Preview** | CI green (in parallel with review) | profile preview contracts | composite environment for *this* PR (e.g. API pr-42 + web pr-42 + extension zip bound to it), seeded dev data, screenshots/GIF, API docs; listed in your daily digest (or pushed if urgent) | open on phone behind Access |
+| ◆B | **Taste gate** | you (below L3, or escalated) | you | — | comment to redirect (→ back to 2; redirects feed product memory through separate PRs), or **ship**. At L3, optional |
 | 6 | **Ship** | `factory:ship` / G.Host ship / you merge / merge policy (L3) | ship action | rebase, re-verify on latest main, merge (serialized per repo) | one tap |
 | 7 | **Release** | push to default branch | release workflow + deploy adapter (prod creds live only here) | prod deploy: canary → full or auto-rollback; prod IaC/migrations applied (expand first); store uploads → trusted testers → staged rollout; async gates tracked | approve store promotions / staged-rollout increases if configured |
 | 8 | **Operate** | continuous | watchers, fixer | Sentry/OTel/PostHog signals → deduped issues; auto-rollback on error spikes; auto-fix **draft** PRs with regression tests (re-enter at 3) | blocking alerts only |
-| 9 | **Maintain** | schedules | Renovate, scanners, triager, janitor | dep updates (auto-merge only at L3 for allowlisted classes), security fixes/mitigations, orphan cleanup, budget reports, doc refresh | weekly digest |
+| 9 | **Maintain** | schedules | Renovate, scanners, triager, janitor | dep updates (escalate to you; ADR-0015), security fixes/mitigations, orphan cleanup, budget reports, doc refresh | weekly digest |
 | 10 | **Evolve stack** | an issue ("try Resend instead of Klaviyo") | planner → builder | stack-change plan → dev provisioning via MCP + code → preview → prod via merge / ops request | approve the plan; approve any `ops:` request |
 | 11 | **Learn** | merges, redirects, metrics | factory | skills/memory PRs from redirect patterns, evals on prompt/skill changes, autonomy promotion/demotion proposals | approve learning PRs |
 | 12 | **Retire** | issue `retire` | planner → you | data export, destroy stacks, store unlisting, archive repo with pointer README | approve |
