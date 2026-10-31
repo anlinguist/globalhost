@@ -1,6 +1,6 @@
 # ADR-0010: Rigid kernel, fluid stack — integrations instead of baked-in vendors
 
-- Status: proposed
+- Status: proposed; amended by ADR-0015 (at L3 the owner gate before merge becomes the merge policy plus escalation)
 - Date: 2026-10-27
 
 ## Context

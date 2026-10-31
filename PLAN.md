@@ -173,12 +173,17 @@ Owner files three small numu-know issues (e.g. a copy/UX tweak, a bug, a small f
 
 ## Phase 2 — Trustworthy loop + more profiles (outline)
 
-- P2-01 Reviewer role: a separate run on the PR head SHA, read-only token, structured `REVIEW.json`, revert-the-fix proof for new tests, posts a GitHub review. Builder can't approve.
+Ordered for ADR-0015: this phase gets a repo from "owner reviews every PR" to agent merge. Each item lists what it needs first.
+
+- P2-03 Guardrails engine + `globalhost/guardrails` check; `approved:*` labels tied to head SHA; `dependency-change` (new, bumped, or re-resolved incl. transitive lockfile entries), `visual-baseline`, `loadBearing`. Adapters declare their release execution set.
+- P2-04 "Ship" action (rebase → green → merge, per-repo lock) replacing merge queue (ADR-0006). Merges through the separate `globalhost-merge` App (owner creates it) from a pinned factory action that runs no product-repo code; the ruleset requires its `globalhost/merge-policy` check, which at this stage passes only on an owner's `factory:ship` bound to the head SHA (ADR-0015 §10).
+- P2-05 Full cost controls: daily/global budgets, per-repo concurrency, per-PR review budget, `globalhost budget`, kill switch cancels running jobs.
 - P2-02 Acceptance-tests-first enforcement: the builder's first commit must contain only tests that fail on base. The publisher verifies by running them on base.
-- P2-03 Guardrails engine + `globalhost/guardrails` check; `approved:*` labels tied to head SHA; `new-dependency`, `visual-baseline`, `loadBearing`.
-- P2-04 "Ship" action (rebase → green → merge, per-repo lock) replacing merge queue (ADR-0006).
-- P2-05 Full cost controls: daily/global budgets, per-repo concurrency, `globalhost budget`, kill switch cancels running jobs.
-- P2-06 Entire CLI checkpoints in runner → `globalhost-checkpoints` repo; reviewer reads them (ADR-0009).
+- P2-01 Reviewer (needs P2-05): one fresh read-only run per factory PR head returning function, security and performance verdicts (closed finding categories) from the diff, spec and CI artifacts; harness-validated and SHA-stamped, archived in GCS, posted as a GitHub review. Verifier on `changes` findings. Harness-set taint in `run.json`, outsiders' comments dropped, findings to the builder as structured fields only. Trust gate change so App events on App-authored `factory/*` PRs start a review (ARCHITECTURE §2.3). Revert-the-fix proof for new tests. Reviewer skills live in `skills/` and are the owner's main lever.
+- P2-01b Reviewer evals (needs P2-01): seeded-defect corpus including reviewer-manipulation cases; catch rate, false-positive rate, verifier false-downgrade rate; thresholds; a required check on factory PRs that change a reviewer prompt, skill or pinned model ID. Pulled forward from Phase 6.
+- P2-01c Merge policy (needs P2-01, P2-03, P2-04): trusted code per ADR-0015 §6–10: SHA-bound, fail-closed, provenance and taint, the trigger constant, reviewer-addressed-text scan. Extends P2-04's check so it can also pass on the policy's own merge decision. `factory:demoted` issue. Shadow mode at L2, acting at L3. Amends CLAUDE.md #3/#6, the ARCHITECTURE permission table and the publisher's PR text.
+- P2-01d numu-know release safety (needs P2-03's release execution set): build with no prod credentials and a separate deploy step from the artifact; staged rollout with synthetic health checks; auto-rollback. `globalhost validate` refuses L3 without all three. Pulled forward from Phase 4.
+- P2-06 Entire CLI checkpoints in runner → `globalhost-checkpoints` repo, for audit only; reviewers don't read them (ADR-0009, ADR-0015).
 - P2-07 `service` profile (OpenAPI contract tests, oasdiff guardrail, Neon/Firestore-emulator integration DB, API reference preview). Candidate: `numu-know-backend` or a new API.
 - P2-08 `chrome-extension` profile (multi-target build, Playwright with extension on target sites, manifest guardrails, zip + GIF preview, `chrome-web-store` adapter with trusted testers + staged rollout + review watcher).
 - P2-09 First composite repo with preview bindings (extension ↔ API).
@@ -200,7 +205,7 @@ The app and its chat agent are called **G.Host** (owner, 2026-10-30); the factor
 
 - Sentry (with MCP) + OTel → Cloud Trace/Logging + PostHog in the web-app/service templates; privacy-safe extension error reporting.
 - Sentry webhook → dedupe by fingerprint → `factory:autofix` issue → fixer reproduces + writes a regression test → draft PR. Daily cap, never auto-merge.
-- `cloud-run` adapter canary: tagged no-traffic revision → 10% → watch error rate/latency → 100% or auto-rollback. Feature flags (PostHog). Expand/contract migration tooling. Prod PITR: Firestore PITR + exports; Neon paid plan for Postgres prods.
+- `cloud-run` canary generalized to other adapters (numu-know's comes first, in P2-01d): tagged no-traffic revision → 10% → watch error rate/latency → 100% or auto-rollback. Feature flags (PostHog). Expand/contract migration tooling. Prod PITR: Firestore PITR + exports; Neon paid plan for Postgres prods.
 
 ## Phase 5 — Security scanning + triage (outline)
 
@@ -210,6 +215,6 @@ The app and its chat agent are called **G.Host** (owner, 2026-10-30); the factor
 ## Phase 6 — Fan-out, evals, self-improvement (outline)
 
 - Builder orchestrator with subagents in git worktrees for multi-part issues.
-- `evals/`: 5–10 reference tasks with known-good outcomes on frozen repo snapshots, plus a harness to run them against a prompt/skill/role change. Metrics: pass rate, merge rate, redirects/PR, $/merged PR.
+- `evals/` for builders (reviewer evals are P2-01b): 5–10 reference tasks with known-good outcomes on frozen repo snapshots, plus a harness to run them against a prompt/skill/role change. Metrics: pass rate, merge rate, redirects/PR, $/merged PR.
 - Redirect mining: owner comments → proposed edits to skills/`docs/product/*` (as PRs for owner review).
 - End-of-month spare-credit queue (ADR-0004). Evaluate `entire-graph`.
