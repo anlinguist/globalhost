@@ -54,7 +54,7 @@ export function verifySteps(part: PartCtx<WebAppConfig, WebAppDetection>): Verif
   if (detection.scripts.build) {
     steps.push({ id: "build", run: runScript(pm, "build"), needs: after, env: { ...config.previewEnv } });
   }
-  // Always present, so a repo without a smoke test fails closed until one is written (skills/web-app).
+  // Always present, so a repo without a smoke test shows the gap on every PR until onboarding (Stage 3) adds one.
   steps.push({
     id: "smoke",
     run: `${EXEC[pm]} playwright test`,
