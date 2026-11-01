@@ -127,7 +127,8 @@ Triggers:
 Run `globalhost assess anlinguist/numu-know` (assessor role + deterministic checks: gitleaks, Cloud Build triggers, Cloud Run services, Firestore usage, branches).
 **AC:** an onboarding issue is posted with all ONBOARDING §1 sections, a readiness score, a proposed `factory.yaml`, and the open items from ADR-0005.
 
-### P1-09 numu-know install PR (L1)
+### P1-09 numu-know install PR (L1) ✅ (2026-11-01)
+**Status:** numu-know #21 (CI, CLAUDE.md, CODEOWNERS, Renovate), after the factory fixed #12/#13/#14 (#18–#20). `globalhost-ci` green on `main`; Cloud Build still deploys `main`. Ruleset on `main` (PR required, `globalhost-ci` required from GitHub Actions, no force-push or deletion; admin role is the only bypass), CodeQL default setup, secret scanning + push protection. The App-push AC was verified from the effective rules (the App isn't a bypass actor), not by a live push. Product docs (`docs/product/*`) follow in their own PR.
 Contents as in ONBOARDING Stage 2:
 - `factory.yaml`, `CLAUDE.md`, labels, `globalhost.yml`, `globalhost-ci.yml` (typecheck, lint, build, Playwright smoke), CODEOWNERS;
 - ruleset on `main` (PR required, `globalhost-ci` required, no force-push);
@@ -136,7 +137,8 @@ Contents as in ONBOARDING Stage 2:
 Existing Cloud Build triggers untouched.
 **AC:** owner reviews and merges. The next push to `main` still deploys via the existing trigger. CI is green on `main`. The ruleset blocks a direct push to `main` from the App (verified).
 
-### P1-10 numu-know dev environment + seed data
+### P1-10 numu-know dev environment + seed data (in progress)
+**Status (2026-11-01):** project `numu-know-dev` created (Spark: the billing account is at its 5-project quota), Firestore `nam5` with the production rules (now `firestore.rules` in numu-know), seeded by `npm run seed:dev` (numu-know #22); `previewEnv` names the dev project. Left: the owner enables Firebase Auth in the Console (the API needs billing), then test users; billing for P1-11's Cloud Run previews; the refusal check moves to P1-11. Algolia and Klaviyo are off in dev by having no keys.
 New Firebase/GCP project `numu-know-dev`:
 - Firestore, Auth (email/Google test users), seed script (`pnpm seed:dev`) with representative non-user fixture content (stories, dictionary entries);
 - Algolia: separate dev index (or search stubbed in preview);
