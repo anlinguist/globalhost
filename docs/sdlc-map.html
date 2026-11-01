@@ -163,7 +163,7 @@ th{font:500 .72rem var(--mono);text-transform:uppercase;letter-spacing:.06em;col
   <section class="card">
     <h2>What the factory never does</h2>
     <ul class="never">
-      <li>Merges its own work, except allowlisted routine classes at L3. Auto-fixes are never auto-merged.</li>
+      <li>Merges its own work below L3. At L3 it merges only your own work that passes review and trips no trigger (ADR-0015). Auto-fixes and dependency updates always reach you.</li>
       <li>Deploys to prod or changes a prod vendor without a merge or an approved ops request.</li>
       <li>Acts on instructions from anyone but you. Text from others is read as data.</li>
       <li>Exceeds the per-run, daily or monthly budget. It pauses and asks instead.</li>
@@ -194,14 +194,14 @@ const N={
    d:{Who:'CI (GitHub Actions)',When:'Every push to the PR',Makes:'Typecheck, lint, tests, and the profile checks: Playwright with visual diffs, the extension on its target sites, contract tests with an OpenAPI diff. Then guardrails.',You:'Nothing, unless a guardrail trips',Access:'Dev environment only'}},
  guard:{lane:'you',col:4,t:'Guardrail',s:'risky change',cond:1,
    d:{Who:'You',When:'A guardrail trips: extension permissions, breaking API, destructive migration, new dependency, or load-bearing code',Makes:'An approved:<guardrail> label tied to that exact commit. A new push resets it.',You:'Review just the risky part of the diff',Access:'—'}},
- review:{lane:'agent',col:5,t:'Review',s:'fresh reviewer',
-   d:{Who:'Reviewer agent: a fresh session with read-only access',When:'CI is green',Makes:"A structured review against the spec, informed by the builder's recorded session. At most two fix rounds with the builder.",You:'Nothing',Access:'Read-only'}},
+ review:{lane:'agent',col:5,t:'Review',s:'reviewer + policy',
+   d:{Who:'Reviewer agent: a fresh session with read-only access',When:'CI is green',Makes:"Function, security and performance verdicts, judged from the diff, the spec and CI artifacts (not the builder's account). A deterministic merge policy reads them: merge (L3), fix round with the builder (at most two), or escalate to you.",You:'Nothing',Access:'Read-only'}},
  preview:{lane:'ci',col:6,t:'Preview',s:'*.globalhost.ai',
-   d:{Who:"The profile's preview contract",When:'Review passes',Makes:"A per-PR environment behind Cloudflare Access with a passkey: seeded dev data, screenshots or GIF, API docs, and an extension zip wired to this PR's API",You:'Look at it, from the daily digest or a push notification',Access:'Dev project only. Previews never see real user data.'}},
+   d:{Who:"The profile's preview contract",When:'CI is green (alongside review)',Makes:"A per-PR environment behind Cloudflare Access with a passkey: seeded dev data, screenshots or GIF, API docs, and an extension zip wired to this PR's API",You:'Look at it, from the daily digest or a push notification',Access:'Dev project only. Previews never see real user data.'}},
  gateB:{lane:'you',col:7,t:'Gate B',s:'taste',gate:1,
    d:{Who:'You',When:'The preview is ready',Makes:'A comment (the builder resumes and revises; the feedback is saved to product memory) or Ship',You:'Decide whether it feels right',Access:'Your GitHub identity'}},
  ship:{lane:'ci',col:8,t:'Ship',s:'rebase · merge',
-   d:{Who:'The ship action',When:'You tap Ship (or it is L3 routine work)',Makes:'Rebases onto main, re-runs CI on that exact commit, then merges. One PR at a time per repo.',You:'One tap',Access:'Merges only after your approval'}},
+   d:{Who:'The ship action',When:'You tap Ship (or, at L3, the merge policy approves)',Makes:'Rebases onto main, re-runs CI on that exact commit, then merges. One PR at a time per repo.',You:'One tap',Access:'Merges after your approval, or at L3 after review and the merge policy (ADR-0015)'}},
  release:{lane:'prod',col:9,t:'Release',s:'adapter · canary',
    d:{Who:'Release workflow and the deploy adapter',When:'A push to main',Makes:'A deploy through the adapter for that part: Cloud Build trigger, Cloud Run canary, or store upload with staged rollout. Prod IaC and migrations are applied, expand first. Store reviews are tracked asynchronously.',You:'Approve store promotions, if configured',Access:'The only place prod credentials exist. Usable only from main via release.yml.'}},
  ops:{lane:'you',col:9,t:'Ops approval',s:'prod vendor calls',cond:1,
@@ -221,7 +221,7 @@ const TRACES={
   ['gateA','You pick option B and apply factory:build.'],
   ['build','The builder writes failing Playwright tests, then the code. It never pushes anything itself.'],
   ['verify','CI runs typecheck, lint, tests, visual diffs and guardrails. All green.'],
-  ['review',"The reviewer checks the diff against the spec and the builder's session."],
+  ['review',"The reviewer checks the diff against the spec and the CI screenshots."],
   ['preview','A preview at numu-know-web-pr-42.globalhost.ai with seeded stories and mobile and desktop screenshots.'],
   ['gateB','You comment "slider is too small on mobile". The builder resumes and fixes it, then you tap Ship.'],
   ['ship','Rebased onto main, re-verified, merged.'],
@@ -238,11 +238,11 @@ const TRACES={
   ['ship','Merged.'],
   ['release','Deployed.'],
   ['operate','The error rate returns to baseline and the issue closes.']]},
- deps:{name:'Dependency patch (L3)',title:'Routine dependency update',steps:[
+ deps:{name:'Dependency patch',title:'Routine dependency update',steps:[
   ['watch','Renovate opens a patch update for next.'],
   ['verify','CI and guardrails pass: no new dependencies, no permission changes.'],
-  ['review','The reviewer finds no breaking notes in the changelog.'],
-  ['ship','The repo is at L3 and renovate:patch is on its allowlist, so it ships automatically.'],
+  ['review','Renovate PRs get no agent review: the update comes from outside your work, so it goes to you.'],
+  ['ship','Dependency updates come from outside your work, so even at L3 this one waits for your tap (ADR-0015).'],
   ['release','The canary deploys.'],
   ['operate','If the error rate spikes, the canary rolls back automatically.']],level:3},
  stack:{name:'Stack change',title:'Move emails from Klaviyo to Resend',steps:[
@@ -275,8 +275,8 @@ const TRACES={
 const LEVELS={
  0:{name:'L0 observe',note:'L0 observe: agents only scan and file issues. Nothing gets built.',A:'no builds',B:'—'},
  1:{name:'L1 on request',note:'L1 on request: nothing starts until you label an issue. Every build waits for Gate A, and every merge waits for Gate B.',A:'you · always',B:'you · always'},
- 2:{name:'L2 full loop',note:'L2 full loop: the planner runs on every issue you file, and the reviewer gates every PR. Build still waits for Gate A, and merge still waits for Gate B.',A:'you · always',B:'you · always'},
- 3:{name:'L3 trusted',note:'L3 trusted: allowlisted routine work (dependency patches, lint fixes) passes both gates automatically once CI and the reviewer agree. Everything else works as at L2. Guardrails and ops always need you.',A:'routine skips',B:'routine skips'}
+ 2:{name:'L2 shadow',note:'L2 shadow: the planner runs on every issue you file; the reviewer and merge policy run on every PR and record what they would do. Build still waits for Gate A, and merge still waits for Gate B.',A:'you · always',B:'you · always'},
+ 3:{name:'L3 agent merge',note:'L3 agent merge (ADR-0015): you still approve intent at Gate A. Your work that passes review and trips no escalation trigger merges without you. Anything from outside your work, and anything risky, still needs you.',A:'you · always',B:'only on escalation'}
 };
 
 const LW=112,CW=118,NW=104,TOP=46,LH=100,BOT=46;

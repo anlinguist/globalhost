@@ -1,6 +1,6 @@
 # ADR-0006: Stay on free GitHub; enforce the gate through credentials, not plan features
 
-- Status: proposed
+- Status: proposed; amended by ADR-0015 (agent merge through a separate merge App and a required check, on repos with enforced rulesets)
 - Date: 2026-10-27
 
 ## Context

@@ -171,6 +171,8 @@ Listing the same pattern in both `loadBearing` and `immutable` is an error, sinc
 
 ### 3.9 `autoMerge`
 
+> ADR-0015: this key stays valid for compatibility but can't take effect. L3 needs the merge policy, which decides merges itself; extra escalation paths go in `loadBearing`. The rules below are still validated.
+
 A list of unique categories from a closed set:
 - `renovate:patch`
 - `renovate:minor-dev`

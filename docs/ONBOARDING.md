@@ -60,10 +60,10 @@ Rotate first (new key/credential, update consumers, disable old, verify, delete 
 |---|---|---|
 | **L0 observe** | run scans, open issues/comments | owner approves install PR |
 | **L1 on request** | plan/build only on owner-filed issues with an owner-applied label | CI green on default branch; characterization tests for critical paths; working preview; ≥5 factory PRs merged with ≤1 redirect avg |
-| **L2 full loop** | planner auto-runs on new owner issues; reviewer gates; builder runs after plan approval; owner gate before merge | ≥20 merged factory PRs; 0 rollbacks/incidents caused in 30 days; visual/contract baselines established |
-| **L3 trusted** | auto-merge for categories listed in `autoMerge` (e.g. Renovate patch, lint fixes) when CI + reviewer pass | — |
+| **L2 shadow** | planner auto-runs on new owner issues; builder runs after plan approval; the reviewer and merge policy run on every factory PR and record what they *would* do; owner still merges | 20 PRs where the policy said merge and the owner merged that SHA unchanged; no `miss:security`; reviewer eval thresholds met; every prod part's adapter builds without prod credentials and rolls back; 0 incidents caused in 30 days |
+| **L3 agent merge** | the merge policy merges owner-originated, untainted work that passes review; the owner is pulled in only by escalation triggers | — |
 
-Never at any level: auto-merge of guardrail-tripping changes (`manifest-permissions`, `openapi-breaking`, migrations, new deps), auto-fix PRs, or anything touching auth/payments paths listed as `loadBearing`. Demotion is immediate on any incident.
+Review, merge policy, provenance and the full trigger list: ADR-0015. L3 needs a ruleset that enforces the merge-policy check and adapters that build without prod credentials and roll back; it never applies to the factory repo. Never without the owner, at any level: work whose text didn't all come from an owner or whose run was tainted (auto-fixes, scanner findings, others' issues, Renovate), and anything that trips an ADR-0015 §8 trigger. Demotion to L2 is immediate on any incident: trusted code opens a `factory:demoted` issue, and only the owner closing it restores the level.
 
 ## 3. Trigger policy (public repos)
 
@@ -114,7 +114,7 @@ guardrails:
   loadBearing: ["app/api/**", "proxy.ts", "lib/firebase*"]   # always needs:owner-approval
   immutable: []                   # agents can never change; .github/**, factory.yaml and CODEOWNERS are always included
 
-autoMerge: []                     # L3 only, e.g. ["renovate:patch"]
+autoMerge: []                     # L3 only; superseded by ADR-0015's merge policy when it lands
 
 notifications:
   blocking: push                  # push | digest | none

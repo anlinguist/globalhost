@@ -1,6 +1,6 @@
 # ADR-0009: Entire (entire.com) — use the Checkpoints CLI in runners; don't adopt the forge (yet)
 
-- Status: proposed
+- Status: proposed; amended by ADR-0015 (reviewers don't read the builder's session; checkpoints are audit only)
 - Date: 2026-10-27
 
 ## Context
@@ -20,7 +20,7 @@ Entire is a new "git forge for agent-human collaboration" from former GitHub CEO
 
 1. **GitHub stays the control plane.** Entire can't yet replace issues, Actions, Apps, rulesets, or the integrations the factory depends on. Moving would mean rebuilding the loop on a forge in preview.
 2. **Adopt the Entire CLI inside the runner** (Phase 2, behind a flag) to capture each agent session as a checkpoint linked to its commits:
-   - The reviewer role gets the builder's *reasoning*, not just its diff, which makes it a better grader.
+   - ~~The reviewer role gets the builder's reasoning~~. Superseded by ADR-0015: reviewers judge from evidence, not the builder's account, which would be an injection channel.
    - It gives provenance and audit for every agent commit, and raw material for the Phase 6 "redirects → skills" loop.
    - Storage: **a separate private repo** (`anlinguist/globalhost-checkpoints`) or local-only, never the product repo. Public product repos (numu-know) must not publish agent transcripts.
 3. **Evaluate `entire-graph`** as an agent context tool in Phase 6 evals (measure: tokens per merged PR with vs without).

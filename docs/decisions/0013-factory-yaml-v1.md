@@ -1,6 +1,6 @@
 # ADR-0013: `factory.yaml` v1 — validation contract
 
-- Status: accepted
+- Status: accepted; amended by ADR-0015 (`autoMerge` can't take effect)
 - Date: 2026-10-29
 
 ## Context
