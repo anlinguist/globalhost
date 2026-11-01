@@ -218,6 +218,7 @@ describe("guidance", () => {
     // Parallel runs that each scaffold a smoke test conflict (numu-know #18, #19, #20), so only a task that asks adds one.
     expect(text).toContain("don't add one unless the task asks for it");
     expect(text).not.toContain("If the repo has no smoke test yet, add one.");
+    expect(text).toContain("named `smoke (repo has none)`");
   });
 
   it("contains no repo-derived text: a hostile package.json changes nothing but detection facts", async () => {
