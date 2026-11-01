@@ -18,7 +18,7 @@ The task message has a "Part `<name>` (web-app)" section with this repo's exact 
 
 - The smoke test is a Playwright test that starts the built app (production build, not the dev server) on the configured port, using `webServer` in `playwright.config`.
 - It visits each route in `GLOBALHOST_ROUTES` (comma-separated) at a desktop (1280x800) and a mobile (390x844) viewport. For each one it checks for a 2xx/3xx response, no uncaught page error, and visible main content. Then it saves a full-page screenshot to `$GLOBALHOST_SCREENSHOT_DIR/<route-slug>-<viewport>.png`.
-- If the repo has none, add `@playwright/test` as a dev dependency and `e2e/smoke.spec.ts`. Use the Chromium already in the sandbox; don't download browsers.
+- If the repo has none, add one only when the task asks for it (`@playwright/test` as a dev dependency and `e2e/smoke.spec.ts`); it belongs in its own PR, since parallel runs that each add one conflict. Otherwise skip the smoke step and say in the run summary that the repo has none. Use the Chromium already in the sandbox; don't download browsers.
 - In a run, set `GLOBALHOST_SCREENSHOT_DIR=/mnt/session/outputs/screenshots` so the screenshots reach the PR. Also take screenshots of any page your change affects, named for what they show.
 - Don't commit screenshots, `playwright-report/` or `test-results/`. Add them to `.gitignore` if they're missing.
 

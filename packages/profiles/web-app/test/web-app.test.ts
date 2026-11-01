@@ -214,7 +214,10 @@ describe("guidance", () => {
     expect(text).toContain("- install: `npm ci --legacy-peer-deps`");
     expect(text).toContain("- build: `NEXT_PUBLIC_FIREBASE_PROJECT_ID=numu-know-dev npm run build`");
     expect(text).toContain("GLOBALHOST_SCREENSHOT_DIR=/mnt/session/outputs/screenshots");
-    expect(text).toContain("add `@playwright/test`");
+    expect(text).toContain("If the task is to add the smoke test, add `@playwright/test`");
+    // Parallel runs that each scaffold a smoke test conflict (numu-know #18, #19, #20), so only a task that asks adds one.
+    expect(text).toContain("don't add one unless the task asks for it");
+    expect(text).not.toContain("If the repo has no smoke test yet, add one.");
   });
 
   it("contains no repo-derived text: a hostile package.json changes nothing but detection facts", async () => {

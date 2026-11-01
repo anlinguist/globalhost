@@ -55,9 +55,11 @@ export function webAppGuidance(part: PartCtx<WebAppConfig, WebAppDetection>): st
     );
   }
   lines.push(
-    `The smoke test is a Playwright test that starts the built app on port ${config.port}, visits each route in GLOBALHOST_ROUTES (${config.routes.map((r) => `\`${r}\``).join(", ")}) at desktop and mobile viewports, checks each loads without a server error or uncaught page error, and saves a full-page screenshot per route and viewport to GLOBALHOST_SCREENSHOT_DIR. If the repo has no smoke test yet, add one.`,
+    `The smoke test is a Playwright test that starts the built app on port ${config.port}, visits each route in GLOBALHOST_ROUTES (${config.routes.map((r) => `\`${r}\``).join(", ")}) at desktop and mobile viewports, checks each loads without a server error or uncaught page error, and saves a full-page screenshot per route and viewport to GLOBALHOST_SCREENSHOT_DIR. If the repo has no smoke test yet, don't add one unless the task asks for it: it belongs in its own PR, and parallel runs that each add one conflict. Skip the smoke step and say in your summary that the repo has none.`,
     `In this session, run it with GLOBALHOST_SCREENSHOT_DIR=${SESSION_OUTPUTS}/screenshots so the screenshots reach the PR (CI uses \`${SCREENSHOT_DIR}/\`). Don't commit screenshots or Playwright reports.`,
   );
-  if (!detection.playwright) lines.push("Playwright isn't a dependency yet: add `@playwright/test` as a dev dependency and a `playwright.config` with a `webServer` that starts the built app.");
+  if (!detection.playwright) {
+    lines.push("Playwright isn't a dependency yet. If the task is to add the smoke test, add `@playwright/test` as a dev dependency and a `playwright.config` with a `webServer` that starts the built app.");
+  }
   return `${lines.join("\n")}\n`;
 }
