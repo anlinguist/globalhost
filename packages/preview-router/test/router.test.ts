@@ -299,3 +299,98 @@ describe("rewriteLocation", () => {
     expect(rewriteLocation(`https://${origin}:8443/a`, origin, "p.globalhost.ai")).toBe(`https://${origin}:8443/a`);
   });
 });
+
+describe("handle: credential and spoofing hygiene", () => {
+  const url = "https://numu-know-web-pr-12.globalhost.ai/";
+
+  it("removes CF_Authorization from Cookie but keeps other cookies", async () => {
+    const { calls } = await run(url, {
+      init: { headers: { cookie: "a=1; CF_Authorization=owner.jwt.sig; b=2", "cf-access-jwt-assertion": "j" } },
+    });
+    const h = new Headers(calls[0]!.init.headers);
+    expect(h.get("cookie")).toBe("a=1; b=2");
+    expect(h.get("cf-access-jwt-assertion")).toBe("j");
+  });
+
+  it("drops the Cookie header when only CF_Authorization was sent (any case)", async () => {
+    const { calls } = await run(url, { init: { headers: { cookie: " cf_authorization=x ;CF_AUTHORIZATION=y" } } });
+    expect(new Headers(calls[0]!.init.headers).get("cookie")).toBeNull();
+  });
+
+  it("deletes client-supplied forwarding and identity headers", async () => {
+    const { calls } = await run(url, {
+      init: {
+        headers: {
+          forwarded: "for=1.2.3.4;host=evil.com",
+          "x-forwarded-for": "1.2.3.4",
+          "x-forwarded-port": "80",
+          "x-forwarded-prefix": "/evil",
+          "x-real-ip": "1.2.3.4",
+          "cf-access-authenticated-user-email": "attacker@example.com",
+        },
+      },
+    });
+    const h = new Headers(calls[0]!.init.headers);
+    for (const name of [
+      "forwarded",
+      "x-forwarded-for",
+      "x-forwarded-port",
+      "x-forwarded-prefix",
+      "x-real-ip",
+      "cf-access-authenticated-user-email",
+    ]) {
+      expect(h.get(name), name).toBeNull();
+    }
+    expect(h.get("x-forwarded-host")).toBe("numu-know-web-pr-12.globalhost.ai");
+    expect(h.get("x-forwarded-proto")).toBe("https");
+  });
+
+  it("makes response cookies host-only and drops CF_Authorization", async () => {
+    const { res } = await run(url, {
+      respond: () => {
+        const headers = new Headers();
+        headers.append("set-cookie", "sid=abc; Domain=.globalhost.ai; Path=/; HttpOnly; Secure");
+        headers.append("set-cookie", "theme=dark; path=/; domain=globalhost.ai; Expires=Wed, 21 Oct 2037 07:28:00 GMT");
+        headers.append("set-cookie", "CF_Authorization=forged; Domain=globalhost.ai; Path=/");
+        headers.append("set-cookie", "cf_authorization=forged2");
+        headers.append("set-cookie", "__Host-csrf=t; Path=/; Secure");
+        headers.append("set-cookie", "__Secure-x=1; Secure; DOMAIN = app.globalhost.ai");
+        return new Response("x", { headers });
+      },
+    });
+    expect(res.headers.getSetCookie()).toEqual([
+      "sid=abc; Path=/; HttpOnly; Secure",
+      "theme=dark; path=/; Expires=Wed, 21 Oct 2037 07:28:00 GMT",
+      "__Host-csrf=t; Path=/; Secure",
+      "__Secure-x=1; Secure",
+    ]);
+  });
+
+  it("removes Set-Cookie entirely when every cookie is dropped", async () => {
+    const { res } = await run(url, {
+      respond: () => new Response("x", { headers: { "set-cookie": "CF_Authorization=forged" } }),
+    });
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("passes a 101 upgrade response through untouched", async () => {
+    const upgrade = { status: 101, headers: new Headers({ upgrade: "websocket" }), body: null } as unknown as Response;
+    const { res, calls } = await run(url, {
+      init: { headers: { upgrade: "websocket", connection: "Upgrade" } },
+      respond: () => upgrade,
+    });
+    expect(res).toBe(upgrade);
+    expect(new Headers(calls[0]!.init.headers).get("upgrade")).toBe("websocket");
+  });
+});
+
+describe("build shape", () => {
+  it("src/index.ts has no imports or re-exports, so dist/index.js stays one self-contained module", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/^\s*import[\s{*"']/m);
+    expect(src).not.toMatch(/^\s*export\s[^;]*\sfrom\s/m);
+    expect(src).not.toMatch(/\bimport\s*\(/);
+    expect(src).not.toMatch(/\brequire\s*\(/);
+  });
+});

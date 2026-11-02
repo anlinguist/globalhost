@@ -21,14 +21,22 @@ Only one label under `globalhost.ai` is served (Universal SSL covers one wildcar
 The request is proxied with its method, streamed body and headers. The Worker then:
 
 - sets `X-Forwarded-Host` to the public host and `X-Forwarded-Proto: https`. Apps that need their public origin read these, or a per-preview `PUBLIC_ORIGIN`;
-- forwards `Cf-Access-Jwt-Assertion` unchanged for `access-guard`;
-- strips any incoming `X-Globalhost-*` header (clients cannot inject factory headers) and `Host`;
+- forwards `Cf-Access-Jwt-Assertion` unchanged for `access-guard`, which validates it and strips it before the app sees the request;
+- removes the owner's Access session cookie (`CF_Authorization`) from `Cookie`, because preview code is untrusted and must never see a reusable owner credential. Other cookies pass through;
+- strips client-supplied `X-Globalhost-*` (clients can't inject factory headers), `Host`, `Forwarded`, every `X-Forwarded-*` (before setting its own), `X-Real-IP` and `Cf-Access-Authenticated-User-Email`;
+- makes every response `Set-Cookie` host-only by dropping its `Domain=` attribute, so one preview can't toss cookies onto sibling previews or other `*.globalhost.ai` hosts. It drops any `CF_Authorization` cookie the origin tries to set. `__Host-`/`__Secure-` cookies keep their other attributes;
 - uses `redirect: "manual"` and rewrites any `Location` on the tagged origin host back to the public host;
 - passes origin cache headers through but tells Cloudflare not to cache the subrequest (`cf.cacheTtlByStatus` of `-1`);
 - adds `X-Robots-Tag: noindex` when the origin didn't set one;
 - returns WebSocket upgrades (101) untouched, so the socket passes through.
 
 When Cloud Run has no such tag (the preview isn't deployed yet, or was torn down), its 404 is passed through as-is. An unreachable origin gives a 502.
+
+### Other hosts on the zone
+
+The Worker route `*.globalhost.ai/*` catches every host, and the Worker 404s anything that isn't a preview. When a non-preview host lands (e.g. the PWA at `app.globalhost.ai`), carve it out of the route, either with a more specific route that has no Worker or a separate Worker. Otherwise this router will shadow it.
+
+`app.globalhost.ai` must also get its own Cloudflare Access application, with a separate AUD. A preview-application JWT travels to Cloud Run next to untrusted code, so it must never be accepted by anything else: a separate AUD means a replayed preview JWT fails there.
 
 ## The service map
 

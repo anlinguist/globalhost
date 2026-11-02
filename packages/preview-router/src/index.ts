@@ -134,6 +134,36 @@ export function rewriteLocation(location: string, originHost: string, publicHost
   return url.toString();
 }
 
+/** Client-supplied headers that could spoof identity or origin to the preview. */
+const DROP_REQUEST_HEADERS = ["host", "forwarded", "x-real-ip", "cf-access-authenticated-user-email"];
+
+const ACCESS_COOKIE = "cf_authorization";
+
+function cookieName(pair: string): string {
+  const eq = pair.indexOf("=");
+  return (eq === -1 ? pair : pair.slice(0, eq)).trim().toLowerCase();
+}
+
+/** Remove the Access session cookie (`CF_Authorization`) from a request `Cookie` header. */
+export function stripAccessCookie(cookie: string): string {
+  return cookie
+    .split(";")
+    .map((p) => p.trim())
+    .filter((p) => p !== "" && cookieName(p) !== ACCESS_COOKIE)
+    .join("; ");
+}
+
+/**
+ * Make a response cookie host-only (drop any `Domain=`), so one preview can't set cookies for
+ * sibling previews or other *.globalhost.ai hosts. Returns null to drop a `CF_Authorization` cookie.
+ */
+export function rewriteSetCookie(setCookie: string): string | null {
+  const [pair = "", ...attrs] = setCookie.split(";");
+  if (cookieName(pair) === ACCESS_COOKIE) return null;
+  const kept = attrs.filter((a) => cookieName(a) !== "domain");
+  return [pair, ...kept].join(";");
+}
+
 /** Handle one request. `fetchImpl` is injectable for tests. */
 export async function handle(request: Request, env: Env, fetchImpl: FetchLike = fetch): Promise<Response> {
   const incoming = new URL(request.url);
@@ -144,12 +174,20 @@ export async function handle(request: Request, env: Env, fetchImpl: FetchLike = 
 
   const headers = new Headers(request.headers);
   for (const name of [...headers.keys()]) {
-    if (name.toLowerCase().startsWith("x-globalhost-")) headers.delete(name);
+    const lower = name.toLowerCase();
+    if (lower.startsWith("x-globalhost-") || lower.startsWith("x-forwarded-")) headers.delete(name);
   }
-  headers.delete("host");
+  for (const name of DROP_REQUEST_HEADERS) headers.delete(name);
+  // The owner's Access session cookie must never reach preview (untrusted) code.
+  const cookie = headers.get("cookie");
+  if (cookie !== null) {
+    const kept = stripAccessCookie(cookie);
+    if (kept === "") headers.delete("cookie");
+    else headers.set("cookie", kept);
+  }
   headers.set("x-forwarded-host", incoming.hostname);
   headers.set("x-forwarded-proto", "https");
-  // Cf-Access-Jwt-Assertion is carried over by the copy above; access-guard validates it.
+  // Cf-Access-Jwt-Assertion is carried over by the copy above; access-guard validates and strips it.
 
   const target = `https://${originHost}${incoming.pathname}${incoming.search}`;
   const init: RequestInit & { cf: Record<string, unknown>; duplex?: "half" } = {
@@ -176,6 +214,14 @@ export async function handle(request: Request, env: Env, fetchImpl: FetchLike = 
   const location = response.headers.get("location");
   if (location !== null) {
     response.headers.set("location", rewriteLocation(location, originHost, incoming.hostname));
+  }
+  const setCookies = response.headers.getSetCookie();
+  if (setCookies.length > 0) {
+    response.headers.delete("set-cookie");
+    for (const sc of setCookies) {
+      const rewritten = rewriteSetCookie(sc);
+      if (rewritten !== null) response.headers.append("set-cookie", rewritten);
+    }
   }
   if (!response.headers.has("x-robots-tag")) response.headers.set("x-robots-tag", "noindex");
   return response;
