@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -323,10 +324,48 @@ describe("publish", () => {
     const pushed = git(fx.remote, "rev-parse", "factory/issue-12");
     expect(pushed).not.toBe(agentHead);
     expect(git(fx.remote, "log", "-1", "--format=%B", pushed)).toBe("Make it blue\n\nrefs #12, refs: anlinguist/demo#3");
-    // Same tree, author and parent: only the message changed.
+    // Same tree as the verified bundle head (what the path policy checked), author and parent: only the message changed.
     expect(git(fx.remote, "rev-parse", `${pushed}^{tree}`)).toBe(git(fx.work, "rev-parse", `${agentHead}^{tree}`));
     expect(git(fx.remote, "log", "-1", "--format=%an %ae %at %P", pushed)).toBe(git(fx.work, "log", "-1", "--format=%an %ae %at %P", agentHead));
     expect(cloud.pulls[0]!.title).toBe("factory: refs #4 the button");
+  });
+
+  it("pushes nothing for a crafted commit whose second tree header hides a workflow change", async () => {
+    const fx = gitFixture();
+    const cloud = new FakeCloud();
+    const outDir = mkdtempSync(join(tmpdir(), "out-"));
+    // The tree the path policy sees (git reads the first tree header) is harmless; the second one adds a workflow.
+    writeFileSync(join(fx.work, "app.ts"), "export const x = 2;\n");
+    git(fx.work, "add", ".");
+    const safeTree = git(fx.work, "write-tree");
+    execFileSync("mkdir", ["-p", join(fx.work, ".github/workflows")]);
+    writeFileSync(join(fx.work, ".github/workflows/evil.yml"), "x\n");
+    git(fx.work, "add", ".");
+    const evilTree = git(fx.work, "write-tree");
+    git(fx.work, "reset", "-q", "--hard", fx.baseSha);
+    const ident = "a <a@b> 1700000000 +0000";
+    const rawFile = join(outDir, "raw");
+    writeFileSync(rawFile, `tree ${safeTree}\nparent ${fx.baseSha}\nauthor ${ident}\ncommitter ${ident}\ntree ${evilTree}\n\nFixes #12\n`);
+    const crafted = git(fx.work, "hash-object", "-t", "commit", "-w", "--literally", rawFile);
+    git(fx.work, "update-ref", "refs/heads/factory/issue-12", crafted);
+    git(fx.work, "bundle", "create", "-q", join(outDir, "result.bundle"), "factory/issue-12", `^${fx.baseSha}`);
+    const result = await publish({
+      gh: new GitHubClient("app-token", cloud.fetch),
+      pushToken: "app-token",
+      repo: REPO,
+      issue: 12,
+      issueTitle: "t",
+      config,
+      record: record(fx),
+      outDir,
+      base: fx.baseClone(),
+      log: () => undefined,
+      remoteUrl: fx.remote,
+    });
+    expect(result.outcome).toBe("failed");
+    expect(() => git(fx.remote, "rev-parse", "--verify", "refs/heads/factory/issue-12")).toThrow();
+    expect(cloud.comments[0]!.body).toContain("Nothing was pushed");
+    expect(cloud.comments[0]!.body).toContain("2 tree headers");
   });
 
   it("labels a PR that touches a load-bearing path", async () => {

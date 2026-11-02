@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { evaluatePathPolicy, pathPolicyAllows, type FactoryConfig } from "@globalhost/core";
 import { inspectResultBundle, type RepoBundle, type RunRecord } from "@globalhost/runner";
 import { z } from "zod";
-import { neutralizeClosingKeywords, rewriteClosingKeywords } from "./closing-keywords.js";
+import { UnsafeCommitError, neutralizeClosingKeywords, rewriteClosingKeywords } from "./closing-keywords.js";
 import { GitHubClient, GitHubError, PullSchema, marker, type Pull } from "./github.js";
 
 const exec = promisify(execFile);
@@ -206,14 +206,16 @@ async function publishBuild(ctx: PublishContext): Promise<PublishResult> {
   // deterministic, so a resumed builder's re-bundled branch maps onto the same rewritten commits.
   let headSha = bundle.headSha;
   try {
-    const rewritten = await rewriteClosingKeywords(ctx.base.bareDir, record.baseSha, RESULT_REF);
+    // bundle.headSha is what the path policy checked; the rewrite proves the pushed tree is still its tree.
+    const rewritten = await rewriteClosingKeywords(ctx.base.bareDir, record.baseSha, RESULT_REF, bundle.headSha);
     if (rewritten > 0) {
       headSha = (await exec("git", ["rev-parse", RESULT_REF], { cwd: ctx.base.bareDir })).stdout.trim();
       ctx.log(`rewrote closing keywords in ${rewritten} commit message(s)`);
     }
     await pushBranch(ctx.base.bareDir, ctx.remoteUrl ?? `https://github.com/${repo}.git`, branch, ctx.pushToken);
   } catch (err) {
-    await comment(gh, repo, ctx.pullRequest ?? issue, runReport(record, ["", `**Push to \`${branch}\` failed:** ${asPostable((err as Error).message, 500)}`]));
+    const what = err instanceof UnsafeCommitError ? `**Nothing was pushed to \`${branch}\`:**` : `**Push to \`${branch}\` failed:**`;
+    await comment(gh, repo, ctx.pullRequest ?? issue, runReport(record, ["", `${what} ${asPostable((err as Error).message, 500)}`]));
     await addLabels(gh, repo, issue, [LABELS.failed]);
     return { outcome: "failed" };
   }
