@@ -9,6 +9,7 @@ import {
   createFactory,
   dispatchProviderCondition,
 } from "../src/factory.js";
+import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
 
 interface Registered {
   type: string;
@@ -18,18 +19,33 @@ interface Registered {
 
 const PROJECT = "globalhost-factory";
 const PROJECT_NUMBER = "123456789012";
+const DEV_PROJECT = "numu-know-dev";
+const DEV_PROJECT_NUMBER = "414694776649";
+const GUARD_IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/globalhost-images/access-guard@sha256:${"b".repeat(64)}`;
 const resources: Registered[] = [];
+
+/** Mocks see secret inputs as `{ <specialSigKey>: <secret sig>, value }`; tests compare the plain values. */
+function unwrapSecrets(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(unwrapSecrets);
+  if (v !== null && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (pulumi.runtime.specialSigKey in o) return unwrapSecrets(o.value);
+    return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, unwrapSecrets(x)]));
+  }
+  return v;
+}
 
 pulumi.runtime.setMocks(
   {
     newResource(args) {
-      resources.push({ type: args.type, name: args.name, inputs: args.inputs as Record<string, unknown> });
+      resources.push({ type: args.type, name: args.name, inputs: unwrapSecrets(args.inputs) as Record<string, unknown> });
       const state: Record<string, unknown> = { ...args.inputs };
       switch (args.type) {
         case "gcp:serviceaccount/account:Account": {
-          const email = `${String(args.inputs.accountId)}@${PROJECT}.iam.gserviceaccount.com`;
+          const project = String(args.inputs.project ?? PROJECT);
+          const email = `${String(args.inputs.accountId)}@${project}.iam.gserviceaccount.com`;
           state.email = email;
-          state.name = `projects/${PROJECT}/serviceAccounts/${email}`;
+          state.name = `projects/${project}/serviceAccounts/${email}`;
           return { id: state.name as string, state };
         }
         case "gcp:iam/workloadIdentityPool:WorkloadIdentityPool":
@@ -43,12 +59,23 @@ pulumi.runtime.setMocks(
         case "gcp:cloudfunctionsv2/function:Function":
           state.serviceConfig = { ...(args.inputs.serviceConfig as object), service: String(args.inputs.name) };
           break;
+        case "gcp:projects/iAMCustomRole:IAMCustomRole":
+          state.name = `projects/${String(args.inputs.project)}/roles/${String(args.inputs.roleId)}`;
+          break;
+        case "cloudflare:index/zeroTrustAccessApplication:ZeroTrustAccessApplication":
+          state.aud = "a".repeat(64);
+          break;
+        case "cloudflare:index/zeroTrustAccessServiceToken:ZeroTrustAccessServiceToken":
+          state.clientId = "client-id.access";
+          state.clientSecret = "client-secret";
+          break;
       }
       return { id: `${args.name}-id`, state };
     },
     call(args) {
       if (args.token === "gcp:organizations/getProject:getProject") {
-        return { number: PROJECT_NUMBER, projectId: PROJECT };
+        const projectId = String(args.inputs.projectId);
+        return { number: projectId === DEV_PROJECT ? DEV_PROJECT_NUMBER : PROJECT_NUMBER, projectId };
       }
       throw new Error(`unmocked call ${args.token}`);
     },
@@ -63,6 +90,10 @@ const config = parseFactoryConfig({
   region: "us-central1",
   githubOwnerId: "47403803",
   dispatchRepos: [{ name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }],
+  factoryRepoId: "1437394155",
+  previews: [{ product: "numu-know", devProject: DEV_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }, parts: ["web"] }],
+  previewActorIds: ["47403803", "350478808"],
+  accessGuardImage: GUARD_IMAGE,
 });
 
 const GH_DISPATCH = `serviceAccount:globalhost-gh-dispatch@${PROJECT}.iam.gserviceaccount.com`;
@@ -84,10 +115,19 @@ beforeAll(async () => {
       archive: new pulumi.asset.AssetArchive({ "index.js": new pulumi.asset.StringAsset("export {};") }),
       hash: "test",
     },
+    factoryRepoName: "anlinguist/globalhost",
+    routerScript: "export default { fetch() { return new Response(null, { status: 404 }); } };",
+    cloudflare: pulumi.secret({
+      accountId: "c".repeat(32),
+      zoneId: "d".repeat(32),
+      zone: "globalhost.ai",
+      teamDomain: "team.cloudflareaccess.com",
+      ownerEmails: ["owner@example.com"],
+    }),
   });
   // Resolve every output so all resources (and their inputs) have registered.
   await new Promise<void>((resolve) =>
-    pulumi.all(Object.values(outputs)).apply(() => {
+    pulumi.all(Object.values(outputs) as pulumi.Input<unknown>[]).apply(() => {
       resolve();
     }),
   );
@@ -159,9 +199,13 @@ describe("factory infra", () => {
   it("makes sa:gh-dispatch the only principal on the App key secret, with no version", () => {
     const secret = one("gcp:secretmanager/secret:Secret", "github-app-key");
     expect(secret.inputs.secretId).toBe(GITHUB_APP_KEY_SECRET);
-    expect(ofType("gcp:secretmanager/secretVersion:SecretVersion")).toEqual([]);
+    // Its value is added by the owner; the only versions Pulumi writes are the dev project's preview token.
+    expect(ofType("gcp:secretmanager/secretVersion:SecretVersion").map((r) => r.name)).toEqual([
+      "numu-know-preview-access-client-id-v",
+      "numu-know-preview-access-client-secret-v",
+    ]);
 
-    const policies = ofType("gcp:secretmanager/secretIamPolicy:SecretIamPolicy");
+    const policies = ofType("gcp:secretmanager/secretIamPolicy:SecretIamPolicy").filter((r) => r.inputs.project === PROJECT);
     expect(policies).toHaveLength(1);
     const policy = JSON.parse(String(policies[0]?.inputs.policyData)) as {
       bindings: { role: string; members: string[]; condition?: unknown }[];
@@ -227,7 +271,8 @@ describe("factory infra", () => {
     expect(
       (budget.inputs.thresholdRules as { thresholdPercent: number }[]).map((t) => t.thresholdPercent),
     ).toEqual([0.4, 0.8, 1.0]);
-    expect(budget.inputs.budgetFilter).toMatchObject({ projects: [`projects/${PROJECT_NUMBER}`] });
+    // Dev projects share the factory budget (ARCHITECTURE §5.2).
+    expect(budget.inputs.budgetFilter).toMatchObject({ projects: [`projects/${PROJECT_NUMBER}`, `projects/${DEV_PROJECT_NUMBER}`] });
     expect(budget.inputs.allUpdatesRule).toMatchObject({
       pubsubTopic: `projects/${PROJECT}/topics/globalhost-budget-alerts`,
     });
@@ -260,7 +305,7 @@ describe("factory infra", () => {
     const sas = ofType("gcp:serviceaccount/account:Account").map((r) => r.inputs.accountId);
     expect(sas).not.toContain("runner");
     expect(sas).not.toContain("globalhost-runner");
-    const secrets = ofType("gcp:secretmanager/secret:Secret").map((r) => r.inputs.secretId);
+    const secrets = ofType("gcp:secretmanager/secret:Secret").filter((r) => r.inputs.project === PROJECT).map((r) => r.inputs.secretId);
     expect(secrets).toEqual([GITHUB_APP_KEY_SECRET]);
   });
 });
@@ -289,6 +334,132 @@ describe("dispatch provider condition", () => {
     ["no repos", { dispatchRepos: [] }],
     ["duplicate repo ids", { dispatchRepos: [{ name: "a/b", id: "1", defaultBranch: "main" }, { name: "a/c", id: "1", defaultBranch: "main" }] }],
     ["unknown keys", { extra: true }],
+  ])("rejects config with %s", (_name, patch) => {
+    expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+  });
+});
+
+describe("previews (P1-11)", () => {
+  const DEPLOYER = `serviceAccount:preview-deployer@${DEV_PROJECT}.iam.gserviceaccount.com`;
+  const RUNTIME = `serviceAccount:preview-runtime@${DEV_PROJECT}.iam.gserviceaccount.com`;
+  const SHOTS = `serviceAccount:preview-screenshots@${DEV_PROJECT}.iam.gserviceaccount.com`;
+
+  it("pins the preview provider to main's copy of the preview workflow, never a PR's", () => {
+    const provider = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "numu-know-preview-provider");
+    expect(provider.inputs.attributeCondition).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.repository_id == '338675328' && " +
+        "assertion.ref == 'refs/heads/main' && " +
+        "assertion.job_workflow_ref == 'anlinguist/numu-know/.github/workflows/globalhost-preview.yml@refs/heads/main' && " +
+        "assertion.runner_environment == 'github-hosted' && " +
+        "assertion.environment in ['preview-deploy', 'preview-screenshots'] && " +
+        "(assertion.event_name == 'pull_request_target' || " +
+        "(assertion.event_name == 'workflow_run' && assertion.actor_id in ['47403803', '350478808']))",
+    );
+    expect((provider.inputs.attributeMapping as Record<string, string>)["attribute.preview"]).toBe(
+      "assertion.repository_id + '@' + assertion.environment",
+    );
+    expect(previewProviderCondition(config, config.previews[0]!)).toBe(provider.inputs.attributeCondition);
+  });
+
+  it("lets only the factory repo's image workflow on main publish images", () => {
+    expect(imagesProviderCondition(config, "anlinguist/globalhost")).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.repository_id == '1437394155' && " +
+        "assertion.ref == 'refs/heads/main' && " +
+        "assertion.job_workflow_ref == 'anlinguist/globalhost/.github/workflows/access-guard-image.yml@refs/heads/main'",
+    );
+  });
+
+  it("touches no prod project: every preview resource is in the factory or the dev project", () => {
+    const projects = new Set(resources.map((r) => r.inputs.project).filter((p) => p !== undefined));
+    expect([...projects].sort()).toEqual([DEV_PROJECT, PROJECT].sort());
+  });
+
+  it("binds each identity to its own job environment", () => {
+    const wif = ofType("gcp:serviceaccount/iAMMember:IAMMember").filter((r) => r.inputs.role === "roles/iam.workloadIdentityUser");
+    const members = wif.map((r) => String(r.inputs.member)).filter((m) => m.includes("attribute.preview/"));
+    expect(members.map((m) => m.split("attribute.preview/")[1]).sort()).toEqual(["338675328@preview-deploy", "338675328@preview-screenshots"]);
+  });
+
+  it("gives the deployer, screenshot and runtime identities only their listed roles", () => {
+    const roles = (member: string) =>
+      resources
+        .filter((r) => r.inputs.member === member || (typeof r.inputs.policyData === "string" && r.inputs.policyData.includes(member)))
+        .map((r) => `${r.type.split(":")[1]} ${String(r.inputs.role ?? "policy")}`)
+        .sort();
+    expect(roles(DEPLOYER)).toEqual(
+      [
+        "artifactregistry/repositoryIamMember roles/artifactregistry.writer",
+        "cloudrunv2/serviceIamMember roles/run.developer",
+        "projects/iAMMember projects/numu-know-dev/roles/globalhostPreviewAuthDomains",
+        "serviceaccount/iAMMember roles/iam.serviceAccountUser",
+      ].sort(),
+    );
+    expect(roles(SHOTS)).toEqual(
+      [
+        "secretmanager/secretIamPolicy policy",
+        "secretmanager/secretIamPolicy policy",
+        "storage/bucketIAMMember roles/storage.objectCreator",
+      ].sort(),
+    );
+    const role = one("gcp:projects/iAMCustomRole:IAMCustomRole", "numu-know-auth-domains-role");
+    expect(role.inputs.permissions).toEqual(["firebaseauth.configs.get", "firebaseauth.configs.update"]);
+    expect(roles(RUNTIME)).toEqual(["projects/iAMMember roles/datastore.user"]);
+  });
+
+  it("puts the guard in front of the app on each preview service", () => {
+    const svc = one("gcp:cloudrunv2/service:Service", "numu-know-web-preview");
+    expect(svc.inputs.name).toBe("numu-know-web-preview");
+    expect(svc.inputs.project).toBe(DEV_PROJECT);
+    const template = svc.inputs.template as { serviceAccount: string; scaling: object; containers: Array<Record<string, unknown>> };
+    expect(template.scaling).toMatchObject({ minInstanceCount: 0, maxInstanceCount: 1 });
+    const [guard, app] = template.containers;
+    expect(guard).toMatchObject({ name: "guard", image: GUARD_IMAGE, ports: { containerPort: 8080 } });
+    // The guard starts first, so PR code can't take its port; nothing depends on the app.
+    expect(guard).not.toHaveProperty("dependsOns");
+    expect(guard?.envs).toEqual(
+      expect.arrayContaining([
+        { name: "UPSTREAM_PORT", value: "3000" },
+        { name: "ACCESS_TEAM_DOMAIN", value: "team.cloudflareaccess.com" },
+        { name: "ACCESS_AUD", value: "a".repeat(64) },
+      ]),
+    );
+    expect(app).toMatchObject({ name: "app", dependsOns: ["guard"], args: ["httpd", "-f", "-p", "3000", "-h", "/tmp"] });
+    // Cloud Run reserves PORT.
+    expect(app).not.toHaveProperty("envs");
+    expect(app).not.toHaveProperty("ports");
+  });
+
+  it("routes the Worker to the deterministic service host behind one owner-only Access app", () => {
+    const script = one("cloudflare:index/workersScript:WorkersScript", "preview-router");
+    const bindings = script.inputs.bindings as Array<{ name: string; text: string }>;
+    expect(JSON.parse(bindings.find((b) => b.name === "PREVIEW_SERVICES")!.text)).toEqual({
+      "numu-know-web": `numu-know-web-preview-${DEV_PROJECT_NUMBER}.us-central1.run.app`,
+    });
+    expect(one("cloudflare:index/workersRoute:WorkersRoute", "preview-route").inputs.pattern).toBe("*.globalhost.ai/*");
+    const app = one("cloudflare:index/zeroTrustAccessApplication:ZeroTrustAccessApplication", "previews");
+    expect(app.inputs.domain).toBe("*.globalhost.ai");
+    const owner = one("cloudflare:index/zeroTrustAccessPolicy:ZeroTrustAccessPolicy", "preview-owner");
+    expect(owner.inputs).toMatchObject({ decision: "allow", includes: [{ email: { email: "owner@example.com" } }] });
+    expect(one("cloudflare:index/zeroTrustAccessPolicy:ZeroTrustAccessPolicy", "preview-ci").inputs.decision).toBe("non_identity");
+  });
+
+  it("keeps screenshots public but short-lived", () => {
+    const bucket = one("gcp:storage/bucket:Bucket", "numu-know-preview-screenshots");
+    expect(bucket.inputs).toMatchObject({ name: "numu-know-dev-previews", project: DEV_PROJECT });
+    expect(bucket.inputs.lifecycleRules).toEqual([{ action: { type: "Delete" }, condition: { age: 30 } }]);
+    // Readable by URL, not listable.
+    expect(one("gcp:storage/bucketIAMMember:BucketIAMMember", "numu-know-screenshots-public").inputs.role).toBe("roles/storage.legacyObjectReader");
+  });
+
+  it.each([
+    ["a prod (non -dev) preview project", { previews: [{ ...config.previews[0], devProject: "numu-know" }] }],
+    ["previews without actor ids", { previewActorIds: [] }],
+    ["a quote in an actor id (CEL injection)", { previewActorIds: ["1' || true || '"] }],
+    ["a guard image without a digest", { accessGuardImage: "us-central1-docker.pkg.dev/p/r/access-guard:latest" }],
+    ["a hyphenated part", { previews: [{ ...config.previews[0], parts: ["web-app"] }] }],
+    ["duplicate products", { previews: [config.previews[0], config.previews[0]] }],
+    ["a service name too long for a tag URL", { previews: [{ ...config.previews[0], product: "a-very-long-product-name", parts: ["andlongpartname"] }] }],
+    ["a quote in the default branch (CEL injection)", { previews: [{ ...config.previews[0], repo: { name: "a/b", id: "1", defaultBranch: "main' || true || '" } }] }],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });
