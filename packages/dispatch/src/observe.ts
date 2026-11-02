@@ -105,6 +105,18 @@ export function consoleUrl(raw: string | undefined): string | undefined {
   return url.href;
 }
 
+/**
+ * The Console link built from the project ID, region and build ID. Cloud Build's own logUrl names the project by
+ * number, which is kept out of public repos; the project ID is already public in factory.yaml.
+ */
+export function buildLink(handle: ReleaseHandle, buildId: string | undefined): string | undefined {
+  const { project, region } = handle.data as { project?: unknown; region?: unknown };
+  if (!buildId || !BUILD_ID.test(buildId) || typeof project !== "string" || typeof region !== "string") return undefined;
+  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) || !/^(global|[a-z]+-[a-z]+[0-9])$/.test(region)) return undefined;
+  const path = region === "global" ? `cloud-build/builds/${buildId}` : `cloud-build/builds;region=${region}/${buildId}`;
+  return consoleUrl(`${CONSOLE_PREFIX}${path}?project=${project}`);
+}
+
 /** Build id and raw state from the adapter's status, never anything after them. */
 function buildInfo(handle: ReleaseHandle, status: ReleaseStatus): { buildId?: string; providerState?: string } {
   const head = DETAIL_HEAD.exec(status.detail);
@@ -239,7 +251,7 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
         t.handle ??= await t.adapter.release({ product: config.product, part: t.part, sha, environment: env0 }, t.config);
         const status = await t.adapter.status(t.handle);
         const { buildId, providerState } = buildInfo(t.handle, status);
-        const url = consoleUrl(status.url);
+        const url = buildLink(t.handle, buildId);
         if (TERMINAL_STATE.has(status.state)) {
           t.result = { label: t.label, outcome: status.state as PartOutcome, buildId, providerState, url };
           ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState });
