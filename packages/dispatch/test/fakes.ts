@@ -154,7 +154,7 @@ export function gitFixture() {
     return { bareDir, bundlePath: join(bareDir, "..", "repo.bundle"), baseSha };
   };
 
-  const resultBundle = (outDir: string, issue: number, files: Record<string, string>) => {
+  const resultBundle = (outDir: string, issue: number, files: Record<string, string>, message = "change") => {
     const branch = `factory/issue-${issue}`;
     git(work, "checkout", "-q", "-B", branch, baseSha);
     for (const [f, content] of Object.entries(files)) {
@@ -162,7 +162,7 @@ export function gitFixture() {
       writeFileSync(join(work, f), content);
     }
     git(work, "add", ".");
-    git(work, "commit", "-q", "-m", "change");
+    git(work, "commit", "-q", "-m", message);
     git(work, "bundle", "create", "-q", join(outDir, "result.bundle"), branch, `^${baseSha}`);
     git(work, "checkout", "-q", "main");
     return git(work, "rev-parse", branch);

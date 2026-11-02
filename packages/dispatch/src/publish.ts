@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { evaluatePathPolicy, pathPolicyAllows, type FactoryConfig } from "@globalhost/core";
 import { inspectResultBundle, type RepoBundle, type RunRecord } from "@globalhost/runner";
 import { z } from "zod";
+import { UnsafeCommitError, neutralizeClosingKeywords, rewriteClosingKeywords } from "./closing-keywords.js";
 import { GitHubClient, GitHubError, PullSchema, marker, type Pull } from "./github.js";
 
 const exec = promisify(execFile);
@@ -23,6 +24,8 @@ export const LABELS = {
 } as const;
 
 const MAX_COMMENT = 60_000;
+/** Where inspectResultBundle puts the verified result in the base clone. */
+const RESULT_REF = "refs/globalhost/result";
 
 /** Agent-written text, made safe to post as the bot: no pings, no hidden markers, bounded. */
 export function asPostable(text: string, max = MAX_COMMENT): string {
@@ -120,7 +123,7 @@ async function addLabels(gh: GitHubClient, repo: string, issue: number, labels: 
   if (labels.length > 0) await gh.request("POST", `/repos/${repo}/issues/${issue}/labels`, { labels });
 }
 
-async function removeLabel(gh: GitHubClient, repo: string, issue: number, label: string) {
+export async function removeLabel(gh: GitHubClient, repo: string, issue: number, label: string) {
   try {
     await gh.request("DELETE", `/repos/${repo}/issues/${issue}/labels/${encodeURIComponent(label)}`);
   } catch (err) {
@@ -199,14 +202,24 @@ async function publishBuild(ctx: PublishContext): Promise<PublishResult> {
     return { outcome: "rejected" };
   }
 
+  // "Fixes #n" in a commit would close the issue at merge, before the deploy (P1-12). The rewrite is
+  // deterministic, so a resumed builder's re-bundled branch maps onto the same rewritten commits.
+  let headSha = bundle.headSha;
   try {
+    // bundle.headSha is what the path policy checked; the rewrite proves the pushed tree is still its tree.
+    const rewritten = await rewriteClosingKeywords(ctx.base.bareDir, record.baseSha, RESULT_REF, bundle.headSha);
+    if (rewritten > 0) {
+      headSha = (await exec("git", ["rev-parse", RESULT_REF], { cwd: ctx.base.bareDir })).stdout.trim();
+      ctx.log(`rewrote closing keywords in ${rewritten} commit message(s)`);
+    }
     await pushBranch(ctx.base.bareDir, ctx.remoteUrl ?? `https://github.com/${repo}.git`, branch, ctx.pushToken);
   } catch (err) {
-    await comment(gh, repo, ctx.pullRequest ?? issue, runReport(record, ["", `**Push to \`${branch}\` failed:** ${asPostable((err as Error).message, 500)}`]));
+    const what = err instanceof UnsafeCommitError ? `**Nothing was pushed to \`${branch}\`:**` : `**Push to \`${branch}\` failed:**`;
+    await comment(gh, repo, ctx.pullRequest ?? issue, runReport(record, ["", `${what} ${asPostable((err as Error).message, 500)}`]));
     await addLabels(gh, repo, issue, [LABELS.failed]);
     return { outcome: "failed" };
   }
-  ctx.log(`pushed ${branch} @ ${bundle.headSha.slice(0, 12)}`);
+  ctx.log(`pushed ${branch} @ ${headSha.slice(0, 12)}`);
 
   const pr = ctx.pullRequest ? await getPull(gh, repo, ctx.pullRequest) : await findOrCreatePull(ctx, branch);
   const approval = policy.needsApproval.length > 0
@@ -225,6 +238,18 @@ async function getPull(gh: GitHubClient, repo: string, n: number): Promise<Pull>
   return gh.request("GET", `/repos/${repo}/pulls/${n}`, undefined, PullSchema);
 }
 
+/**
+ * The factory PR's description. No closing keyword (`Closes #n` would close the issue at merge, before the
+ * deploy): `globalhost dispatch observe` closes it once the merge commit's prod build succeeds.
+ */
+export function pullRequestBody(issue: number): string {
+  return [
+    `Refs #${issue}. The factory closes the issue once this merge deploys.`,
+    "",
+    "Built by the globalhost builder; the run report is in the first comment. CI and the preview run on this PR. The owner merges.",
+  ].join("\n");
+}
+
 async function findOrCreatePull(ctx: PublishContext, branch: string): Promise<Pull> {
   const owner = ctx.repo.split("/")[0]!;
   const open = await ctx.gh.request(
@@ -234,15 +259,11 @@ async function findOrCreatePull(ctx: PublishContext, branch: string): Promise<Pu
     z.array(PullSchema),
   );
   if (open[0]) return open[0];
-  const body = [
-    `Closes #${ctx.issue}`,
-    "",
-    "Built by the globalhost builder; the run report is in the first comment. CI and the preview run on this PR. The owner merges.",
-  ].join("\n");
+  const body = pullRequestBody(ctx.issue);
   return ctx.gh.request(
     "POST",
     `/repos/${ctx.repo}/pulls`,
-    { title: `factory: ${asPostable(ctx.issueTitle, 200)}`, head: branch, base: ctx.config.git.baseBranch, body, draft: true },
+    { title: `factory: ${neutralizeClosingKeywords(asPostable(ctx.issueTitle, 200))}`, head: branch, base: ctx.config.git.baseBranch, body, draft: true },
     PullSchema,
   );
 }
@@ -253,7 +274,7 @@ export async function pushBranch(bareDir: string, remoteUrl: string, branch: str
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   await exec(
     "git",
-    ["-c", "core.hooksPath=/dev/null", "push", "--no-verify", "--porcelain", remoteUrl, `refs/globalhost/result:refs/heads/${branch}`],
+    ["-c", "core.hooksPath=/dev/null", "push", "--no-verify", "--porcelain", remoteUrl, `${RESULT_REF}:refs/heads/${branch}`],
     {
       cwd: bareDir,
       env: {

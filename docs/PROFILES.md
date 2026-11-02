@@ -142,7 +142,7 @@ Adapters that call cloud APIs take their credentials as an injected provider (`c
 |---|---|---|
 | `cloud-run` | factory-managed Cloud Run service (Pulumi component) | canary via traffic split, auto-rollback (P4) |
 | `cloud-run-existing` | existing service not in Pulumi | `gcloud run deploy` with the release SA |
-| `cloud-build-trigger` | existing Cloud Build trigger on push (numu-know today) | observe-only: waits for build, reports status; zero change to deploy |
+| `cloud-build-trigger` | existing Cloud Build trigger on push (numu-know today) | observe-only: waits for build, reports status; zero change to deploy. `globalhost dispatch observe` (ARCHITECTURE §2.7) comments ✅/❌ on the PR and issue and closes the issue on success (App-opened factory PRs only; only the pushed head commit's PR; polling up to 30 min uses Actions minutes on private repos) |
 | `cloud-run-job` | jobs/workers (+ Cloud Scheduler) | |
 | `cloudflare-workers` | Workers/Pages | `wrangler deploy` with scoped token |
 | `chrome-web-store` | CWS item | upload → trusted testers → publish with staged rollout %; async gate |

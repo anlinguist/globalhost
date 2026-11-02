@@ -15,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@globalhost/adapter-cloud-build-trigger": "workspace:*",
     "@globalhost/core": "workspace:*",
     "@globalhost/runner": "workspace:*",
     "zod": "4.6.7"

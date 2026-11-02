@@ -136,6 +136,9 @@ importers:
 
   packages/dispatch:
     dependencies:
+      '@globalhost/adapter-cloud-build-trigger':
+        specifier: workspace:*
+        version: link:../adapters/cloud-build-trigger
       '@globalhost/core':
         specifier: workspace:*
         version: link:../core

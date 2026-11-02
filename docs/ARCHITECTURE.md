@@ -136,6 +136,8 @@ Routing: Cloudflare Worker (`packages/preview-router`) on `*.globalhost.ai` maps
 
 Each part's profile names a **deploy adapter** (PROFILES.md §3). Release runs in a workflow on push to the default branch, authenticated as `sa:<product>-release`, whose WIF binding requires `ref == refs/heads/<default>` and `workflow == release.yml`. Adopted repos keep their existing deploy (e.g. numu-know's Cloud Build triggers) via the `cloud-build-trigger` adapter, which only *observes* and reports.
 
+**Observing a release (P1-12).** `globalhost-release.yml` (a template, separate from any deploying release workflow) runs `globalhost dispatch observe` on each push to the default branch. It holds a GCP identity that can only read Cloud Build builds and triggers in the prod project, and a `GITHUB_TOKEN` with issues and pull-requests write. It reads `factory.yaml` at the pushed commit. For each part whose `release` lists `cloud-build-trigger`, it polls the build for that commit (default 30 min, at most 60), then comments on each PR merged as that commit and, for a factory PR (opened by the App's bot from `factory/issue-<n>` in the same repo), on its issue. On success it closes the issue (`completed`) and removes `factory:in-review`. A failed or cancelled build, no build at all, or Cloud Build refusing access (401/403/404) leaves the issue open and fails the job; a build still running at the deadline is reported but doesn't fail it. Comments carry only the build id, its state and a `console.cloud.google.com` link, since product repos may be public; one hidden-marker comment per commit is updated on re-runs. A factory-branch PR someone opened by hand gets the PR comment but never closes an issue. Only the pushed head commit is observed, so when one push lands several merges only the PR merged as the head is reported. Merging alone never closes the issue: factory PR bodies say `Refs #<n>`, and the publisher rewrites closing keywords (`fixes #n`, `closes owner/repo#n`, issue URLs) to `refs` in agent commit messages and the PR title before pushing.
+
 Async gates (Chrome Web Store review, App Store review) are tracked by a scheduled watcher that polls adapter `status()` and comments/notifies on change.
 
 ## 3. Data flow: the loop
@@ -166,7 +168,7 @@ owner files issue ──▶ label factory:plan ──▶ planner run ──▶ p
 | `factory:planned` | plan posted, awaiting owner | publisher |
 | `factory:build` | owner approves build | owner |
 | `factory:building` | run in progress (claim) | dispatcher |
-| `factory:in-review` | PR open, awaiting CI/review/owner (or the merge policy at L3) | publisher |
+| `factory:in-review` | PR open, awaiting CI/review/owner (or the merge policy at L3); removed when the merge deploys and the issue closes | publisher; release observer |
 | `factory:blocked` | agent needs an answer; question in comment | publisher |
 | `factory:failed` | run failed or hit a cap | publisher |
 | `needs:owner-approval` | a guardrail tripped (permissions, breaking API, immutable path), or the merge policy escalated (ADR-0015) | CI guardrail check; merge policy |
@@ -214,6 +216,7 @@ Rules:
 | `sa:globalhost-image-publisher` | WIF provider `globalhost-images`: factory repo `main`, `access-guard-image.yml` only | push to AR `globalhost-images` | anything else |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |
 | `sa:<product>-release-observer` (in `globalhost-factory`) | WIF provider `<product>-release`: `globalhost-release.yml` on the default branch, `push` only | custom role `globalhostReleaseObserver` on the prod project: `cloudbuild.builds.get/list` (builds and triggers), to report deploys (ADR-0017) | read logs; start, retry or cancel builds; any other role on any project |
+| `globalhost-release.yml`'s `GITHUB_TOKEN` | product repo, push to the default branch | contents read; comment on PRs and issues, edit its own comments, close issues, remove labels | push, merge, touch workflows |
 | Cloudflare API token (Pulumi) | owner's Pulumi config secret (`cloudflare:apiToken`), used only by `pulumi up` | Workers scripts/routes, DNS on `globalhost.ai`, Access apps/policies/service tokens | reach CI or agents: no workflow holds a Cloudflare credential |
 | Access service token `globalhost preview CI` | dev-project secrets `preview-access-client-id/secret`, readable by `sa:preview-screenshots` | pass Access for preview hosts (`non_identity` policy) | anything outside the previews Access app |
 | `sa:globalhost-auditor` (ADR-0012) | WIF, factory repo `main`, environment `security-audit` only | list/read/create objects in the audit report bucket | read any secret; delete or overwrite reports; any GitHub write; anything else |
