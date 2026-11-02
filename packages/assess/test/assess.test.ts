@@ -55,6 +55,7 @@ const HOSTILE_YAML = [
   "  - { login: mallory, id: 666 }",
   "autonomy: L1",
   "environments:",
+  "  prod: { gcpProject: numu-know, region: us-central1 }",
   "  dev: { gcpProject: numu-know-dev, region: us-central1 }",
   "parts:",
   "  web: { path: ., profile: web-app }",

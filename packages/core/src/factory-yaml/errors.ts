@@ -30,6 +30,8 @@ export const FACTORY_YAML_ERROR_CODES = [
   "binding_preview_disabled",
   "env_dev_missing",
   "env_shares_prod_project",
+  "preview_config_names_prod",
+  "env_prod_missing",
   "automerge_requires_l3",
   "guardrail_conflict",
   "limits_inconsistent",
