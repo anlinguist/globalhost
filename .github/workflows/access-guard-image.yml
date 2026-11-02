@@ -1,0 +1,65 @@
+name: access-guard-image
+
+# Builds packages/access-guard and pushes it to Artifact Registry globalhost-images (PLAN P1-11).
+# Only this file on main can get the publisher identity: the WIF provider pins job_workflow_ref
+# (infra/factory/src/previews.ts). The digest it prints goes into Pulumi config `accessGuardImage` by PR,
+# so preview services change only through a reviewed infra change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/access-guard/**
+      - .github/workflows/access-guard-image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: access-guard-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout
+      id-token: write # WIF -> sa:globalhost-image-publisher
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_IMAGES_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_IMAGES_SA }}
+          token_format: access_token
+
+      - name: Build
+        env:
+          REPO: ${{ vars.GCP_IMAGES_REPOSITORY }}
+        run: docker build -f packages/access-guard/Dockerfile -t "${REPO}/access-guard:${GITHUB_SHA}" .
+
+      - name: Push and record the digest
+        env:
+          REPO: ${{ vars.GCP_IMAGES_REPOSITORY }}
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          registry="${REPO%%/*}"
+          printf '%s' "$TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${registry}"
+          docker push "${REPO}/access-guard:${GITHUB_SHA}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${REPO}/access-guard:${GITHUB_SHA}")"
+          docker logout "https://${registry}"
+          {
+            echo "### access-guard image"
+            echo
+            echo "Set it with a PR to infra/factory/Pulumi.prod.yaml:"
+            echo
+            echo '```yaml'
+            echo "  globalhost-factory:accessGuardImage: ${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

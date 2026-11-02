@@ -19,6 +19,19 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 | Artifact Registry | `globalhost-functions` | only because Cloud Functions 2nd gen builds a container; keeps the 2 newest versions |
 | Bucket | `globalhost-functions-source` | the function's source zip (one object, replaced by Pulumi on change) |
 
+### Previews (PLAN P1-11, ADR-0007/0016, `src/previews.ts`)
+
+| Where | Resource | Notes |
+|---|---|---|
+| factory | AR `globalhost-images`, SA `globalhost-image-publisher`, WIF provider `globalhost-images` | `access-guard` image; only `access-guard-image.yml` on main can push (provider pins `job_workflow_ref`) |
+| factory | WIF provider `<product>-preview` per product | only `globalhost-preview.yml` on the repo's default branch (`job_workflow_ref`), in environment `preview-deploy` or `preview-screenshots`; `workflow_run` needs an actor in `previewActorIds` (owner + factory bot) |
+| `<product>-dev` | APIs, AR `previews` (untagged 1 day, all 30 days), SAs `preview-deployer`, `preview-screenshots`, `preview-runtime`, custom role `globalhostPreviewAuthDomains` | deployer: push, `run.developer` on its services, act as runtime, the custom role (`firebaseauth.configs.get/update`); screenshots: the token secrets and creating screenshot objects; runtime: `datastore.user` |
+| `<product>-dev` | bucket `<dev project>-previews` | public read by URL, not listable (PR comment screenshots, dev data only), deleted after 30 days |
+| `<product>-dev` | Cloud Run `<product>-<part>-preview` per part | `guard` (ingress, :8080, starts first) + `app` (:3000, depends on the guard, replaced per PR). `allUsers` invoker: the guard is the gate. Created once `accessGuardImage` and `cloudflare` are set. Run `pulumi up --refresh` so live PR tags are in state before an update |
+| `<product>-dev` | secrets `preview-access-client-id/secret` | the Access CI service token (1 year); readable by `preview-screenshots` only |
+| Cloudflare | proxied `*` AAAA `100::`, Worker `globalhost-preview-router` + route `*.<zone>/*`, Access app `globalhost previews` (owner policy + CI service-token policy), service token | the Worker's `PREVIEW_SERVICES` map is built from the services above |
+| billing | the factory budget's filter includes each dev project | dev spend counts toward the alerts and the `paused` flag (preview workflows don't read the flag yet) |
+
 ### Permissions of `sa:globalhost-gh-dispatch`
 
 | Scope | Role | Why |
@@ -60,6 +73,22 @@ pulumi stack output
 To add a product repo, append it to `dispatchRepos` in `Pulumi.prod.yaml` (name, numeric ID from `gh api repos/<owner>/<repo> --jq .id`, default branch) and `pulumi up`.
 
 In each product repo, create the GitHub environment `globalhost` and restrict its deployment branches to the default branch. The dispatcher job declares `environment: globalhost`.
+
+### Previews (once)
+
+1. Create a Cloudflare API token (My Profile → API Tokens → Custom) with: Account › Workers Scripts: Edit, Account › Access: Apps and Policies: Edit, Account › Access: Service Tokens: Edit; Zone (`globalhost.ai` only) › Workers Routes: Edit, DNS: Edit. Then:
+   ```sh
+   pulumi config set --secret cloudflare:apiToken
+   pulumi config set --secret --path 'cloudflare.accountId' <id>   # globalhost-ops/factory/ids.md
+   pulumi config set --secret --path 'cloudflare.zoneId' <id>
+   pulumi config set --secret --path 'cloudflare.zone' globalhost.ai
+   pulumi config set --secret --path 'cloudflare.teamDomain' <team>.cloudflareaccess.com
+   pulumi config set --secret --path 'cloudflare.ownerEmails[0]' <owner email>
+   ```
+2. `pulumi up` creates the image registry, identities, buckets, edge and Access app (no Cloud Run services yet).
+3. Set repo variables on this repo from `pulumi stack output`: `GCP_IMAGES_WIF_PROVIDER`, `GCP_IMAGES_SA`, `GCP_IMAGES_REPOSITORY`. Run `gh workflow run access-guard-image.yml --ref main`; its summary prints the digest.
+4. Set `accessGuardImage` in `Pulumi.prod.yaml` to that digest by PR, then `pulumi up --refresh` again: this creates the preview services and fills the Worker's service map.
+5. In the product repo, create GitHub environments `preview-deploy` and `preview-screenshots` (deployment branches: the default branch only), and set the repo variable `GLOBALHOST_PREVIEW_WIF_PROVIDER` to the provider name from `pulumi stack output previews`.
 
 ## Checks after apply (P1-04 AC)
 
