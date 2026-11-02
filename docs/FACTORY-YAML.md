@@ -271,7 +271,8 @@ Codes are stable, because `--json` consumers depend on them:
 | `binding_preview_disabled` | provider's or consumer's preview is disabled |
 | `env_dev_missing` | hosted preview without a `dev` environment |
 | `env_shares_prod_project` | a non-prod environment uses prod's `gcpProject` |
-| `preview_config_names_prod` | a part with previews enabled has a config string (e.g. a `previewEnv` value) naming prod's `gcpProject` as a whole ID |
+| `preview_config_names_prod` | a part with previews enabled has a config string or key (e.g. a `previewEnv` value) naming prod's `gcpProject` as a whole ID. Any string counts, routes and commands included, so a product whose domain equals its project ID (`numu-know.com`) can't put that domain in a previewed part's config. A tripwire only: it can't see a value that is missing and falls back to prod in app code, a prod resource with a longer name (`numu-know-uploads`), or prod's project number. Preview identities holding no role on prod is the guarantee |
+| `env_prod_missing` | hosted preview without a `prod` environment (needed for `preview_config_names_prod`) |
 | `automerge_requires_l3` | `autoMerge` non-empty below L3 |
 | `guardrail_conflict` | same pattern in `loadBearing` and `immutable` |
 | `limits_inconsistent` | `perRunUsd` > `dailyUsd` |

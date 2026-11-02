@@ -5,6 +5,7 @@ owners:
   - { login: octo-owner, id: 1001 }
 project: diamond-suite
 environments:
+  prod: { gcpProject: diamond-prod, region: us-central1 }
   dev: { gcpProject: diamond-dev, region: us-central1 }
 parts:
   base:

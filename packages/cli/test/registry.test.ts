@@ -61,6 +61,7 @@ product: sample
 owners:
   - { login: octo-owner, id: 1001 }
 environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
   dev: { gcpProject: sample-dev, region: us-central1 }
 parts:
   web:

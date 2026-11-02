@@ -340,19 +340,26 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
     push(["environments"], "env_dev_missing", `hosted previews (parts ${hostedPreviews.join(", ")}) deploy into a "dev" environment, which is not declared`);
   }
   const prod = Object.hasOwn(envs, "prod") ? envs.prod : undefined;
+  // Without prod's project the check below can't run, so hosted previews need both.
+  if (hostedPreviews.length > 0 && prod === undefined) {
+    push(["environments"], "env_prod_missing", `hosted previews (parts ${hostedPreviews.join(", ")}) need a "prod" environment so their config can be checked against it`);
+  }
   if (prod !== undefined) {
     for (const [envName, env] of Object.entries(envs)) {
       if (envName !== "prod" && env.gcpProject === prod.gcpProject) {
         push(["environments", envName, "gcpProject"], "env_shares_prod_project", `environment ${quote(envName)} uses prod's GCP project ${quote(env.gcpProject)}`);
       }
     }
-    // Previews build and run with their part's config; one that names prod (e.g. a Firebase project ID or
-    // auth domain in previewEnv) would point a preview at production. Refuse until previews are disabled.
+    // Previews build and run with their part's config; one that names prod (e.g. a project ID or auth domain
+    // in preview environment config) would point a preview at production. A tripwire, not the guarantee:
+    // a value that is simply missing can still fall back to prod in app code. The guarantee is IAM, since
+    // preview identities hold no role on the prod project.
     const namesProd = mentionsProject(prod.gcpProject);
     for (const [name, rawConfig] of previewConfigs) {
       for (const path of stringPaths(rawConfig, ["parts", name, "config"])) {
         if (namesProd(path.value)) {
-          push(path.at, "preview_config_names_prod", `part ${quote(name)} has previews enabled but its config names prod's GCP project ${quote(prod.gcpProject)}`);
+          const what = path.isKey ? "a config key" : "its config";
+          push(path.at, "preview_config_names_prod", `part ${quote(name)} has previews enabled but ${what} names prod's GCP project ${quote(prod.gcpProject)}`);
         }
       }
     }
@@ -469,11 +476,11 @@ function mentionsProject(project: string): (value: string) => boolean {
 }
 
 /** Every string in a parsed YAML value, with its path. Keys count too: a config key can carry a value. */
-function stringPaths(value: unknown, at: PathSegment[]): Array<{ at: PathSegment[]; value: string }> {
-  if (typeof value === "string") return [{ at, value }];
+function stringPaths(value: unknown, at: PathSegment[]): Array<{ at: PathSegment[]; value: string; isKey: boolean }> {
+  if (typeof value === "string") return [{ at, value, isKey: false }];
   if (Array.isArray(value)) return value.flatMap((v, i) => stringPaths(v, [...at, i]));
   if (value !== null && typeof value === "object") {
-    return Object.entries(value).flatMap(([k, v]) => [{ at: [...at, k], value: k }, ...stringPaths(v, [...at, k])]);
+    return Object.entries(value).flatMap(([k, v]) => [{ at: [...at, k], value: k, isKey: true }, ...stringPaths(v, [...at, k])]);
   }
   return [];
 }
