@@ -17,7 +17,7 @@ Previews must sit behind Cloudflare Access, cost ~nothing, and work for many pro
 - Hostname scheme (one level): `<product>-<part>-pr-<n>.globalhost.ai`; dev: `<product>-<part>-dev.globalhost.ai`. The factory PWA lives at `app.globalhost.ai`, and the apex can be a landing page.
 - **Cloudflare Access** application on `*.globalhost.ai` allowing only the owner's email (free ≤50 users).
 - **Cloudflare Worker** on `*.globalhost.ai/*` parses the hostname and proxies to the Cloud Run **tagged revision URL** (`https://pr-<n>---<service>-<hash>.<region>.run.app`). The base URL per product/part comes from Workers KV, written by the preview deploy job.
-- Each preview Cloud Run service runs an **`access-guard` sidecar** (factory-built image) as the ingress container. It validates the `Cf-Access-Jwt-Assertion` JWT (team domain + audience) and proxies to the app container over localhost, with zero app changes. Health checks bypass it on a separate port.
+- Each preview Cloud Run service runs an **`access-guard` sidecar** (factory-built image) as the ingress container. It validates the `Cf-Access-Jwt-Assertion` JWT (team domain + audience) and proxies to the app container over localhost, with zero app changes. It strips every `Cf-Access-*` header (JWT, service-token credentials, user email) and `CF_*` cookie before proxying: preview code is untrusted and the token is valid on every preview. Health checks hit a guard-answered path (`/__guard/healthz`) on the same port, which is never proxied (`packages/access-guard/README.md`).
 - Cleanup: on PR close, remove the tag, delete the KV entry, and prune images.
 
 ## Setup facts (P0-03, 2026-10-27)
