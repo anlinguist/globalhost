@@ -115,7 +115,7 @@ const L = {
 const UNTRUSTED_WORD = (["u", "n", "t", "r", "u", "s", "t", "e", "d"] as const)
   .map((c) => `[${L[c]}]`)
   .join("");
-const FENCE_TAG = new RegExp(`[${BRACKETS}](\\s*[\\\\/]*\\s*${UNTRUSTED_WORD})`, "giu");
+const FENCE_TAG = new RegExp(`[${BRACKETS}]([\\s\\\\/]*${UNTRUSTED_WORD})`, "giu");
 
 /** Neutralize fence-like tags inside content by entity-escaping their bracket. */
 export function neutralizeFenceTags(text: string): string {
