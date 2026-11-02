@@ -1,6 +1,11 @@
 // Path policy (FACTORY-YAML §3.6, §3.8): which agent-changed files the publisher rejects outright
 // (immutable) and which need the owner's approval (loadBearing). Matching ignores case, so a case
 // variant of a protected path can't slip past on a case-insensitive checkout.
+//
+// Independently of factory.yaml, a bundle may never contain a file named like a harness record
+// (ADR-0015 §3): verdicts and run records are read from GCS only, and a checked-in look-alike must not
+// exist to be misread. Unicode lookalikes (`review.json` spelled with a Cyrillic i) are out of scope here: nothing
+// reads records from the checkout (the guarantee is GCS-only reads), so a lookalike can only mislead a human.
 
 /** Repo-relative path → does the glob match it? Implements the small dialect in FACTORY-YAML §3.6. */
 export function globMatch(pattern: string, path: string): boolean {
@@ -46,6 +51,13 @@ export interface PathPolicyResult {
   malformed: string[];
 }
 
+/** Basenames (compared case-insensitively) the publisher always refuses, at any depth. */
+export const RESERVED_BUNDLE_BASENAMES: readonly string[] = Object.freeze(["review.json", "run.json"]);
+
+/** Lowercased basename, ignoring trailing dots and spaces (Windows drops them when resolving a name). */
+const reservedBasename = (path: string) =>
+  path.slice(path.lastIndexOf("/") + 1).replace(/[. ]+$/, "").toLowerCase();
+
 // Git never reports these from a diff, so seeing one means the input wasn't a git path list.
 const MALFORMED_SHAPE = /(^\/)|(^|\/)\.\.?(\/|$)|\\|\/\/|\/$/;
 const hasControlChar = (s: string) => [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
@@ -55,6 +67,11 @@ export function evaluatePathPolicy(paths: readonly string[], policy: PathPolicyI
   for (const path of paths) {
     if (path === "" || MALFORMED_SHAPE.test(path) || hasControlChar(path)) {
       result.malformed.push(path);
+      continue;
+    }
+    const reserved = reservedBasename(path);
+    if (RESERVED_BUNDLE_BASENAMES.includes(reserved)) {
+      result.rejected.push({ path, pattern: `**/${reserved}` });
       continue;
     }
     const immutable = policy.immutable.find((p) => globMatch(p, path));
