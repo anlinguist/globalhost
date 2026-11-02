@@ -86,7 +86,7 @@ Responsibilities:
 2. **Kill switch + budget.** Read `gs://globalhost-control/state.json` (`paused`, daily/monthly spend). Abort with a comment if paused or over budget.
 3. **Concurrency.** `concurrency: globalhost-${repo}-${issue}`; plus a per-repo builder cap via a GCS lock object (generation-match precondition = compare-and-swap).
 4. **Execute** the run: create a Managed Agents session with `{repo, ref, issue|pr, role, runId}` (Anthropic auth with the job's own GitHub OIDC token, ADR-0014) and wait; archive outputs to `gs://globalhost-runs/` as `sa:gh-dispatch`. With the unbuilt Cloud Run fallback, this step would execute the runner job instead.
-5. **Publish** (trusted): download `bundle` + `run.json`, apply **path policy** (e.g. `.github/**` and `factory.yaml` are immutable to agents; a file named `review.json` or `run.json` at any depth, in any case, is always refused; profile guardrail paths add labels), push to `factory/issue-<n>` (never force, never the default branch), open/update a draft PR from the template, set labels, post the run report (cost, duration, tests written, files touched).
+5. **Publish** (trusted): download `bundle` + `run.json`, apply **path policy** (e.g. `.github/**` and `factory.yaml` are immutable to agents; a file named like a harness record (`review.json`, `run.json`, `output.raw.json`, `inputs.json`) at any depth, in any case, is always refused; profile guardrail paths add labels), push to `factory/issue-<n>` (never force, never the default branch), open/update a draft PR from the template, set labels, post the run report (cost, duration, tests written, files touched).
 
 Phase 2+ may move steps 4–5 into a Cloud Run "publisher" job to save Actions minutes on private repos (public repos have unlimited minutes).
 

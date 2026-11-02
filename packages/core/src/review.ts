@@ -3,7 +3,8 @@
 // rejected (never clipped or repaired) when it doesn't fit, and an invalid output escalates. The record is
 // written by trusted code: the SHA is the one the harness checked out, never the reviewer's claim.
 import { z } from "zod";
-import { MAX_SCAN_HITS, ScanHitSchema, type ScanHit } from "./review-scan.js";
+import { isRepoRelativePath } from "./path-policy.js";
+import { MAX_SCAN_HITS, scanPhrase, ScanHitSchema, type ScanHit } from "./review-scan.js";
 
 export const VERDICTS = ["pass", "changes", "escalate"] as const;
 export type Verdict = (typeof VERDICTS)[number];
@@ -48,27 +49,32 @@ export const MAX_TITLE = 200;
 export const MAX_DETAIL = 2000;
 export const MAX_SUMMARY = 2000;
 
-const FINDING_CODE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const MAX_FINDING_CODE = 40;
+export const MAX_FINDING_FILE = 300;
+const FINDING_CODE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * One reviewer finding. `area`, `category`, `code`, `severity`, `file` and `line` are constrained enough to pass
+ * to other agents as structured fields (ADR-0015 §7). `title` and `detail` are reviewer-written free text that
+ * may quote the diff: anywhere they are shown to an agent they must be fenced as untrusted (packages/sanitize),
+ * and they never feed a decision.
+ */
 export const FindingSchema = z
   .strictObject({
     area: AreaSchema,
     category: z.enum(ALL_CATEGORIES),
-    /** A short stable identifier for the finding, e.g. `missing-null-check`. */
-    code: z.string().regex(FINDING_CODE),
+    /** A short stable identifier in kebab case, e.g. `missing-null-check`. */
+    code: z.string().max(MAX_FINDING_CODE).regex(FINDING_CODE),
     severity: z.enum(SEVERITIES),
-    file: z.string().min(1).max(500).nullable(),
+    /** Repo-relative path, as git reports it. */
+    file: z.string().max(MAX_FINDING_FILE).refine(isRepoRelativePath).nullable(),
     line: z.number().int().min(1).max(10_000_000).nullable(),
     title: z.string().min(1).max(MAX_TITLE),
     detail: z.string().max(MAX_DETAIL),
   })
   .superRefine((f, ctx) => {
     if (!(FINDING_CATEGORIES[f.area] as readonly string[]).includes(f.category)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["category"],
-        message: `category ${f.category} is not in area ${f.area}`,
-      });
+      ctx.addIssue({ code: "custom", path: ["category"], message: "category is not in this area" });
     }
   });
 export type Finding = z.infer<typeof FindingSchema>;
@@ -91,19 +97,61 @@ export const ReviewOutputSchema = z.strictObject({
 });
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 
-export type ParseReviewOutputResult =
-  | { ok: true; output: ReviewOutput }
-  | { ok: false; issues: Array<{ path: string; message: string }> };
+export interface ReviewOutputIssue {
+  /** Dotted path; any segment that isn't a schema key or an array index is replaced by `<key>`. */
+  path: string;
+  /** zod's issue code. */
+  code: string;
+  /** Fixed text per code. Never zod's message, which can quote reviewer-written keys or values. */
+  message: string;
+}
+
+export type ParseReviewOutputResult = { ok: true; output: ReviewOutput } | { ok: false; issues: ReviewOutputIssue[] };
+
+export const MAX_OUTPUT_ISSUES = 20;
+const SCHEMA_KEYS = new Set<string>([
+  ...Object.keys(ReviewOutputSchema.shape),
+  ...Object.keys(VerdictsSchema.shape),
+  "area",
+  "category",
+  "code",
+  "severity",
+  "file",
+  "line",
+  "title",
+  "detail",
+]);
+const ISSUE_MESSAGES: Record<string, string> = {
+  invalid_type: "wrong type",
+  too_big: "too long or too many",
+  too_small: "too short or too small",
+  invalid_format: "wrong format",
+  invalid_value: "not an allowed value",
+  unrecognized_keys: "unknown key",
+  custom: "fails a schema rule",
+};
 
 /** Validate untrusted reviewer output. Never clips or repairs: anything that doesn't fit is rejected. */
 export function parseReviewOutput(raw: unknown): ParseReviewOutputResult {
   const r = ReviewOutputSchema.safeParse(raw);
   if (r.success) return { ok: true, output: r.data };
-  // Paths and zod messages only; never echo the offending values (they're reviewer-written).
-  return {
-    ok: false,
-    issues: r.error.issues.slice(0, 20).map((i) => ({ path: i.path.map(String).join("."), message: i.message })),
-  };
+  const issues = r.error.issues.slice(0, MAX_OUTPUT_ISSUES).map((i) => {
+    const code = i.code in ISSUE_MESSAGES ? i.code : "other";
+    const path = i.path
+      .map((seg) => (typeof seg === "number" || (typeof seg === "string" && SCHEMA_KEYS.has(seg)) ? String(seg) : "<key>"))
+      .join(".");
+    return { path, code, message: ISSUE_MESSAGES[code] ?? "invalid" };
+  });
+  return { ok: false, issues };
+}
+
+/**
+ * Indexes of findings whose `code` reads as reviewer-directed text (scanned as-is and with hyphens as spaces). The code
+ * is the one finding field passed on as a structured value, so text smuggled into it escalates.
+ */
+export function findingCodeHits(findings: readonly Finding[]): number[] {
+  const hit = (code: string) => scanPhrase(code).length > 0 || scanPhrase(code.replace(/-/g, " ")).length > 0;
+  return findings.flatMap((f, i) => (hit(f.code) ? [i] : []));
 }
 
 /** How the review run ended, as the harness saw it. */
@@ -122,6 +170,8 @@ export const ESCALATION_REASONS = [
   "security-category",
   "reviewer-manipulation",
   "unreviewable",
+  /** Set by the verifier step (next slice) when it rejects a security finding (ADR-0015 §4). */
+  "verifier-rejected-security",
 ] as const;
 export type EscalationReason = (typeof ESCALATION_REASONS)[number];
 
@@ -146,15 +196,22 @@ export interface OverallVerdictContext {
 
 export interface OverallVerdictResult {
   overall: Verdict;
-  /** Per area, after blocker/major findings raise it to at least `changes`. All `escalate` without output. */
+  /**
+   * Per area, after blocker/major findings raise it to at least `changes`. All `escalate` when there is no
+   * output or the run didn't complete.
+   */
   verdicts: Verdicts;
   /** Distinct reasons, in ESCALATION_REASONS order. Non-empty exactly when `overall` is `escalate`. */
   escalations: EscalationReason[];
 }
 
 /**
- * The harness's verdict for one review (pure). `output` is the parsed reviewer output, or null when it was
- * missing or failed parseReviewOutput; pass `status` to say which. Fails closed: no output escalates.
+ * The harness's verdict for one review (pure). This is the review's result, not the merge decision: the merge
+ * policy (P2-01c) combines it with CI, guardrails, provenance, taint, the verifier and the autonomy level.
+ * `output` is the parsed reviewer output, or null when it was
+ * missing or failed parseReviewOutput; pass `status` to say which. Fails closed: no output, or a run that
+ * didn't complete, escalates every area. A finding whose `code` trips the reviewer-text scan counts as
+ * reviewer manipulation.
  */
 export function overallVerdict(output: ReviewOutput | null, ctx: OverallVerdictContext): OverallVerdictResult {
   const reasons = new Set<EscalationReason>();
@@ -162,12 +219,14 @@ export function overallVerdict(output: ReviewOutput | null, ctx: OverallVerdictC
   if (ctx.budgetExhausted) reasons.add("budget-exhausted");
   if (ctx.scanHits.length > 0) reasons.add("scan-hit");
 
-  let verdicts: Verdicts;
-  if (output === null) {
-    if (ctx.status === "completed") reasons.add("missing-output");
-    verdicts = { function: "escalate", security: "escalate", performance: "escalate" };
-  } else {
-    verdicts = { ...output.verdicts };
+  if (output === null && ctx.status === "completed") reasons.add("missing-output");
+  const failClosed = output === null || ctx.status !== "completed";
+  const verdicts: Verdicts =
+    failClosed || output === null
+      ? { function: "escalate", security: "escalate", performance: "escalate" }
+      : { ...output.verdicts };
+  if (output !== null) {
+    if (findingCodeHits(output.findings).length > 0) reasons.add("reviewer-manipulation");
     for (const f of output.findings) {
       if (f.area === "meta") {
         reasons.add(f.category === "reviewer-manipulation" ? "reviewer-manipulation" : "unreviewable");
@@ -178,7 +237,7 @@ export function overallVerdict(output: ReviewOutput | null, ctx: OverallVerdictC
         reasons.add("security-category");
       }
     }
-    if (VERDICT_AREAS.some((a) => verdicts[a] === "escalate")) reasons.add("reviewer-escalated");
+    if (!failClosed && VERDICT_AREAS.some((a) => verdicts[a] === "escalate")) reasons.add("reviewer-escalated");
   }
 
   const escalations = ESCALATION_REASONS.filter((r) => reasons.has(r));
@@ -225,5 +284,16 @@ export const ReviewRecordSchema = z.strictObject({
   recordedAt: z.iso.datetime(),
   /** The verifier's result. Always null until the verifier lands (next slice). */
   verification: z.null(),
+}).superRefine((r, ctx) => {
+  // Mirror overallVerdict's invariants so a record that contradicts itself is rejected on read.
+  if (new Set(r.escalations).size !== r.escalations.length) {
+    ctx.addIssue({ code: "custom", path: ["escalations"], message: "escalations must be unique" });
+  }
+  if ((r.overall === "escalate") !== (r.escalations.length > 0)) {
+    ctx.addIssue({ code: "custom", path: ["overall"], message: "overall is escalate exactly when there are escalations" });
+  }
+  if (r.status !== "completed" && (r.overall !== "escalate" || VERDICT_AREAS.some((a) => r.verdicts[a] !== "escalate"))) {
+    ctx.addIssue({ code: "custom", path: ["status"], message: "a review that didn't complete escalates every area" });
+  }
 });
 export type ReviewRecord = z.infer<typeof ReviewRecordSchema>;

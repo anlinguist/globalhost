@@ -70,6 +70,9 @@ describe("evaluatePathPolicy", () => {
     ["review.json.", "**/review.json"],
     ["dir/run.json ", "**/run.json"],
     ["review.json. .", "**/review.json"],
+    ["a/output.raw.json", "**/output.raw.json"],
+    ["INPUTS.JSON", "**/inputs.json"],
+    ["run.j\u017fon", "**/run.json"],
   ])("rejects the harness record name %j whatever factory.yaml says", (path, pattern) => {
     const r = evaluatePathPolicy([path], { immutable: [], loadBearing: [] });
     expect(r.rejected).toEqual([{ path, pattern }]);

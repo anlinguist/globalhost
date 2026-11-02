@@ -51,26 +51,44 @@ export interface PathPolicyResult {
   malformed: string[];
 }
 
-/** Basenames (compared case-insensitively) the publisher always refuses, at any depth. */
-export const RESERVED_BUNDLE_BASENAMES: readonly string[] = Object.freeze(["review.json", "run.json"]);
+/**
+ * Harness record names (ADR-0015 §3). The publisher refuses a bundle with any of them at any depth, and the
+ * review scan flags a diff that adds one. Compared with recordBasename().
+ */
+export const RESERVED_RECORD_BASENAMES: readonly string[] = Object.freeze([
+  "review.json",
+  "run.json",
+  "output.raw.json",
+  "inputs.json",
+]);
 
-/** Lowercased basename, ignoring trailing dots and spaces (Windows drops them when resolving a name). */
-const reservedBasename = (path: string) =>
-  path.slice(path.lastIndexOf("/") + 1).replace(/[. ]+$/, "").toLowerCase();
+/** Case-folded basename, ignoring trailing dots and spaces (Windows drops them when resolving a name). */
+export function recordBasename(path: string): string {
+  return path
+    .slice(path.lastIndexOf("/") + 1)
+    .replace(/[. ]+$/, "")
+    .toUpperCase()
+    .toLowerCase();
+}
+
+export const isReservedRecordPath = (path: string) => RESERVED_RECORD_BASENAMES.includes(recordBasename(path));
 
 // Git never reports these from a diff, so seeing one means the input wasn't a git path list.
 const MALFORMED_SHAPE = /(^\/)|(^|\/)\.\.?(\/|$)|\\|\/\/|\/$/;
-const hasControlChar = (s: string) => [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+const hasControlChar = (s: string) => [...s].some((c) => c.charCodeAt(0) < 0x20 || (c.charCodeAt(0) >= 0x7f && c.charCodeAt(0) <= 0x9f));
+
+/** A plain repo-relative path as git reports it: non-empty, no leading `/`, no `.`/`..` segments, no `\`, no controls. */
+export const isRepoRelativePath = (path: string) => path !== "" && !MALFORMED_SHAPE.test(path) && !hasControlChar(path);
 
 export function evaluatePathPolicy(paths: readonly string[], policy: PathPolicyInput): PathPolicyResult {
   const result: PathPolicyResult = { rejected: [], needsApproval: [], malformed: [] };
   for (const path of paths) {
-    if (path === "" || MALFORMED_SHAPE.test(path) || hasControlChar(path)) {
+    if (!isRepoRelativePath(path)) {
       result.malformed.push(path);
       continue;
     }
-    const reserved = reservedBasename(path);
-    if (RESERVED_BUNDLE_BASENAMES.includes(reserved)) {
+    const reserved = recordBasename(path);
+    if (RESERVED_RECORD_BASENAMES.includes(reserved)) {
       result.rejected.push({ path, pattern: `**/${reserved}` });
       continue;
     }
