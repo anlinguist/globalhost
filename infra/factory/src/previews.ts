@@ -109,7 +109,8 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       location: region,
       repositoryId: IMAGES_REPO,
       format: "DOCKER",
-      description: "Factory-built images (access-guard). Pulled by product dev projects' Cloud Run.",
+      // Every product's dev deployer and Cloud Run can read this repo: only images built from this public repo go here.
+      description: "Factory-built public images (access-guard), readable by every product's dev projects. Nothing private.",
       cleanupPolicyDryRun: false,
       // Tagged images are kept: the pinned accessGuardImage must never be deleted from under the services.
       cleanupPolicies: [
