@@ -4,6 +4,7 @@ product: composite
 owners:
   - { login: octo-owner, id: 1001 }
 environments:
+  prod: { gcpProject: composite-prod, region: europe-west1 }
   dev: { gcpProject: composite-dev, region: europe-west1 }
 parts:
   api:
