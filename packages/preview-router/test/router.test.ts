@@ -317,6 +317,44 @@ describe("handle: credential and spoofing hygiene", () => {
     expect(new Headers(calls[0]!.init.headers).get("cookie")).toBeNull();
   });
 
+  it("removes CF_AppSession and CF_Binding from Cookie too", async () => {
+    const { calls } = await run(url, {
+      init: { headers: { cookie: "CF_AppSession=s; a=1; cf_binding=b; CF_Authorization=x" } },
+    });
+    expect(new Headers(calls[0]!.init.headers).get("cookie")).toBe("a=1");
+  });
+
+  it("deletes Access service-token headers but keeps the Access JWT", async () => {
+    const { calls } = await run(url, {
+      init: {
+        headers: {
+          "cf-access-client-id": "id.access",
+          "cf-access-client-secret": "secret",
+          "cf-access-token": "tok",
+          "cf-access-jwt-assertion": "jwt",
+        },
+      },
+    });
+    const h = new Headers(calls[0]!.init.headers);
+    expect(h.get("cf-access-client-id")).toBeNull();
+    expect(h.get("cf-access-client-secret")).toBeNull();
+    expect(h.get("cf-access-token")).toBeNull();
+    expect(h.get("cf-access-jwt-assertion")).toBe("jwt");
+  });
+
+  it("drops CF_AppSession and CF_Binding Set-Cookies from the origin", async () => {
+    const { res } = await run(url, {
+      respond: () => {
+        const headers = new Headers();
+        headers.append("set-cookie", "CF_AppSession=x; Path=/");
+        headers.append("set-cookie", "keep=1; Path=/");
+        headers.append("set-cookie", "cf_binding=y; Domain=globalhost.ai");
+        return new Response("x", { headers });
+      },
+    });
+    expect(res.headers.getSetCookie()).toEqual(["keep=1; Path=/"]);
+  });
+
   it("deletes client-supplied forwarding and identity headers", async () => {
     const { calls } = await run(url, {
       init: {

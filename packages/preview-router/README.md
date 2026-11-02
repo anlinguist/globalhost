@@ -22,9 +22,10 @@ The request is proxied with its method, streamed body and headers. The Worker th
 
 - sets `X-Forwarded-Host` to the public host and `X-Forwarded-Proto: https`. Apps that need their public origin read these, or a per-preview `PUBLIC_ORIGIN`;
 - forwards `Cf-Access-Jwt-Assertion` unchanged for `access-guard`, which validates it and strips it before the app sees the request;
-- removes the owner's Access session cookie (`CF_Authorization`) from `Cookie`, because preview code is untrusted and must never see a reusable owner credential. Other cookies pass through;
+- removes the Access session cookies (`CF_Authorization`, `CF_AppSession`, `CF_Binding`) from `Cookie`, because preview code is untrusted and must never see a reusable owner credential. Other cookies pass through;
+- deletes Access service-token credentials (`Cf-Access-Client-Id`, `Cf-Access-Client-Secret`, `Cf-Access-Token`) for the same reason;
 - strips client-supplied `X-Globalhost-*` (clients can't inject factory headers), `Host`, `Forwarded`, every `X-Forwarded-*` (before setting its own), `X-Real-IP` and `Cf-Access-Authenticated-User-Email`;
-- makes every response `Set-Cookie` host-only by dropping its `Domain=` attribute, so one preview can't toss cookies onto sibling previews or other `*.globalhost.ai` hosts. It drops any `CF_Authorization` cookie the origin tries to set. `__Host-`/`__Secure-` cookies keep their other attributes;
+- makes every response `Set-Cookie` host-only by dropping its `Domain=` attribute, so one preview can't toss cookies onto sibling previews or other `*.globalhost.ai` hosts. It drops any Access session cookie (`CF_Authorization`, `CF_AppSession`, `CF_Binding`) the origin tries to set. `__Host-`/`__Secure-` cookies keep their other attributes;
 - uses `redirect: "manual"` and rewrites any `Location` on the tagged origin host back to the public host;
 - passes origin cache headers through but tells Cloudflare not to cache the subrequest (`cf.cacheTtlByStatus` of `-1`);
 - adds `X-Robots-Tag: noindex` when the origin didn't set one;

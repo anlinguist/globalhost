@@ -135,31 +135,41 @@ export function rewriteLocation(location: string, originHost: string, publicHost
 }
 
 /** Client-supplied headers that could spoof identity or origin to the preview. */
-const DROP_REQUEST_HEADERS = ["host", "forwarded", "x-real-ip", "cf-access-authenticated-user-email"];
+// Includes Access service-token credentials, which must never reach preview (untrusted) code.
+const DROP_REQUEST_HEADERS = [
+  "host",
+  "forwarded",
+  "x-real-ip",
+  "cf-access-authenticated-user-email",
+  "cf-access-client-id",
+  "cf-access-client-secret",
+  "cf-access-token",
+];
 
-const ACCESS_COOKIE = "cf_authorization";
+/** Cloudflare Access session cookies, compared lowercase. */
+const ACCESS_COOKIES = new Set(["cf_authorization", "cf_appsession", "cf_binding"]);
 
 function cookieName(pair: string): string {
   const eq = pair.indexOf("=");
   return (eq === -1 ? pair : pair.slice(0, eq)).trim().toLowerCase();
 }
 
-/** Remove the Access session cookie (`CF_Authorization`) from a request `Cookie` header. */
+/** Remove Access session cookies (`CF_Authorization`, `CF_AppSession`, `CF_Binding`) from a request `Cookie` header. */
 export function stripAccessCookie(cookie: string): string {
   return cookie
     .split(";")
     .map((p) => p.trim())
-    .filter((p) => p !== "" && cookieName(p) !== ACCESS_COOKIE)
+    .filter((p) => p !== "" && !ACCESS_COOKIES.has(cookieName(p)))
     .join("; ");
 }
 
 /**
  * Make a response cookie host-only (drop any `Domain=`), so one preview can't set cookies for
- * sibling previews or other *.globalhost.ai hosts. Returns null to drop a `CF_Authorization` cookie.
+ * sibling previews or other *.globalhost.ai hosts. Returns null to drop an Access session cookie.
  */
 export function rewriteSetCookie(setCookie: string): string | null {
   const [pair = "", ...attrs] = setCookie.split(";");
-  if (cookieName(pair) === ACCESS_COOKIE) return null;
+  if (ACCESS_COOKIES.has(cookieName(pair))) return null;
   const kept = attrs.filter((a) => cookieName(a) !== "domain");
   return [pair, ...kept].join(";");
 }
@@ -178,7 +188,7 @@ export async function handle(request: Request, env: Env, fetchImpl: FetchLike = 
     if (lower.startsWith("x-globalhost-") || lower.startsWith("x-forwarded-")) headers.delete(name);
   }
   for (const name of DROP_REQUEST_HEADERS) headers.delete(name);
-  // The owner's Access session cookie must never reach preview (untrusted) code.
+  // The owner's Access session cookies must never reach preview (untrusted) code.
   const cookie = headers.get("cookie");
   if (cookie !== null) {
     const kept = stripAccessCookie(cookie);
