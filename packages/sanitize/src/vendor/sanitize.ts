@@ -12,6 +12,9 @@
  *   - stripControlChars takes the normalization form (we default to NFKC, which
  *     folds fullwidth/mathematical lookalikes) and strips both before and after
  *     normalizing.
+ *   - Linear-time fixes: the jwt rule starts only at a token start, SECRET_ASSIGNMENT's
+ *     name parts are bounded, and the role-marker and act-as/pretend patterns use horizontal whitespace
+ *     after the line start (`\s*` there also matched newlines, so a run of blank lines was quadratic or cubic).
  *   - maskSecrets replaces with `[REDACTED:<kind>]` per rule, keeps the key and
  *     separator in `KEY=value` matches, splits Anthropic/OpenAI keys, catches
  *     unterminated private-key blocks and JSON-quoted keys.
@@ -110,16 +113,20 @@ export function buildInjectionPatterns(extraPhrases: string[]): RegExp[] {
     /\b(?:you\s+are\s+now|from\s+now\s+on[, ]+you\s+are|you\s+must\s+now\s+(?:act|behave|respond))\b[^.\n]{0,60}/gi,
 
     // "act as / pretend to be / roleplay as ..." - imperative form only.
-    /(?:^|\n|(?<=[.!?]\s))\s*(?:please\s+)?(?:act|acting)\s+as\s+(?:an?\s+|the\s+)?[^.\n]{0,40}/gi,
-    /(?:^|\n|(?<=[.!?]\s))\s*(?:please\s+)?(?:pretend(?:\s+to\s+be|\s+that\s+you\s+are)?|roleplay\s+as|simulate\s+being)\b[^.\n]{0,40}/gi,
+    /(?:^|\n|(?<=[.!?]\s))[^\S\n]*(?:please\s+)?(?:act|acting)\s+as\s+(?:an?\s+|the\s+)?[^.\n]{0,40}/gi,
+    /(?:^|\n|(?<=[.!?]\s))[^\S\n]*(?:please\s+)?(?:pretend(?:\s+to\s+be|\s+that\s+you\s+are)?|roleplay\s+as|simulate\s+being)\b[^.\n]{0,40}/gi,
 
     // Fake conversation-role / chat markers used to spoof a system turn.
-    /(?:^|\n)\s*(?:#{0,3}\s*)?[[<{]\s*(?:system|assistant|user|human|developer|tool|function)\s*[\]>}]\s*[:>]?/gi,
-    /(?:^|\n)\s*(?:#{0,3}\s*)?(?:system|assistant|developer)\s*[:>]\s*(?=\n|$)/gi,
+    // Non-newline whitespace only after the line start: `\s*` here also matched newlines, and a run of blank
+    // lines made these cubic. Each `\n` is still a start, so blank lines before a marker don't hide it. `#{1,3}`
+    // (not `#{0,3}`) so two adjacent whitespace runs can't split one run of spaces quadratically.
+    /(?:^|\n)[^\S\n]*(?:#{1,3}[^\S\n]*)?[[<{]\s*(?:system|assistant|user|human|developer|tool|function)\s*[\]>}]\s*[:>]?/gi,
+    /(?:^|\n)[^\S\n]*(?:#{1,3}[^\S\n]*)?(?:system|assistant|developer)[^\S\n]*[:>][^\S\n]*(?=\n|$)/gi,
 
     // Harness framing markers.
     /<<<\s*(?:BEGIN|END)\b[^>\n]{0,60}>>>/gi,
-    /<\/?(?:system|assistant|user|human|developer|tool|function|im_start|im_end|s|instructions?)\b[^>]*>/gi,
+    // `[^<>]*` so a tag that never closes can't make every later `<system` rescan to the end (quadratic).
+    /<\/?(?:system|assistant|user|human|developer|tool|function|im_start|im_end|s|instructions?)\b[^<>]*>/gi,
 
     // Special-token spoofing (ChatML / Llama / generic).
     /<\|[a-z0-9_/-]{0,40}\|>/gi,
@@ -188,7 +195,9 @@ const SECRET_RULES: ReadonlyArray<readonly [SecretKind, RegExp]> = [
     /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g,
   ],
   // JWTs (three dot-separated base64url segments).
-  ["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
+  // Starts only where a token starts: `-` is a word boundary, so `\b` let every `eyJ-` restart the scan
+  // (quadratic). Parts stay unbounded; real tokens with large claims run past 4k characters.
+  ["jwt", /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
   // GitHub tokens: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_
   ["github-token", /\bgh[pousr]_[A-Za-z0-9]{20,255}\b/g],
   ["github-token", /\bgithub_pat_[A-Za-z0-9_]{20,255}\b/g],
@@ -205,7 +214,8 @@ const SECRET_RULES: ReadonlyArray<readonly [SecretKind, RegExp]> = [
 // KEY=value / KEY: value / "key": "value" where the key name smells like a secret.
 // The value must not already be a redaction marker.
 const SECRET_ASSIGNMENT =
-  /\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[:=]\s*)(["']?)(?!\[REDACTED:)([^\s'"]{6,})\3/gi;
+  // Name parts around the keyword are bounded: two unbounded runs made long identifiers quadratic.
+  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]{0,64})(["']?\s*[:=]\s*)(["']?)(?!\[REDACTED:)([^\s'"]{6,})\3/gi;
 
 export function redactionMarker(kind: SecretKind): string {
   return `[REDACTED:${kind}]`;
