@@ -8,6 +8,7 @@ import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudflareConfig, DispatchRepo, FactoryConfig } from "./config.js";
 import { createPreviews } from "./previews.js";
+import { createReleaseObservers } from "./releases.js";
 
 export const RUNS_BUCKET = "globalhost-runs";
 export const CONTROL_BUCKET = "globalhost-control";
@@ -390,6 +391,9 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
   });
 
   // ── Previews (PLAN P1-11): image registry, edge, and each product's dev-project resources ─────────
+  // ── Release observation (PLAN P1-12): read-only Cloud Build access on prod projects ───────────────
+  const releases = createReleaseObservers({ config, pool, afterApis });
+
   const previews = createPreviews({
     config,
     factoryRepoName,
@@ -437,5 +441,6 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     imagePublisherServiceAccount: previews.imagePublisherServiceAccount,
     imagesWorkloadIdentityProvider: previews.imagesWorkloadIdentityProvider,
     previews: previews.previews,
+    releaseObservers: releases.releaseObservers,
   };
 }

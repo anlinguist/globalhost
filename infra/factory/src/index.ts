@@ -40,6 +40,7 @@ const config = parseFactoryConfig({
   ...(cfg.getNumber("monthlyBudgetUsd") ? { monthlyBudgetUsd: cfg.getNumber("monthlyBudgetUsd") } : {}),
   factoryRepoId: cfg.require("factoryRepoId"),
   previews: cfg.getObject("previews") ?? [],
+  releaseObservers: cfg.getObject("releaseObservers") ?? [],
   previewActorIds: cfg.getObject("previewActorIds") ?? [],
   ...(cfg.get("accessGuardImage") ? { accessGuardImage: cfg.get("accessGuardImage") } : {}),
 });
@@ -68,3 +69,4 @@ export const imagesRepository = out.imagesRepository;
 export const imagePublisherServiceAccount = out.imagePublisherServiceAccount;
 export const imagesWorkloadIdentityProvider = out.imagesWorkloadIdentityProvider;
 export const previews = out.previews;
+export const releaseObservers = out.releaseObservers;

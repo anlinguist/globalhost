@@ -29,6 +29,19 @@ export const PreviewProductSchema = z
   .strict();
 export type PreviewProduct = z.infer<typeof PreviewProductSchema>;
 
+/**
+ * A product whose merges the factory watches deploy (PLAN P1-12): read-only access to Cloud Build builds in its
+ * prod project, for the default branch's `globalhost-release.yml` only (ADR-0017).
+ */
+export const ReleaseObserverSchema = z
+  .object({
+    product: z.string().regex(/^[a-z][a-z0-9-]{0,18}[a-z0-9]$/),
+    prodProject: projectId.refine((p) => !p.endsWith("-dev"), "the release observer watches the prod project"),
+    repo: DispatchRepoSchema,
+  })
+  .strict();
+export type ReleaseObserver = z.infer<typeof ReleaseObserverSchema>;
+
 /** Not committed: identifiers are kept out of the public repo (`pulumi config set --secret cloudflare`). */
 export const CloudflareConfigSchema = z
   .object({
@@ -59,6 +72,7 @@ export const FactoryConfigSchema = z
     /** The factory repo's numeric ID: only its main-branch image workflow may publish images. */
     factoryRepoId: numericId,
     previews: z.array(PreviewProductSchema).default([]),
+    releaseObservers: z.array(ReleaseObserverSchema).default([]),
     /**
      * GitHub user IDs whose PR events may deploy previews: the owner and the factory App's bot user.
      * Enforced in the WIF provider condition, so a PR from anyone else gets no GCP credentials at all.
@@ -78,6 +92,14 @@ export function parseFactoryConfig(input: unknown): FactoryConfig {
   const config = FactoryConfigSchema.parse(input);
   const ids = config.dispatchRepos.map((r) => r.id);
   if (new Set(ids).size !== ids.length) throw new Error("dispatchRepos: duplicate repository id");
+  const observed = config.releaseObservers.map((r) => r.product);
+  if (new Set(observed).size !== observed.length) throw new Error("releaseObservers: duplicate product");
+  // One provider and one role per repo and prod project: a shared repo id would let each product's token reach both
+  // identities, and the role id is fixed per project.
+  const observedRepos = config.releaseObservers.map((r) => r.repo.id);
+  if (new Set(observedRepos).size !== observedRepos.length) throw new Error("releaseObservers: duplicate repo id");
+  const prodProjects = config.releaseObservers.map((r) => r.prodProject);
+  if (new Set(prodProjects).size !== prodProjects.length) throw new Error("releaseObservers: duplicate prodProject");
   const products = config.previews.map((p) => p.product);
   if (new Set(products).size !== products.length) throw new Error("previews: duplicate product");
   for (const p of config.previews) {

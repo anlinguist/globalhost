@@ -23,6 +23,11 @@ config:
       devProject: numu-know-dev
       repo: {name: anlinguist/numu-know, id: "338675328", defaultBranch: main}
       parts: [web]
+  # Post-merge deploy reports (PLAN P1-12, ADR-0017): read-only Cloud Build access on each prod project.
+  globalhost-factory:releaseObservers:
+    - product: numu-know
+      prodProject: numu-know
+      repo: {name: anlinguist/numu-know, id: "338675328", defaultBranch: main}
   # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
   globalhost-factory:previewActorIds: ["47403803", "350478808"]
   # Published by access-guard-image.yml on main (2b285c9); change only by PR.
