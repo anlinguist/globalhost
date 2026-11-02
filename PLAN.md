@@ -172,7 +172,7 @@ Scheduled workflow in the factory repo, nightly:
 **AC:** an orphan created by hand is removed the next night; the metrics file updates; the daily spend sum matches Anthropic Console within 10%.
 
 ### P1-14 Run the loop for real (×3) ✅ (2026-11-02)
-**Status:** numu-know #32, #29 and #31 went label → builder → preview → adversarial review → one steering round each → owner merge → prod deploy → issue closed by the release observer (PRs numu-know #38, #40, #41). About $4.21 of agent spend over 6 runs. Retro: #45 (no build queue, builder/CI toolchain mismatch, signed-in paths untested, screenshot routes miss changed code, manual rules deploys, weak tests). GCP run-rate to confirm after a billing cycle.
+**Status:** numu-know #32, #29 and #31 went label → builder → preview → adversarial review → one steering round each → owner merge → prod deploy → issue closed by the release observer (PRs numu-know #38, #40, #41). About $3.26 of agent spend over 6 runs. Retro: #45 (no build queue, builder/CI toolchain mismatch, signed-in paths untested, screenshot routes miss changed code, manual rules deploys, weak tests). GCP run-rate to confirm after a billing cycle.
 Owner files three small numu-know issues (e.g. a copy/UX tweak, a bug, a small feature). Each goes through the full loop.
 **AC:** 3 PRs merged and deployed. Retro issue filed with pain points, which seeds the Phase 2 ordering. Total Phase 1 GCP spend ≤ $25/mo run-rate.
 
