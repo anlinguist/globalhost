@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@pulumi/cloudflare": "6.22.1",
     "@pulumi/gcp": "10.1.1",
     "@pulumi/pulumi": "3.268.0",
     "zod": "4.6.7"

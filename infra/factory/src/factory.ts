@@ -6,7 +6,8 @@
 // Anthropic key. The dispatcher talks to Anthropic with its own GitHub OIDC token.
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import type { DispatchRepo, FactoryConfig } from "./config.js";
+import type { CloudflareConfig, DispatchRepo, FactoryConfig } from "./config.js";
+import { createPreviews } from "./previews.js";
 
 export const RUNS_BUCKET = "globalhost-runs";
 export const CONTROL_BUCKET = "globalhost-control";
@@ -43,6 +44,12 @@ export interface FactoryInputs {
   config: FactoryConfig;
   billingAccount: pulumi.Input<string>;
   budgetPauseSource: FunctionSource;
+  /** `owner/name` of this repo, for the image workflow's `job_workflow_ref` pin. */
+  factoryRepoName: string;
+  /** The built preview-router Worker (one ES module). */
+  routerScript: string;
+  /** Owner-set secret config; previews' edge, services and secrets are created once it exists. */
+  cloudflare?: pulumi.Output<CloudflareConfig>;
 }
 
 /** The single attribute sa:gh-dispatch is bound on. Only the dispatch provider maps it. */
@@ -66,7 +73,7 @@ export function dispatchProviderCondition(config: FactoryConfig): string {
   ].join(" && ");
 }
 
-export function createFactory({ config, billingAccount, budgetPauseSource }: FactoryInputs) {
+export function createFactory({ config, billingAccount, budgetPauseSource, factoryRepoName, routerScript, cloudflare }: FactoryInputs) {
   const { project, region } = config;
   const projectInfo = gcp.organizations.getProjectOutput({ projectId: project });
   const projectNumber = projectInfo.number;
@@ -382,14 +389,28 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
     member: pauseMember,
   });
 
+  // ── Previews (PLAN P1-11): image registry, edge, and each product's dev-project resources ─────────
+  const previews = createPreviews({
+    config,
+    factoryRepoName,
+    pool,
+    factoryProjectNumber: projectNumber,
+    afterApis,
+    routerScript,
+    ...(cloudflare ? { cloudflare } : {}),
+  });
+
   // Created after the function: Pub/Sub drops messages published before the trigger's subscription exists.
+  // Dev projects count against the same budget (ARCHITECTURE §5.2), so a runaway preview pauses the factory too.
   new gcp.billing.Budget(
     "factory-budget",
     {
       billingAccount,
       displayName: BUDGET_DISPLAY_NAME,
       budgetFilter: {
-        projects: [pulumi.interpolate`projects/${projectNumber}`],
+        projects: pulumi
+          .all([projectNumber, previews.previewProjectNumbers])
+          .apply(([factory, dev]) => [factory, ...dev].map((n) => `projects/${n}`)),
         calendarPeriod: "MONTH",
         creditTypesTreatment: "INCLUDE_ALL_CREDITS",
       },
@@ -413,5 +434,9 @@ export function createFactory({ config, billingAccount, budgetPauseSource }: Fac
     githubAppKeySecret: appKey.id,
     budgetTopic: budgetTopic.id,
     budgetPauseFunction: pauseFunction.name,
+    imagesRepository: previews.imagesRepository,
+    imagePublisherServiceAccount: previews.imagePublisherServiceAccount,
+    imagesWorkloadIdentityProvider: previews.imagesWorkloadIdentityProvider,
+    previews: previews.previews,
   };
 }
