@@ -70,6 +70,7 @@ A map from environment name (`^[a-z][a-z0-9]{0,15}$`, at most 8 entries) to `{ g
 Rules:
 - **No environment may share `prod`'s `gcpProject`.** Previews and dev data must never touch prod (ONBOARDING Stage 3).
 - **`dev` is required if any part has a hosted preview** (its profile's preview kinds include `url` and its preview is enabled). Hosted previews deploy into the dev project (ARCHITECTURE §2.6).
+- **`prod` is required too** in that case, and no string in a previewed part's `config` may name prod's `gcpProject` as a whole ID (`preview_config_names_prod`). This is a tripwire against pointing previews at production; preview identities having no role on the prod project is the guarantee.
 
 ### 3.5 `parts`
 
