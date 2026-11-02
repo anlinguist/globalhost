@@ -369,6 +369,14 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
     new gcp.projects.IAMMember(n("deployer-auth-domains"), { project: dev, role: authDomainsRole.name, member: deployerMember });
     new gcp.projects.IAMMember(n("runtime-firestore"), { project: dev, role: "roles/datastore.user", member: runtimeMember });
 
+    // Deploying a revision also checks that the deployer can read every image in it, the guard included.
+    new gcp.artifactregistry.RepositoryIamMember(n("deployer-guard-read"), {
+      project,
+      location: region,
+      repository: images.name,
+      role: "roles/artifactregistry.reader",
+      member: deployerMember,
+    });
     // Cloud Run in the dev project pulls the factory's access-guard image.
     new gcp.artifactregistry.RepositoryIamMember(
       n("guard-pull"),
