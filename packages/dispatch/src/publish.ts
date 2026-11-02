@@ -120,7 +120,7 @@ async function addLabels(gh: GitHubClient, repo: string, issue: number, labels: 
   if (labels.length > 0) await gh.request("POST", `/repos/${repo}/issues/${issue}/labels`, { labels });
 }
 
-async function removeLabel(gh: GitHubClient, repo: string, issue: number, label: string) {
+export async function removeLabel(gh: GitHubClient, repo: string, issue: number, label: string) {
   try {
     await gh.request("DELETE", `/repos/${repo}/issues/${issue}/labels/${encodeURIComponent(label)}`);
   } catch (err) {
@@ -225,6 +225,18 @@ async function getPull(gh: GitHubClient, repo: string, n: number): Promise<Pull>
   return gh.request("GET", `/repos/${repo}/pulls/${n}`, undefined, PullSchema);
 }
 
+/**
+ * The factory PR's description. No closing keyword (`Closes #n` would close the issue at merge, before the
+ * deploy): `globalhost dispatch observe` closes it once the merge commit's prod build succeeds.
+ */
+export function pullRequestBody(issue: number): string {
+  return [
+    `Refs #${issue}. The factory closes the issue once this merge deploys.`,
+    "",
+    "Built by the globalhost builder; the run report is in the first comment. CI and the preview run on this PR. The owner merges.",
+  ].join("\n");
+}
+
 async function findOrCreatePull(ctx: PublishContext, branch: string): Promise<Pull> {
   const owner = ctx.repo.split("/")[0]!;
   const open = await ctx.gh.request(
@@ -234,11 +246,7 @@ async function findOrCreatePull(ctx: PublishContext, branch: string): Promise<Pu
     z.array(PullSchema),
   );
   if (open[0]) return open[0];
-  const body = [
-    `Closes #${ctx.issue}`,
-    "",
-    "Built by the globalhost builder; the run report is in the first comment. CI and the preview run on this PR. The owner merges.",
-  ].join("\n");
+  const body = pullRequestBody(ctx.issue);
   return ctx.gh.request(
     "POST",
     `/repos/${ctx.repo}/pulls`,

@@ -1,11 +1,11 @@
-# globalhost dispatcher steps (P1-07), used by templates/.github/workflows/globalhost.yml in product
+# globalhost dispatcher steps (P1-07, P1-12), used by templates/.github/workflows/globalhost*.yml in product
 # repos and pinned there by commit SHA. The steps' logic lives in packages/dispatch; this action only
 # installs the factory at the pinned commit (lockfile-exact) and runs `globalhost dispatch <step>`.
 name: globalhost
-description: Run one globalhost dispatcher step (gate or run)
+description: Run one globalhost dispatcher step (gate, run or observe)
 inputs:
   step:
-    description: gate | run
+    description: gate | run | observe
     required: true
 outputs:
   action:

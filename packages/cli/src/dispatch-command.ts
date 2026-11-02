@@ -1,6 +1,6 @@
-// `globalhost dispatch <gate|run>`: the steps of the installed workflow (P1-07), run by
+// `globalhost dispatch <gate|run|observe>`: the steps of the installed workflows (P1-07, P1-12), run by
 // packages/action inside a product repo's GitHub Actions job. Not meant for interactive use.
-import { dispatchStep, gateStep, writeOutputs } from "@globalhost/dispatch";
+import { dispatchStep, gateStep, observeStep, writeOutputs } from "@globalhost/dispatch";
 import { PROFILES, SKILL_DIRS, defaultDeps, printable } from "./main.js";
 
 export async function dispatchCommand(argv: readonly string[], env: NodeJS.ProcessEnv, err: (t: string) => void): Promise<number> {
@@ -20,7 +20,13 @@ export async function dispatchCommand(argv: readonly string[], env: NodeJS.Proce
       // A failed agent run is reported on GitHub; the job itself only fails on harness errors.
       return 0;
     }
-    log("usage: globalhost dispatch <gate|run>");
+    if (argv[1] === "observe" && argv.length === 2) {
+      const out = await observeStep({ env, registry: deps.registry, log });
+      log(`observe: ${out.outcome}`);
+      // Red when any part's prod build failed, was cancelled or wasn't seen in time.
+      return out.outcome === "failed" ? 1 : 0;
+    }
+    log("usage: globalhost dispatch <gate|run|observe>");
     return 2;
   } catch (e) {
     log(`error: ${(e as Error).message}`);
