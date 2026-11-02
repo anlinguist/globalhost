@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cloudBuildTrigger } from "@globalhost/adapter-cloud-build-trigger";
 import { createRegistry, z, type DeployAdapter, type ProfileDescriptor } from "@globalhost/core";
-import { ACTIONS_BOT, consoleUrl, factoryIssue, observeStep, releaseMarker, type ObserveDeps } from "../src/observe.js";
+import { ACTIONS_BOT, buildLink, consoleUrl, factoryIssue, observeStep, releaseMarker, type ObserveDeps } from "../src/observe.js";
 import { pullRequestBody } from "../src/publish.js";
 
 const REPO = "anlinguist/demo";
@@ -313,7 +313,12 @@ describe("observe step", () => {
     const out = await observeStep(deps(fake));
     expect(out.outcome).toBe("failed");
     expect(fake.commentsOn(30)[0]!.body).toBe(
-      ["**web:** Deployed to prod via Cloud Build `build-web` ✅", "⚠️ Couldn't read Cloud Build for api (HTTP 404)", releaseMarker(SHA)].join("\n"),
+      [
+        "**web:** Deployed to prod via Cloud Build `build-web` ✅",
+        "[Build details](https://console.cloud.google.com/cloud-build/builds/build-web?project=demo-prod)",
+        "⚠️ Couldn't read Cloud Build for api (HTTP 404)",
+        releaseMarker(SHA),
+      ].join("\n"),
     );
     expect(fake.issues.get(12)!.state).toBe("open");
   });
@@ -492,13 +497,24 @@ describe("observe step", () => {
     }
   });
 
-  it("only links console.cloud.google.com URLs", async () => {
+  it("links the build by project ID, never Cloud Build's logUrl (which names the project by number)", async () => {
     const fake = new Fake();
-    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["FAILURE"], logUrl: "https://evil.example/x" });
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["FAILURE"], logUrl: "https://console.cloud.google.com/cloud-build/builds/build-1?project=123456789012" });
     fake.pulls.push(factoryPull(30, 12));
     fake.issue(12);
     await observeStep(deps(fake));
-    expect(fake.commentsOn(30)[0]!.body).toBe(`❌ Cloud Build \`build-1\` failed (FAILURE)\n${releaseMarker(SHA)}`);
+    expect(fake.commentsOn(30)[0]!.body).toBe(
+      `❌ Cloud Build \`build-1\` failed (FAILURE)\n[Build log](https://console.cloud.google.com/cloud-build/builds/build-1?project=demo-prod)\n${releaseMarker(SHA)}`,
+    );
+    expect(fake.commentsOn(30)[0]!.body).not.toContain("123456789012");
+    expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "us-central1" } }, "b-1")).toBe(
+      "https://console.cloud.google.com/cloud-build/builds;region=us-central1/b-1?project=demo-prod",
+    );
+    expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "europe-west10" } }, "b-1")).toBe(
+      "https://console.cloud.google.com/cloud-build/builds;region=europe-west10/b-1?project=demo-prod",
+    );
+    expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "x)](evil", region: "global" } }, "b-1")).toBeUndefined();
+    expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "global" } }, "b`1")).toBeUndefined();
 
     expect(consoleUrl(LOG_URL)).toBe(LOG_URL);
     expect(consoleUrl("http://console.cloud.google.com/x")).toBeUndefined();
@@ -537,8 +553,9 @@ describe("observe step", () => {
     expect(fake.commentsOn(30)[0]!.body).toBe(
       [
         "**web:** Deployed to prod via Cloud Build `build-web` ✅",
-        `[Build details](${LOG_URL})`,
+        "[Build details](https://console.cloud.google.com/cloud-build/builds/build-web?project=demo-prod)",
         "**api:** ❌ Cloud Build `build-api` failed (FAILURE)",
+        "[Build log](https://console.cloud.google.com/cloud-build/builds/build-api?project=demo-prod)",
         releaseMarker(SHA),
       ].join("\n"),
     );

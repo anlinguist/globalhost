@@ -14,7 +14,7 @@ import {
   STATUS_MAP,
   createCloudBuildTriggerAdapter,
 } from "@globalhost/adapter-cloud-build-trigger";
-import type { DeployAdapter, FactoryConfig, ReleaseHandle, ReleaseStatus, Registry } from "@globalhost/core";
+import { GCP_PROJECT_PATTERN, REGION_PATTERN, type DeployAdapter, type FactoryConfig, type ReleaseHandle, type ReleaseStatus, type Registry } from "@globalhost/core";
 import { z } from "zod";
 import { loadConfig, type Env } from "./dispatch.js";
 import { gcloudAccessToken, type AccessToken } from "./gcp.js";
@@ -103,6 +103,18 @@ export function consoleUrl(raw: string | undefined): string | undefined {
   if (url.protocol !== "https:" || url.host !== "console.cloud.google.com" || url.username || url.password) return undefined;
   if (/[\s()[\]<>"'`\\]/.test(url.href)) return undefined;
   return url.href;
+}
+
+/**
+ * The Console link built from the project ID, region and build ID. Cloud Build's own logUrl names the project by
+ * number, which is kept out of public repos; the project ID is already public in factory.yaml.
+ */
+export function buildLink(handle: ReleaseHandle, buildId: string | undefined): string | undefined {
+  const { project, region } = handle.data as { project?: unknown; region?: unknown };
+  if (!buildId || !BUILD_ID.test(buildId) || typeof project !== "string" || typeof region !== "string") return undefined;
+  if (!GCP_PROJECT_PATTERN.test(project) || !(region === "global" || REGION_PATTERN.test(region))) return undefined;
+  const path = region === "global" ? `cloud-build/builds/${buildId}` : `cloud-build/builds;region=${region}/${buildId}`;
+  return consoleUrl(`${CONSOLE_PREFIX}${path}?project=${project}`);
 }
 
 /** Build id and raw state from the adapter's status, never anything after them. */
@@ -239,7 +251,7 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
         t.handle ??= await t.adapter.release({ product: config.product, part: t.part, sha, environment: env0 }, t.config);
         const status = await t.adapter.status(t.handle);
         const { buildId, providerState } = buildInfo(t.handle, status);
-        const url = consoleUrl(status.url);
+        const url = buildLink(t.handle, buildId);
         if (TERMINAL_STATE.has(status.state)) {
           t.result = { label: t.label, outcome: status.state as PartOutcome, buildId, providerState, url };
           ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState });
