@@ -93,7 +93,11 @@ export function proposeFactoryYaml(input: ProposalInput): Proposal {
 
   const environments: Record<string, unknown> = { dev: { gcpProject: devProject(product), region } };
   if (facts.gcp) environments.prod = { gcpProject: facts.gcp.project, region };
-  else notes.push("environments.prod is omitted: pass --gcp-project to record the production project.");
+  else {
+    // Hosted previews need prod's project to check their config against (env_prod_missing), so they start off.
+    for (const part of Object.values(parts)) (part as Record<string, unknown>).preview = { enabled: false };
+    notes.push("environments.prod is omitted, so previews are disabled: pass --gcp-project to record the production project.");
+  }
   notes.push(`environments.dev names ${devProject(product)}, which doesn't exist yet; previews need it (ONBOARDING Stage 3).`);
 
   const value = {

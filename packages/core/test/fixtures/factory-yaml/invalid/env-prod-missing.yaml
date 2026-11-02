@@ -1,0 +1,12 @@
+# A hosted preview needs a prod environment, or its config can't be checked for prod's project (P1-11).
+# expect: environments env_prod_missing
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  web:
+    path: .
+    profile: fake-web

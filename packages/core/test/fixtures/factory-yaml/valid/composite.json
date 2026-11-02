@@ -14,6 +14,10 @@
     "baseBranch": "main"
   },
   "environments": {
+    "prod": {
+      "gcpProject": "composite-prod",
+      "region": "europe-west1"
+    },
     "dev": {
       "gcpProject": "composite-dev",
       "region": "europe-west1"

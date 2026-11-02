@@ -17,6 +17,7 @@ owners:
 autonomy: L4
 project: x
 environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
   dev: { gcpProject: dev, region: us central }
   Dev: { gcpProject: sample-dev, region: us-central1 }
 autoMerge: [renovate:major]
