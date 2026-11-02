@@ -9,6 +9,7 @@ const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const LOG_URL = "https://console.cloud.google.com/cloud-build/builds/build-1?project=demo-prod";
 const SECRET = "STRIPE_KEY=sk_live_abc123 token ghp_secret";
+const APP_BOT = "globalhost-ai[bot]";
 
 const webApp: ProfileDescriptor = {
   id: "web-app",
@@ -68,6 +69,7 @@ type Pull = {
   number: number;
   merged_at: string | null;
   merge_commit_sha: string | null;
+  user: { login: string; type: string } | null;
   base: { ref: string };
   head: { ref: string; repo: { full_name: string } | null };
 };
@@ -76,6 +78,7 @@ const factoryPull = (n: number, issue: number, over: Partial<Pull> = {}): Pull =
   number: n,
   merged_at: "2026-11-01T00:00:00Z",
   merge_commit_sha: SHA,
+  user: { login: APP_BOT, type: "Bot" },
   base: { ref: "main" },
   head: { ref: `factory/issue-${issue}`, repo: { full_name: REPO } },
   ...over,
@@ -83,6 +86,7 @@ const factoryPull = (n: number, issue: number, over: Partial<Pull> = {}): Pull =
 
 class Fake {
   calls: string[] = [];
+  configRefs: string[] = [];
   comments: FakeComment[] = [];
   issues = new Map<number, { state: string; state_reason?: string; labels: Set<string>; pull_request?: object }>();
   builds: Build[] = [];
@@ -103,6 +107,7 @@ class Fake {
     let m: RegExpExecArray | null;
     if (p === `/repos/${REPO}`) return Response.json({ default_branch: "main" });
     if (p === `/repos/${REPO}/contents/factory.yaml`) {
+      this.configRefs.push(url.searchParams.get("ref") ?? "");
       return Response.json({ content: Buffer.from(this.factoryYaml).toString("base64"), encoding: "base64" });
     }
     if (p === `/repos/${REPO}/commits/${SHA}/pulls`) return Response.json(this.pulls);
@@ -172,7 +177,7 @@ function deps(fake: Fake, env: Record<string, string> = {}, over: Partial<Observ
   const logs: string[] = [];
   let t = 0;
   return {
-    env: { GITHUB_REPOSITORY: REPO, GITHUB_SHA: SHA, GITHUB_TOKEN: "ghs_workflowtoken", GITHUB_REF: "refs/heads/main", ...env },
+    env: { GITHUB_REPOSITORY: REPO, GITHUB_SHA: SHA, GITHUB_TOKEN: "ghs_workflowtoken", GITHUB_REF: "refs/heads/main", GLOBALHOST_APP_SLUG: "globalhost-ai", ...env },
     registry,
     log: (l) => logs.push(l),
     fetchImpl: fake.fetch,
@@ -241,21 +246,133 @@ describe("observe step", () => {
     const d = deps(fake, { OBSERVE_TIMEOUT_MINUTES: "5" });
     const out = await observeStep(d);
     expect(out.outcome).toBe("failed");
-    expect(out.parts).toEqual([{ label: "web", outcome: "not-observed" }]);
-    expect(fake.commentsOn(30)[0]!.body).toBe(`⏳ No prod build observed for aaaaaaa within 5 min\n${releaseMarker(SHA)}`);
+    expect(out.parts).toEqual([{ label: "web", outcome: "no-build" }]);
+    expect(fake.commentsOn(30)[0]!.body).toBe(
+      `⏳ No Cloud Build build for aaaaaaa found within 5 min; the trigger may not have fired.\n${releaseMarker(SHA)}`,
+    );
     expect(fake.issues.get(12)!.state).toBe("open");
     // 5 min at 20 s per poll: bounded, not forever.
     expect(fake.calls.filter((c) => c.endsWith("/builds")).length).toBeLessThanOrEqual(17);
   });
 
-  it("a build still running at the deadline is not observed", async () => {
+  it("a build still running at the deadline is reported as such and doesn't fail the job", async () => {
     const fake = new Fake();
-    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["WORKING"] });
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["WORKING"], logUrl: LOG_URL });
     fake.pulls.push(factoryPull(30, 12));
     fake.issue(12);
     const out = await observeStep(deps(fake, { OBSERVE_TIMEOUT_MINUTES: "1", OBSERVE_POLL_SECONDS: "30" }));
-    expect(out.parts[0]!.outcome).toBe("not-observed");
+    expect(out.outcome).toBe("pending");
+    expect(out.parts[0]!.outcome).toBe("still-running");
+    expect(fake.commentsOn(30)[0]!.body).toBe(`⏳ Cloud Build \`build-1\` still WORKING after 1 min.\n[Build log](${LOG_URL})\n${releaseMarker(SHA)}`);
+    expect(fake.commentsOn(12)[0]!.body).toContain("still WORKING");
     expect(fake.issues.get(12)!.state).toBe("open");
+  });
+
+  it("a failure next to a still-running build fails the job", async () => {
+    const fake = new Fake(TWO_PARTS);
+    fake.builds.push(
+      { id: "build-web", trigger: "deploy-web", statuses: ["WORKING"] },
+      { id: "build-api", trigger: "deploy-api", statuses: ["FAILURE"] },
+    );
+    fake.pulls.push(factoryPull(30, 12));
+    const out = await observeStep(deps(fake, { OBSERVE_TIMEOUT_MINUTES: "1" }));
+    expect(out.outcome).toBe("failed");
+  });
+
+  it.each([401, 403, 404])("stops on Cloud Build HTTP %i and says so", async (code) => {
+    const fake = new Fake();
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const real = fake.fetch;
+    let cbCalls = 0;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("cloudbuild.googleapis.com")) {
+        cbCalls++;
+        return Response.json({ error: { code, status: "PERMISSION_DENIED" } }, { status: code });
+      }
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out.outcome).toBe("failed");
+    expect(out.parts).toEqual([{ label: "web", outcome: "error", httpStatus: code }]);
+    expect(cbCalls).toBe(1);
+    expect(fake.commentsOn(30)[0]!.body).toBe(`⚠️ Couldn't read Cloud Build for web (HTTP ${code})\n${releaseMarker(SHA)}`);
+    expect(fake.issues.get(12)!.state).toBe("open");
+  });
+
+  it("one part's error doesn't stop the others being reported", async () => {
+    const fake = new Fake(TWO_PARTS);
+    fake.builds.push({ id: "build-web", trigger: "deploy-web", statuses: ["SUCCESS"] });
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const real = fake.fetch;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("/triggers/deploy-api")) return Response.json({ error: { code: 404 } }, { status: 404 });
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out.outcome).toBe("failed");
+    expect(fake.commentsOn(30)[0]!.body).toBe(
+      ["**web:** Deployed to prod via Cloud Build `build-web` ✅", "⚠️ Couldn't read Cloud Build for api (HTTP 404)", releaseMarker(SHA)].join("\n"),
+    );
+    expect(fake.issues.get(12)!.state).toBe("open");
+  });
+
+  it("an unexpected adapter exception is reported as that part's error", async () => {
+    const fake = new Fake();
+    fake.pulls.push(factoryPull(30, 12));
+    const adapter: DeployAdapter = {
+      id: "cloud-build-trigger",
+      configSchema: z.unknown(),
+      capabilities: { preview: false, canary: false, rollback: false, asyncGate: false },
+      release: async () => {
+        throw new Error("boom: secret detail");
+      },
+      status: async () => ({ state: "unknown", detail: "" }),
+    };
+    const out = await observeStep(deps(fake, {}, { adapterFactory: () => adapter }));
+    expect(out.parts[0]).toEqual({ label: "web", outcome: "error", httpStatus: undefined });
+    expect(fake.commentsOn(30)[0]!.body).toBe(`⚠️ Couldn't read Cloud Build for web\n${releaseMarker(SHA)}`);
+  });
+
+  it("retries 429 and 5xx", async () => {
+    const fake = new Fake();
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"] });
+    fake.pulls.push(factoryPull(30, 12));
+    const real = fake.fetch;
+    let n = 0;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("/triggers/") && n++ < 2) return Response.json({}, { status: n === 1 ? 429 : 500 });
+      return real(input, init);
+    }) as typeof fetch;
+    expect((await observeStep(deps(fake))).outcome).toBe("succeeded");
+  });
+
+  it("reads factory.yaml at the released commit", async () => {
+    const fake = new Fake();
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"] });
+    await observeStep(deps(fake));
+    expect(fake.configRefs).toEqual([SHA]);
+  });
+
+  it("closes the issue only for PRs the factory App opened", async () => {
+    for (const user of [{ login: "anlinguist", type: "User" }, { login: "other-app[bot]", type: "Bot" }, { login: APP_BOT, type: "User" }, null]) {
+      const fake = new Fake();
+      fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"] });
+      fake.pulls.push(factoryPull(30, 12, { user }));
+      fake.issue(12);
+      const out = await observeStep(deps(fake));
+      expect(out.closedIssues).toEqual([]);
+      expect(fake.issues.get(12)!.state).toBe("open");
+      expect(fake.commentsOn(30)).toHaveLength(1);
+      expect(fake.commentsOn(12)).toHaveLength(0);
+    }
+  });
+
+  it("requires a valid GLOBALHOST_APP_SLUG", async () => {
+    for (const bad of ["", "Bad Slug", "x[bot]"]) {
+      await expect(observeStep(deps(new Fake(), { GLOBALHOST_APP_SLUG: bad }))).rejects.toThrow(/GLOBALHOST_APP_SLUG/);
+    }
   });
 
   it("re-runs update the earlier comment instead of adding another", async () => {
@@ -355,6 +472,7 @@ describe("observe step", () => {
 
   it("refuses to run off the default branch", async () => {
     await expect(observeStep(deps(new Fake(), { GITHUB_REF: "refs/heads/factory/issue-1" }))).rejects.toThrow(/default branch/);
+    await expect(observeStep(deps(new Fake(), { GITHUB_REF: "" }))).rejects.toThrow(/GITHUB_REF/);
   });
 
   it("never puts statusDetail, substitutions or other build fields in a comment", async () => {
@@ -458,12 +576,13 @@ describe("observe step", () => {
 
 describe("factoryIssue", () => {
   const pr = (ref: string, repo: string | null = REPO) => factoryPull(1, 0, { head: { ref, repo: repo ? { full_name: repo } : null } });
-  it("matches only factory/issue-<n> in this repo", () => {
-    expect(factoryIssue(pr("factory/issue-12"), REPO)).toBe(12);
-    expect(factoryIssue(pr("factory/issue-12", "mallory/demo"), REPO)).toBeUndefined();
-    expect(factoryIssue(pr("factory/issue-12", null), REPO)).toBeUndefined();
+  it("matches only factory/issue-<n> in this repo, opened by the App", () => {
+    expect(factoryIssue(pr("factory/issue-12"), REPO, APP_BOT)).toBe(12);
+    expect(factoryIssue(pr("factory/issue-12"), REPO, "other[bot]")).toBeUndefined();
+    expect(factoryIssue(pr("factory/issue-12", "mallory/demo"), REPO, APP_BOT)).toBeUndefined();
+    expect(factoryIssue(pr("factory/issue-12", null), REPO, APP_BOT)).toBeUndefined();
     for (const ref of ["factory/issue-0", "factory/issue-012", "factory/issue-12x", "factory/issue-12345678", "xfactory/issue-1", "factory/issue-1/x"]) {
-      expect(factoryIssue(pr(ref), REPO)).toBeUndefined();
+      expect(factoryIssue(pr(ref), REPO, APP_BOT)).toBeUndefined();
     }
   });
 });

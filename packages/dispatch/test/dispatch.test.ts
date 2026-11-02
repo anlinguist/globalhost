@@ -301,6 +301,34 @@ describe("publish", () => {
     },
   );
 
+  it("rewrites closing keywords in commit messages and the PR title before pushing", async () => {
+    const fx = gitFixture();
+    const cloud = new FakeCloud();
+    const outDir = mkdtempSync(join(tmpdir(), "out-"));
+    const agentHead = fx.resultBundle(outDir, 12, { "button.css": "blue\n" }, "Make it blue\n\nFixes #12, closes: anlinguist/demo#3");
+    const result = await publish({
+      gh: new GitHubClient("app-token", cloud.fetch),
+      pushToken: "app-token",
+      repo: REPO,
+      issue: 12,
+      issueTitle: "Resolves #4 the button",
+      config,
+      record: record(fx),
+      outDir,
+      base: fx.baseClone(),
+      log: () => undefined,
+      remoteUrl: fx.remote,
+    });
+    expect(result.outcome).toBe("pr");
+    const pushed = git(fx.remote, "rev-parse", "factory/issue-12");
+    expect(pushed).not.toBe(agentHead);
+    expect(git(fx.remote, "log", "-1", "--format=%B", pushed)).toBe("Make it blue\n\nrefs #12, refs: anlinguist/demo#3");
+    // Same tree, author and parent: only the message changed.
+    expect(git(fx.remote, "rev-parse", `${pushed}^{tree}`)).toBe(git(fx.work, "rev-parse", `${agentHead}^{tree}`));
+    expect(git(fx.remote, "log", "-1", "--format=%an %ae %at %P", pushed)).toBe(git(fx.work, "log", "-1", "--format=%an %ae %at %P", agentHead));
+    expect(cloud.pulls[0]!.title).toBe("factory: refs #4 the button");
+  });
+
   it("labels a PR that touches a load-bearing path", async () => {
     const { cloud } = await publishWith({ "proxy.ts": "// csp\n" });
     expect(cloud.labels.get(100)?.has("needs:owner-approval")).toBe(true);

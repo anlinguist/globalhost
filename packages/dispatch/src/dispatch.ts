@@ -53,12 +53,15 @@ const need = (env: Env, name: string): string => {
 
 const RepoSlug = z.string().regex(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/);
 
-/** factory.yaml from the default branch only: a PR branch can't change who the owners are. */
-export async function loadConfig(gh: GitHubClient, repo: string, registry: Registry): Promise<FactoryConfig> {
+/**
+ * factory.yaml from the default branch only: a PR branch can't change who the owners are. `ref` pins a commit
+ * that the caller knows is on the default branch (the release observer's pushed commit); default: its head.
+ */
+export async function loadConfig(gh: GitHubClient, repo: string, registry: Registry, ref?: string): Promise<FactoryConfig> {
   const meta = await gh.request("GET", `/repos/${repo}`, undefined, z.object({ default_branch: z.string() }));
   const file = await gh.request(
     "GET",
-    `/repos/${repo}/contents/factory.yaml?ref=${encodeURIComponent(meta.default_branch)}`,
+    `/repos/${repo}/contents/factory.yaml?ref=${encodeURIComponent(ref ?? meta.default_branch)}`,
     undefined,
     z.object({ content: z.string(), encoding: z.literal("base64") }),
   );

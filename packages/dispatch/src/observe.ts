@@ -2,15 +2,23 @@
 // part's `cloud-build-trigger` release for the merge commit, reports the outcome on the merged PR(s) and,
 // for factory PRs, on the issue, and closes the issue once the deploy succeeded.
 //
-// Runs in the product repo's release-observe workflow on the default branch with a GITHUB_TOKEN that can
+// Runs in the product repo's globalhost-release.yml on the default branch with a GITHUB_TOKEN that can
 // write issues and PRs and a GCP identity that can only read Cloud Build. The repo may be public, so
 // comments carry only the build id, its state and the console URL: never statusDetail, logs or substitutions.
-import { ADAPTER_ID as CLOUD_BUILD_TRIGGER, STATUS_MAP, createCloudBuildTriggerAdapter } from "@globalhost/adapter-cloud-build-trigger";
+//
+// Only the pushed head commit is observed: when one push lands several merges, only the PR(s) merged as
+// the head commit are reported (GitHub runs one push workflow per push).
+import {
+  ADAPTER_ID as CLOUD_BUILD_TRIGGER,
+  CloudBuildApiError,
+  STATUS_MAP,
+  createCloudBuildTriggerAdapter,
+} from "@globalhost/adapter-cloud-build-trigger";
 import type { DeployAdapter, FactoryConfig, ReleaseHandle, ReleaseStatus, Registry } from "@globalhost/core";
 import { z } from "zod";
 import { loadConfig, type Env } from "./dispatch.js";
 import { gcloudAccessToken, type AccessToken } from "./gcp.js";
-import { GitHubClient, listComments } from "./github.js";
+import { GitHubClient, GitHubError, listComments } from "./github.js";
 import { LABELS, removeLabel } from "./publish.js";
 
 /** The identity behind a workflow's GITHUB_TOKEN; only its comments are edited. */
@@ -21,10 +29,13 @@ export const DEFAULT_POLL_SECONDS = 20;
 const CONSOLE_PREFIX = "https://console.cloud.google.com/";
 const SHA = /^[0-9a-f]{40}$/;
 const RepoSlug = z.string().regex(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/);
+const AppSlug = /^[a-z0-9][a-z0-9-]{0,33}$/;
 const FACTORY_BRANCH = /^factory\/issue-([1-9][0-9]{0,6})$/;
 const BUILD_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
 /** The adapter's detail starts `Cloud Build <id>: <STATUS>`; only those two tokens are read from it. */
 const DETAIL_HEAD = /^Cloud Build ([A-Za-z0-9][A-Za-z0-9-]{0,63}): ([A-Z_]{1,32})(?=$| )/;
+/** Cloud Build answers that won't change by waiting: no access, or no such trigger/build. */
+const PERMANENT_HTTP = new Set([401, 403, 404]);
 
 export const releaseMarker = (sha: string) => `<!-- globalhost-release:${sha} -->`;
 
@@ -40,20 +51,27 @@ export interface ObserveDeps {
   now?: () => number;
 }
 
-export type PartOutcome = "succeeded" | "failed" | "cancelled" | "not-observed";
+/**
+ * succeeded / failed / cancelled: the build finished. still-running: found but not finished by the deadline.
+ * no-build: no build for the commit by the deadline. error: Cloud Build couldn't be read.
+ */
+export type PartOutcome = "succeeded" | "failed" | "cancelled" | "still-running" | "no-build" | "error";
 
 export interface PartResult {
   /** Part name, with the target index when a part has several cloud-build-trigger targets. */
   label: string;
   outcome: PartOutcome;
   buildId?: string;
-  /** The provider's raw state (e.g. FAILURE, TIMEOUT); only one of the adapter's known states. */
+  /** The provider's raw state (e.g. FAILURE, WORKING); only one of the adapter's known states. */
   providerState?: string;
   url?: string;
+  /** For "error": the Cloud Build HTTP status, when there was one. */
+  httpStatus?: number;
 }
 
 export interface ObserveResult {
-  outcome: "no-release" | "succeeded" | "failed";
+  /** "pending": nothing failed, but some build was still running at the deadline. */
+  outcome: "no-release" | "succeeded" | "pending" | "failed";
   parts: PartResult[];
   pulls: number[];
   closedIssues: number[];
@@ -97,12 +115,15 @@ function buildInfo(handle: ReleaseHandle, status: ReleaseStatus): { buildId?: st
   return { buildId, providerState };
 }
 
-const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const FINISHED = new Set<PartOutcome>(["succeeded", "failed", "cancelled", "error"]);
+const TERMINAL_STATE = new Set(["succeeded", "failed", "cancelled"]);
 
 interface Target {
   label: string;
+  part: string;
+  config: unknown;
   adapter: DeployAdapter;
-  handle: ReleaseHandle;
+  handle?: ReleaseHandle;
   result: PartResult;
 }
 
@@ -110,15 +131,20 @@ export function statusLine(r: PartResult, sha: string, minutes: number, prefix: 
   const p = prefix ? `**${r.label}:** ` : "";
   const id = r.buildId ? `\`${r.buildId}\`` : "(unknown id)";
   const url = consoleUrl(r.url);
+  const link = (text: string) => (url ? [`[${text}](${url})`] : []);
   switch (r.outcome) {
     case "succeeded":
-      return [`${p}Deployed to prod via Cloud Build ${id} ✅`, ...(url ? [`[Build details](${url})`] : [])];
+      return [`${p}Deployed to prod via Cloud Build ${id} ✅`, ...link("Build details")];
     case "failed":
-      return [`${p}❌ Cloud Build ${id} failed (${r.providerState ?? "FAILURE"})`, ...(url ? [`[Build log](${url})`] : [])];
+      return [`${p}❌ Cloud Build ${id} failed (${r.providerState ?? "FAILURE"})`, ...link("Build log")];
     case "cancelled":
-      return [`${p}⚠️ Cloud Build ${id} was cancelled`, ...(url ? [`[Build log](${url})`] : [])];
-    case "not-observed":
-      return [`${p}⏳ No prod build observed for ${sha.slice(0, 7)} within ${minutes} min`];
+      return [`${p}⚠️ Cloud Build ${id} was cancelled`, ...link("Build log")];
+    case "still-running":
+      return [`${p}⏳ Cloud Build ${id} still ${r.providerState ?? "RUNNING"} after ${minutes} min.`, ...link("Build log")];
+    case "no-build":
+      return [`${p}⏳ No Cloud Build build for ${sha.slice(0, 7)} found within ${minutes} min; the trigger may not have fired.`];
+    case "error":
+      return [`⚠️ Couldn't read Cloud Build for ${r.label}${r.httpStatus ? ` (HTTP ${r.httpStatus})` : ""}`];
   }
 }
 
@@ -132,14 +158,19 @@ const PullForCommit = z.object({
   number: z.number().int().positive(),
   merged_at: z.string().nullable(),
   merge_commit_sha: z.string().nullable(),
+  user: z.object({ login: z.string(), type: z.string() }).nullable(),
   base: z.object({ ref: z.string() }),
   head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
 });
 type PullForCommit = z.infer<typeof PullForCommit>;
 
-/** The PR's issue when it's a factory PR: a `factory/issue-<n>` branch in this repo (not a fork's). */
-export function factoryIssue(pr: PullForCommit, repo: string): number | undefined {
+/**
+ * The PR's issue when it's a factory PR: opened by the factory App's bot from a `factory/issue-<n>` branch in
+ * this repo. A fork's branch, or a factory branch whose PR someone opened by hand, doesn't count.
+ */
+export function factoryIssue(pr: PullForCommit, repo: string, appBot: string): number | undefined {
   if (pr.head.repo?.full_name !== repo) return undefined;
+  if (pr.user?.type !== "Bot" || pr.user.login !== appBot) return undefined;
   const m = FACTORY_BRANCH.exec(pr.head.ref);
   return m ? Number(m[1]) : undefined;
 }
@@ -152,20 +183,32 @@ async function upsertComment(gh: GitHubClient, repo: string, issue: number, sha:
   else await gh.request("POST", `/repos/${repo}/issues/${issue}/comments`, { body });
 }
 
+/** Permanent Cloud Build errors end a target; anything else (429, 5xx, network) is retried until the deadline. */
+function classify(err: unknown): { permanent: boolean; httpStatus?: number } {
+  if (err instanceof CloudBuildApiError) return { permanent: PERMANENT_HTTP.has(err.httpStatus), httpStatus: err.httpStatus };
+  if (err instanceof TypeError) return { permanent: false }; // fetch: network failure
+  return { permanent: true };
+}
+
 export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
   const { env, log } = deps;
   const ev = (event: string, fields: Record<string, unknown> = {}) => log(JSON.stringify({ event: `observe.${event}`, ...fields }));
   const repo = RepoSlug.parse(need(env, "GITHUB_REPOSITORY"));
   const sha = need(env, "GITHUB_SHA");
   if (!SHA.test(sha)) throw new Error("GITHUB_SHA must be 40 lowercase hex characters");
+  const slug = need(env, "GLOBALHOST_APP_SLUG");
+  if (!AppSlug.test(slug)) throw new Error("GLOBALHOST_APP_SLUG is not a GitHub App slug");
+  const appBot = `${slug}[bot]`;
   const minutes = intEnv(env, "OBSERVE_TIMEOUT_MINUTES", DEFAULT_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES);
   const pollMs = intEnv(env, "OBSERVE_POLL_SECONDS", DEFAULT_POLL_SECONDS, 300) * 1000;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const gh = new GitHubClient(need(env, "GITHUB_TOKEN"), deps.fetchImpl);
 
-  const config: FactoryConfig = await loadConfig(gh, repo, deps.registry);
-  if (env.GITHUB_REF && env.GITHUB_REF !== `refs/heads/${config.git.defaultBranch}`) {
+  // factory.yaml as of the commit being released, which is on the default branch (checked below and by
+  // the PR filter); a later push can't change what this run observes.
+  const config: FactoryConfig = await loadConfig(gh, repo, deps.registry, sha);
+  if (need(env, "GITHUB_REF") !== `refs/heads/${config.git.defaultBranch}`) {
     throw new Error(`observe runs only on the default branch (${config.git.defaultBranch})`);
   }
 
@@ -178,9 +221,7 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
     const cbt = p.release.filter((t) => t.adapter === CLOUD_BUILD_TRIGGER);
     for (const [i, t] of cbt.entries()) {
       const label = cbt.length > 1 ? `${part}[${i}]` : part;
-      const adapter = makeAdapter(gcpToken);
-      const handle = await adapter.release({ product: config.product, part, sha, environment: env0 }, t.config);
-      targets.push({ label, adapter, handle, result: { label, outcome: "not-observed" } });
+      targets.push({ label, part, config: t.config, adapter: makeAdapter(gcpToken), result: { label, outcome: "no-build" } });
     }
   }
   if (targets.length === 0) {
@@ -188,32 +229,38 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
     return { outcome: "no-release", parts: [], pulls: [], closedIssues: [] };
   }
 
-  // Poll every target until each reaches a terminal state or the deadline passes.
+  // Poll every target until each finishes or the deadline passes. release() only looks the build up (the
+  // adapter is observe-only), so it's retried like status() until it works.
   const deadline = now() + minutes * 60_000;
   for (;;) {
     for (const t of targets) {
-      if (TERMINAL.has(t.result.outcome)) continue;
-      let status: ReleaseStatus;
+      if (FINISHED.has(t.result.outcome)) continue;
       try {
-        status = await t.adapter.status(t.handle);
+        t.handle ??= await t.adapter.release({ product: config.product, part: t.part, sha, environment: env0 }, t.config);
+        const status = await t.adapter.status(t.handle);
+        const { buildId, providerState } = buildInfo(t.handle, status);
+        const url = consoleUrl(status.url);
+        if (TERMINAL_STATE.has(status.state)) {
+          t.result = { label: t.label, outcome: status.state as PartOutcome, buildId, providerState, url };
+          ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState });
+        } else if (buildId) {
+          t.result = { label: t.label, outcome: "still-running", buildId, providerState, url };
+        }
       } catch (err) {
-        // API errors carry only HTTP/API status codes; keep polling, they may be transient.
-        ev("status_error", { part: t.label, error: (err as Error).message.slice(0, 200) });
-        continue;
-      }
-      const { buildId, providerState } = buildInfo(t.handle, status);
-      if (TERMINAL.has(status.state)) {
-        t.result = { label: t.label, outcome: status.state as PartOutcome, buildId, providerState, url: consoleUrl(status.url) };
-        ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState });
+        // API errors carry only HTTP/API status codes, never response bodies.
+        const { permanent, httpStatus } = classify(err);
+        ev("cloud_build_error", { part: t.label, permanent, error: (err as Error).message.slice(0, 200) });
+        if (permanent) t.result = { label: t.label, outcome: "error", httpStatus };
       }
     }
-    if (targets.every((t) => TERMINAL.has(t.result.outcome))) break;
+    if (targets.every((t) => FINISHED.has(t.result.outcome))) break;
     if (now() + pollMs > deadline) break;
     await sleep(pollMs);
   }
   const parts = targets.map((t) => t.result);
-  for (const r of parts) if (r.outcome === "not-observed") ev("part", { part: r.label, outcome: r.outcome });
+  for (const r of parts) if (!FINISHED.has(r.outcome)) ev("part", { part: r.label, outcome: r.outcome, build: r.buildId, state: r.providerState });
   const succeeded = parts.every((r) => r.outcome === "succeeded");
+  const failed = parts.some((r) => r.outcome !== "succeeded" && r.outcome !== "still-running");
 
   // The PRs this merge commit landed.
   const pulls = (await gh.request("GET", `/repos/${repo}/commits/${sha}/pulls?per_page=100`, undefined, z.array(PullForCommit))).filter(
@@ -223,17 +270,25 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
 
   const closedIssues: number[] = [];
   for (const pr of pulls) {
-    const issue = factoryIssue(pr, repo);
     await upsertComment(gh, repo, pr.number, sha, releaseComment(parts, sha, minutes));
     ev("commented", { pr: pr.number });
+    const issue = factoryIssue(pr, repo, appBot);
     if (issue === undefined) continue;
 
-    const info = await gh.request(
-      "GET",
-      `/repos/${repo}/issues/${issue}`,
-      undefined,
-      z.object({ number: z.number().int(), state: z.string(), pull_request: z.unknown().optional() }),
-    );
+    let info;
+    try {
+      info = await gh.request(
+        "GET",
+        `/repos/${repo}/issues/${issue}`,
+        undefined,
+        z.object({ number: z.number().int(), state: z.string(), pull_request: z.unknown().optional() }),
+      );
+    } catch (err) {
+      // Deleted or transferred: nothing to report on.
+      if (!(err instanceof GitHubError && (err.status === 404 || err.status === 410))) throw err;
+      ev("skip_issue", { pr: pr.number, issue, reason: `HTTP ${err.status}` });
+      continue;
+    }
     if (info.pull_request !== undefined) {
       ev("skip_issue", { pr: pr.number, issue, reason: "is a pull request" });
       continue;
@@ -250,5 +305,6 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
     }
   }
 
-  return { outcome: succeeded ? "succeeded" : "failed", parts, pulls: pulls.map((p) => p.number), closedIssues };
+  const outcome = succeeded ? "succeeded" : failed ? "failed" : "pending";
+  return { outcome, parts, pulls: pulls.map((p) => p.number), closedIssues };
 }
