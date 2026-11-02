@@ -29,7 +29,7 @@ export const GUARD_HEALTH_PATH = "/__guard/healthz";
  * Runs as the app container until the first preview deploy replaces it. It must listen on APP_PORT by itself: Cloud
  * Run reserves PORT, and the guard owns 8080. Each deploy resets command and args to the app image's own.
  */
-export const PLACEHOLDER_APP_IMAGE = "mirror.gcr.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec";
+export const PLACEHOLDER_APP_IMAGE = "docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec";
 export const PLACEHOLDER_APP_ARGS = ["httpd", "-f", "-p", String(APP_PORT), "-h", "/tmp"];
 
 export const PREVIEW_DEV_APIS = [

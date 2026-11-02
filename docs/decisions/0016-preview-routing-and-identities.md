@@ -28,5 +28,5 @@ ADR-0007 had the preview deploy job write each PR's tagged revision URL to Worke
 ## Consequences
 
 - One fewer secret to rotate and no edge state to clean up. Adding a part is a Pulumi change (new service and map entry), which is also what creates its service.
-- Collaborators' PRs get a build but no deploy; the owner pushing to the branch (or re-running the build) makes the next deploy run as the owner. A PR closed by anyone is torn down.
+- Collaborators' PRs get a build but no deploy; the owner pushing to the branch makes the next build, and so the deploy, run as the owner (a re-run keeps the original actor). A PR closed by anyone is torn down.
 - The preview `*.run.app` service is `allUsers`-invokable by design; `access-guard` is the only gate there, so it carries adversarial tests and runs as the ingress container.
