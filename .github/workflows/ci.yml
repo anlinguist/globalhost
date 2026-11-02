@@ -60,5 +60,7 @@ jobs:
           persist-credentials: false
       - name: Install gitleaks
         run: .github/scripts/install-tool.sh "$GITLEAKS_URL" "$GITLEAKS_SHA256" gitleaks
-      - name: Scan every reachable commit
-        run: gitleaks git --redact --no-banner --exit-code 1 .
+      # History reachable from the commit under test (other branches aren't what's being merged), including
+      # merge-commit diffs (-m), so a secret added while resolving a merge is caught.
+      - name: Scan every commit reachable from HEAD
+        run: gitleaks git --redact --no-banner --exit-code 1 --log-opts="-m HEAD" .
