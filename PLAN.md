@@ -160,7 +160,8 @@ New Firebase/GCP project `numu-know-dev`:
 - screenshots render in the PR comment;
 - closing the PR removes the tag, KV entry, and authorized domain within 10 min.
 
-### P1-12 Release observation + issue closing
+### P1-12 Release observation + issue closing ✅ (2026-11-02)
+**Status:** live for numu-know. `globalhost dispatch observe` (#42) runs from numu-know's `globalhost-release.yml` (numu-know #37) with a read-only Cloud Build identity on the prod project (#41, ADR-0017). Factory PRs say `Refs #N` and closing keywords in builder commits are neutralized, so issues close on a successful deploy, not at merge, and only for PRs the App opened. Verified live: numu-know #37's merge got "Deployed to prod via Cloud Build `f0d9db22-…` ✅". Not yet exercised live: closing a factory issue (first factory PR in P1-14) and the ❌ path (unit-tested; forcing a prod build failure was not worth it).
 On merge to `main`, `cloud-build-trigger` adapter watches the build for the merge SHA, comments success/failure on the PR and the issue, and closes the issue on success.
 **AC:** a merged factory PR shows "Deployed to prod via Cloud Build `<build-id>` ✅" within 15 min. On a forced failure (test trigger), the adapter comments ❌ with a log link.
 
