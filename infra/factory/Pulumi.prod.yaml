@@ -25,7 +25,8 @@ config:
       parts: [web]
   # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
   globalhost-factory:previewActorIds: ["47403803", "350478808"]
-  # globalhost-factory:accessGuardImage: set after the first access-guard image publish (digest-pinned).
+  # Published by access-guard-image.yml on main (2b285c9); change only by PR.
+  globalhost-factory:accessGuardImage: us-central1-docker.pkg.dev/globalhost-factory/globalhost-images/access-guard@sha256:f7cd43a34fddba959dfe61ab14997545b9ecdcc6b91c0c57dffba6bfa11630e5
   # globalhost-factory:cloudflare: secret object {accountId, zoneId, zone, teamDomain, ownerEmails}; see README.
   globalhost-factory:billingAccount:
     secure: v1:Zc/Y0xN5ABtVwYJl:yat2q/uZGaOUg1i/AmGrUjUdX42iKiHt43oNCDmv0NWJh6Zq
