@@ -21,13 +21,27 @@ config:
   globalhost-factory:previews:
     - product: numu-know
       devProject: numu-know-dev
-      repo: { name: anlinguist/numu-know, id: "338675328", defaultBranch: main }
+      repo: {name: anlinguist/numu-know, id: "338675328", defaultBranch: main}
       parts: [web]
   # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
   globalhost-factory:previewActorIds: ["47403803", "350478808"]
-  # globalhost-factory:accessGuardImage: set after the first access-guard image publish (digest-pinned).
+  # Published by access-guard-image.yml on main (2b285c9); change only by PR.
+  globalhost-factory:accessGuardImage: us-central1-docker.pkg.dev/globalhost-factory/globalhost-images/access-guard@sha256:f7cd43a34fddba959dfe61ab14997545b9ecdcc6b91c0c57dffba6bfa11630e5
   # globalhost-factory:cloudflare: secret object {accountId, zoneId, zone, teamDomain, ownerEmails}; see README.
   globalhost-factory:billingAccount:
     secure: v1:Zc/Y0xN5ABtVwYJl:yat2q/uZGaOUg1i/AmGrUjUdX42iKiHt43oNCDmv0NWJh6Zq
+  cloudflare:apiToken:
+    secure: v1:pCTGdRKyKPaI1SVb:EEpHmJoqSetcNdRhDubzwKfocFEHrs9n38azEPxlqU5Mj5VY/rdcCoqU05kAHP4fIOPe+OBjRqflVdNZImDLSnrY7YbI
+  globalhost-factory:cloudflare:
+    accountId:
+      secure: v1:vElxDw8MVMcwSjUi:p8utHV06iIn3oFHjWy06Zao4HuDt3WG6mbxl3GLPEWWRFgR+nE2qjYOoeyScBx5A
+    zoneId:
+      secure: v1:7pJbcOKJN8HVRPaC:4fkTD4Sgp/Y8b+fVq+lmOQHpGV6j7vnU88yHtx7OKoN+JEWr4ozFyN52wGQ2YgNo
+    zone:
+      secure: v1:Te1RLrGn/hz2rNUH:jOTAdw0+yxx/OIKntj/1Dt8Xg1EQTqeqwUbnOHg=
+    teamDomain:
+      secure: v1:7aKqRvRvVYd+oamr:5Ea/Kg5WPAADbsuF+Kw2CQVpj7AR4Nuh3uV5WqTDxdQyB4VkjF3eosY5YpWL7uE57uEEpK8=
+    ownerEmails:
+      - secure: v1:okgXoKawcm7Zye0r:InMb428O4NfU1a2vau1nult5vH38MPvYeccxHdz5/+aLs7rg6w==
 secretsprovider: gcpkms://projects/globalhost-factory/locations/global/keyRings/pulumi/cryptoKeys/state
 encryptedkey: CiQAJkobxthngidnKOwAS5IqoIxB1TJFnROdFK4DuoJtI+u63ewSSQBZ/gBb9uiz7NSW9JMdS8Ribo2OnuldxvM3svXEwBP5MISxWmWcwB73+snpTQW7+fL8J9dtzyVbB2JSyKLXoP75NzPGcYdxBrc=
