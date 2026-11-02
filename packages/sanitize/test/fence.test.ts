@@ -137,7 +137,7 @@ describe("UNTRUSTED_PREAMBLE", () => {
 
 describe("fenceUntrusted: fence-tag neutralizing is linear time", () => {
   it("handles a bracket followed by a long run of whitespace quickly (was quadratic)", () => {
-    // The old `\s*[\\/]*\s*` separator took ~0.9s on this; the single class is linear.
+    // The old `\s*[\\/]*\s*` separator was quadratic here (seconds to minutes); the single class is linear.
     const evil = `<${" ".repeat(200_000)}x`;
     const start = performance.now();
     neutralizeFenceTags(evil);
