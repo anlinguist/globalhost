@@ -112,7 +112,7 @@ export function consoleUrl(raw: string | undefined): string | undefined {
 export function buildLink(handle: ReleaseHandle, buildId: string | undefined): string | undefined {
   const { project, region } = handle.data as { project?: unknown; region?: unknown };
   if (!buildId || !BUILD_ID.test(buildId) || typeof project !== "string" || typeof region !== "string") return undefined;
-  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) || !/^(global|[a-z]+-[a-z]+[0-9])$/.test(region)) return undefined;
+  if (!GCP_PROJECT_PATTERN.test(project) || !(region === "global" || REGION_PATTERN.test(region))) return undefined;
   const path = region === "global" ? `cloud-build/builds/${buildId}` : `cloud-build/builds;region=${region}/${buildId}`;
   return consoleUrl(`${CONSOLE_PREFIX}${path}?project=${project}`);
 }
