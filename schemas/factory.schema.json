@@ -218,6 +218,18 @@
           "type": "number",
           "minimum": 0.01,
           "maximum": 200
+        },
+        "reviewPerPrUsd": {
+          "default": 8,
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 50
+        },
+        "reviewPerRunUsd": {
+          "default": 2,
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 50
         }
       },
       "additionalProperties": false

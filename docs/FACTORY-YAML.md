@@ -150,8 +150,12 @@ Each target is `{ adapter, config }`:
 | `perRunUsd` | 4 | 0.01–50, at most 2 decimals |
 | `perRunMinutes` | 45 | integer 5–180 |
 | `dailyUsd` | 20 | 0.01–200, at most 2 decimals |
+| `reviewPerPrUsd` | 8 | 0.01–50, at most 2 decimals |
+| `reviewPerRunUsd` | 2 | 0.01–50, at most 2 decimals |
 
-`perRunUsd` must not exceed `dailyUsd`. The ceilings exist to catch typos (`400` for `4.00`). At run time, the factory-wide caps in factory config also apply, and the lower limit wins.
+`reviewPerPrUsd` is the review budget for one PR, summed over all its review runs (ADR-0015 §13). A review starts only if the PR's review spend so far plus `reviewPerRunUsd` fits under it; otherwise the PR escalates. A review run is capped by `reviewPerRunUsd`, not `perRunUsd`, and doesn't take a builder slot.
+
+`perRunUsd` must not exceed `dailyUsd`, and `reviewPerRunUsd` must not exceed `reviewPerPrUsd`. The ceilings exist to catch typos (`400` for `4.00`). At run time, the factory-wide caps in factory config also apply, and the lower limit wins.
 
 ### 3.8 `guardrails`
 
@@ -278,7 +282,7 @@ Codes are stable, because `--json` consumers depend on them:
 | `env_prod_missing` | hosted preview without a `prod` environment (needed for `preview_config_names_prod`) |
 | `automerge_requires_l3` | `autoMerge` non-empty below L3 |
 | `guardrail_conflict` | same pattern in `loadBearing` and `immutable` |
-| `limits_inconsistent` | `perRunUsd` > `dailyUsd` |
+| `limits_inconsistent` | `perRunUsd` > `dailyUsd`, or `reviewPerRunUsd` > `reviewPerPrUsd` |
 | `owner_duplicate` | repeated owner `id` or `login` |
 
 ## 6. JSON Schema

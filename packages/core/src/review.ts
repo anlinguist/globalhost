@@ -246,13 +246,11 @@ export function overallVerdict(output: ReviewOutput | null, ctx: OverallVerdictC
   return { overall, verdicts, escalations };
 }
 
-const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+/** A full SHA-1 or SHA-256 object name, lowercase hex. */
+export const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
-/**
- * The review record the harness archives at `gs://globalhost-runs/<repo>/reviews/pr-<n>/<sha>/review.json`.
- * Every field is stamped by trusted code; the merge policy reads verdicts only from here (ADR-0015 §3).
- */
-export const ReviewRecordSchema = z.strictObject({
+/** The record's fields without the cross-field rules, so the shadow index (review-index.ts) can reuse them. */
+export const ReviewRecordFields = z.strictObject({
   version: z.literal(1),
   /** The head the harness checked out (`git rev-parse HEAD`), not the reviewer's claim. */
   sha: z.string().regex(GIT_SHA),
@@ -284,8 +282,12 @@ export const ReviewRecordSchema = z.strictObject({
   recordedAt: z.iso.datetime(),
   /** The verifier's result. Always null until the verifier lands (next slice). */
   verification: z.null(),
-}).superRefine((r, ctx) => {
-  // Mirror overallVerdict's invariants so a record that contradicts itself is rejected on read.
+});
+
+type VerdictInvariantFields = Pick<z.infer<typeof ReviewRecordFields>, "status" | "verdicts" | "overall" | "escalations">;
+
+/** overallVerdict's invariants, so a record (or shadow index entry) that contradicts itself is rejected on read. */
+export function checkVerdictInvariants(r: VerdictInvariantFields, ctx: z.RefinementCtx): void {
   if (new Set(r.escalations).size !== r.escalations.length) {
     ctx.addIssue({ code: "custom", path: ["escalations"], message: "escalations must be unique" });
   }
@@ -295,5 +297,11 @@ export const ReviewRecordSchema = z.strictObject({
   if (r.status !== "completed" && (r.overall !== "escalate" || VERDICT_AREAS.some((a) => r.verdicts[a] !== "escalate"))) {
     ctx.addIssue({ code: "custom", path: ["status"], message: "a review that didn't complete escalates every area" });
   }
-});
+}
+
+/**
+ * The review record the harness archives at `gs://globalhost-runs/<repo>/reviews/pr-<n>/<sha>/review.json`.
+ * Every field is stamped by trusted code; the merge policy reads verdicts only from here (ADR-0015 §3).
+ */
+export const ReviewRecordSchema = ReviewRecordFields.superRefine(checkVerdictInvariants);
 export type ReviewRecord = z.infer<typeof ReviewRecordSchema>;

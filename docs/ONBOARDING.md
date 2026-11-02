@@ -109,6 +109,8 @@ limits:
   perRunUsd: 4
   perRunMinutes: 45
   dailyUsd: 20                    # per repo; global cap lives in factory config
+  reviewPerPrUsd: 8               # review spend per PR, all its review runs; going over escalates
+  reviewPerRunUsd: 2
 
 guardrails:
   loadBearing: ["app/api/**", "proxy.ts", "lib/firebase*"]   # always needs:owner-approval

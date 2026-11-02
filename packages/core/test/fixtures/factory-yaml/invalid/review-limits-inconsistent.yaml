@@ -1,0 +1,11 @@
+# reviewPerRunUsd above reviewPerPrUsd: no review could ever start.
+# expect: limits.reviewPerRunUsd limits_inconsistent
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+limits: { reviewPerPrUsd: 3, reviewPerRunUsd: 3.01 }

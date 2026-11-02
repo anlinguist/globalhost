@@ -44,6 +44,14 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 - `factory/issue-<n>` already exists, which is the branch claim: steer the existing PR instead;
 - all `maxConcurrentBuilders` slots are busy.
 
+## Review control state (P2-01, not wired to a workflow yet)
+
+`ControlPlane` also holds the reviewer's state in `gs://globalhost-control/reviews/<owner>/<name>/` (repo lowercased; repo, PR number and SHA are validated before they go into an object name):
+
+- **`pr-<n>/<sha>.claim.json`:** `reviewClaim` creates it (create-only), so one review runs per head SHA. A claim that never completed and is older than the caller's staleness window (for example `perRunMinutes` + 30) is taken over by compare-and-swap. `completeReviewClaim` points it at the archived review record. A corrupt claim is never taken over.
+- **`pr-<n>.json`:** the PR's review ledger and shadow index (`ReviewLedgerSchema` in core): total review spend plus one `ShadowEntry` per run. `recordReviewRun` adds the run's cost and appends its entry by compare-and-swap, once per runId. `prReviewSpend` reads the total, and a corrupt ledger counts as over budget.
+- **Budget gate:** `canStartReview({ spent, perRun, perPr })` from core is true only if `spent + limits.reviewPerRunUsd ≤ limits.reviewPerPrUsd`.
+
 ## Product-repo setup
 
 `globalhost install` will automate this (P1-09). Until then, set it up by hand, once per repo:

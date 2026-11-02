@@ -98,7 +98,9 @@ export {
   parseReviewOutput,
   REVIEW_STATUSES,
   ReviewOutputSchema,
+  ReviewRecordFields,
   ReviewRecordSchema,
+  checkVerdictInvariants,
   SEVERITIES,
   VERDICT_AREAS,
   VerdictSchema,
@@ -121,6 +123,18 @@ export {
   type VerdictArea,
   type Verdicts,
 } from "./review.js";
+export {
+  addUsd,
+  canStartReview,
+  MAX_LEDGER_RUNS,
+  ReviewClaimSchema,
+  ReviewLedgerSchema,
+  ShadowEntrySchema,
+  shadowEntryFromRecord,
+  type ReviewClaim,
+  type ReviewLedger,
+  type ShadowEntry,
+} from "./review-index.js";
 export {
   MAX_SCAN_CHARS,
   MAX_SCAN_HITS,
