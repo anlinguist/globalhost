@@ -21,7 +21,7 @@ config:
   globalhost-factory:previews:
     - product: numu-know
       devProject: numu-know-dev
-      repo: { name: anlinguist/numu-know, id: "338675328" }
+      repo: { name: anlinguist/numu-know, id: "338675328", defaultBranch: main }
       parts: [web]
   # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
   globalhost-factory:previewActorIds: ["47403803", "350478808"]

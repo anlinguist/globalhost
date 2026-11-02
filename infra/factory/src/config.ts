@@ -22,7 +22,7 @@ export const PreviewProductSchema = z
     product: z.string().regex(/^[a-z][a-z0-9-]{0,18}[a-z0-9]$/),
     /** Never the prod project: previews only ever touch dev data (ADR-0007). */
     devProject: projectId.refine((p) => p.endsWith("-dev"), "a preview project id must end in -dev"),
-    repo: DispatchRepoSchema.pick({ name: true, id: true }).strict(),
+    repo: DispatchRepoSchema,
     /** Hosted parts (factory.yaml part names, no hyphens); one `<product>-<part>-preview` service each. */
     parts: z.array(z.string().regex(/^[a-z][a-z0-9]{0,19}$/)).min(1),
   })
@@ -80,6 +80,12 @@ export function parseFactoryConfig(input: unknown): FactoryConfig {
   if (new Set(ids).size !== ids.length) throw new Error("dispatchRepos: duplicate repository id");
   const products = config.previews.map((p) => p.product);
   if (new Set(products).size !== products.length) throw new Error("previews: duplicate product");
+  for (const p of config.previews) {
+    for (const part of p.parts) {
+      // Cloud Run's limit and the DNS label `pr-<n>---<service>-<project number>` must fit in 63 characters.
+      if (`${p.product}-${part}-preview`.length > 37) throw new Error(`previews: ${p.product}-${part}-preview is longer than 37 characters`);
+    }
+  }
   if (config.previews.length > 0 && config.previewActorIds.length === 0) {
     throw new Error("previews need previewActorIds (the owner and the factory bot)");
   }

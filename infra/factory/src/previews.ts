@@ -15,13 +15,22 @@ import type { CloudflareConfig, FactoryConfig, PreviewProduct } from "./config.j
 export const IMAGES_REPO = "globalhost-images";
 export const IMAGES_PROVIDER_ID = "globalhost-images";
 export const IMAGE_WORKFLOW = ".github/workflows/access-guard-image.yml";
+/** The product repo's deploy/teardown workflow. It runs from the default branch (workflow_run, pull_request_target). */
+export const PREVIEW_WORKFLOW = ".github/workflows/globalhost-preview.yml";
+/** GitHub environments that pick the identity: deploying, and screenshotting (which runs a browser on PR code). */
+export const DEPLOY_ENVIRONMENT = "preview-deploy";
+export const SCREENSHOT_ENVIRONMENT = "preview-screenshots";
 export const ROUTER_SCRIPT = "globalhost-preview-router";
 /** The port Cloud Run sends traffic to (the guard) and the one the app listens on behind it. */
 export const GUARD_PORT = 8080;
 export const APP_PORT = 3000;
 export const GUARD_HEALTH_PATH = "/__guard/healthz";
-/** Runs as the app container until the first preview deploy replaces it (it listens on $PORT). */
-export const PLACEHOLDER_APP_IMAGE = "us-docker.pkg.dev/cloudrun/container/hello";
+/**
+ * Runs as the app container until the first preview deploy replaces it. It must listen on APP_PORT by itself: Cloud
+ * Run reserves PORT, and the guard owns 8080. Each deploy resets command and args to the app image's own.
+ */
+export const PLACEHOLDER_APP_IMAGE = "mirror.gcr.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec";
+export const PLACEHOLDER_APP_ARGS = ["httpd", "-f", "-p", String(APP_PORT), "-h", "/tmp"];
 
 export const PREVIEW_DEV_APIS = [
   "artifactregistry.googleapis.com",
@@ -59,16 +68,21 @@ export function imagesProviderCondition(config: FactoryConfig, factoryRepoName: 
 }
 
 /**
- * A product's preview workflow: pull_request events in that repo, triggered by the owner or the factory bot
- * only. A PR from anyone else gets no token, so a changed workflow file in their PR can't deploy anything. The
- * bot can't edit workflows (the App has no `workflows` permission), and the owner reviews workflow changes.
+ * A product's preview identities: only the default branch's copy of the preview workflow (pinned by
+ * `job_workflow_ref`), so no PR can change what runs with them. It runs on `workflow_run` after the credential-free
+ * PR build, where the actor must be the owner or the factory bot, or on `pull_request_target` for teardown (it only
+ * removes things, so anyone closing a PR may trigger it). The job's environment picks the identity.
  */
 export function previewProviderCondition(config: FactoryConfig, p: PreviewProduct): string {
+  const ref = `refs/heads/${p.repo.defaultBranch}`;
   return [
     `assertion.repository_owner_id == '${config.githubOwnerId}'`,
     `assertion.repository_id == '${p.repo.id}'`,
-    `assertion.event_name == 'pull_request'`,
-    `assertion.actor_id in ${celList(config.previewActorIds)}`,
+    `assertion.ref == '${ref}'`,
+    `assertion.job_workflow_ref == '${p.repo.name}/${PREVIEW_WORKFLOW}@${ref}'`,
+    `assertion.runner_environment == 'github-hosted'`,
+    `assertion.environment in ['${DEPLOY_ENVIRONMENT}', '${SCREENSHOT_ENVIRONMENT}']`,
+    `(assertion.event_name == 'pull_request_target' || (assertion.event_name == 'workflow_run' && assertion.actor_id in ${celList(config.previewActorIds)}))`,
   ].join(" && ");
 }
 
@@ -95,11 +109,12 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       location: region,
       repositoryId: IMAGES_REPO,
       format: "DOCKER",
-      description: "Factory-built images (access-guard). Pulled by product dev projects' Cloud Run. Keeps the 5 newest.",
+      description: "Factory-built images (access-guard). Pulled by product dev projects' Cloud Run.",
       cleanupPolicyDryRun: false,
+      // Tagged images are kept: the pinned accessGuardImage must never be deleted from under the services.
       cleanupPolicies: [
-        { id: "keep-newest-5", action: "KEEP", mostRecentVersions: { keepCount: 5 } },
-        { id: "delete-older-than-30d", action: "DELETE", condition: { tagState: "ANY", olderThan: "2592000s" } },
+        { id: "keep-newest-10", action: "KEEP", mostRecentVersions: { keepCount: 10 } },
+        { id: "untagged-30d", action: "DELETE", condition: { tagState: "UNTAGGED", olderThan: "2592000s" } },
       ],
       labels,
     },
@@ -211,8 +226,10 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       decision: "non_identity",
       includes: [{ serviceToken: { tokenId: token.id } }],
     });
-    // One application for every preview host. The future app.globalhost.ai PWA must get its own application
-    // (a different AUD) so a preview's JWT can't be replayed there, and a route that excludes it from the Worker.
+    // One application and one CI token for every preview host. With a second product, a product's screenshot
+    // token would open the other's previews too: give each product its own application and token then. The future
+    // app.globalhost.ai PWA must get its own application (a different AUD) so a preview's JWT can't be replayed
+    // there, and a route that excludes it from the Worker.
     const app = new cloudflare.ZeroTrustAccessApplication("previews", {
       accountId: c.accountId,
       name: "globalhost previews",
@@ -245,11 +262,11 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
         location: region,
         repositoryId: "previews",
         format: "DOCKER",
-        description: "Preview app images. Untagged after 1 day and anything after 14 days is deleted.",
+        description: "Preview app images. Untagged after 1 day and anything after 30 days is deleted.",
         cleanupPolicyDryRun: false,
         cleanupPolicies: [
           { id: "untagged-1d", action: "DELETE", condition: { tagState: "UNTAGGED", olderThan: "86400s" } },
-          { id: "older-than-14d", action: "DELETE", condition: { tagState: "ANY", olderThan: "1209600s" } },
+          { id: "older-than-30d", action: "DELETE", condition: { tagState: "ANY", olderThan: "2592000s" } },
         ],
         labels,
       },
@@ -279,6 +296,19 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       afterDevApis,
     );
     const runtimeMember = pulumi.interpolate`serviceAccount:${runtime.email}`;
+    // A separate identity for the screenshot job: it runs a browser on PR code, so it holds only the Access
+    // token and write access to the screenshot bucket, never deploy rights.
+    const screenshotter = new gcp.serviceaccount.Account(
+      n("preview-screenshots"),
+      {
+        project: dev,
+        accountId: "preview-screenshots",
+        displayName: `${p.repo.name} preview screenshots`,
+        description: "Reads the Access CI token and writes screenshots. Nothing else.",
+      },
+      afterDevApis,
+    );
+    const screenshotterMember = pulumi.interpolate`serviceAccount:${screenshotter.email}`;
 
     const provider = new gcp.iam.WorkloadIdentityPoolProvider(
       n("preview-provider"),
@@ -287,23 +317,29 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
         workloadIdentityPoolId: pool.workloadIdentityPoolId,
         workloadIdentityPoolProviderId: previewProviderId(p),
         displayName: `${p.product} previews`,
-        description: `${p.repo.name} pull_request events by the owner or factory bot -> ${dev} preview-deployer`,
+        description: `${p.repo.name} ${PREVIEW_WORKFLOW} on ${p.repo.defaultBranch} only -> ${dev} preview identities`,
         oidc: { issuerUri: "https://token.actions.githubusercontent.com" },
         attributeMapping: {
           "google.subject": "assertion.sub",
           "attribute.repository_id": "assertion.repository_id",
           "attribute.actor_id": "assertion.actor_id",
-          "attribute.preview": "assertion.repository_id",
+          // Repo and job environment: the deploy job and the screenshot job get different identities.
+          "attribute.preview": "assertion.repository_id + '@' + assertion.environment",
         },
         attributeCondition: previewProviderCondition(config, p),
       },
       afterApis,
     );
-    new gcp.serviceaccount.IAMMember(n("preview-deployer-wif"), {
-      serviceAccountId: deployer.name,
-      role: "roles/iam.workloadIdentityUser",
-      member: pulumi.interpolate`principalSet://iam.googleapis.com/${pool.name}/attribute.preview/${p.repo.id}`,
-    });
+    for (const [sa, env] of [
+      [deployer, DEPLOY_ENVIRONMENT],
+      [screenshotter, SCREENSHOT_ENVIRONMENT],
+    ] as const) {
+      new gcp.serviceaccount.IAMMember(n(`${env}-wif`), {
+        serviceAccountId: sa.name,
+        role: "roles/iam.workloadIdentityUser",
+        member: pulumi.interpolate`principalSet://iam.googleapis.com/${pool.name}/attribute.preview/${p.repo.id}@${env}`,
+      });
+    }
 
     new gcp.artifactregistry.RepositoryIamMember(n("deployer-push"), {
       project: dev,
@@ -317,8 +353,20 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       role: "roles/iam.serviceAccountUser",
       member: deployerMember,
     });
-    // Firebase Auth authorized domains don't take wildcards; the workflow adds and removes each preview host.
-    new gcp.projects.IAMMember(n("deployer-auth-domains"), { project: dev, role: "roles/firebaseauth.admin", member: deployerMember });
+    // Firebase Auth authorized domains don't take wildcards; the workflow adds and removes each preview host. A
+    // custom role, because firebaseauth.admin would also let it read and export every dev user.
+    const authDomainsRole = new gcp.projects.IAMCustomRole(
+      n("auth-domains-role"),
+      {
+        project: dev,
+        roleId: "globalhostPreviewAuthDomains",
+        title: "globalhost preview: authorized domains",
+        description: "Read and update the Identity Platform config (authorized domains) only.",
+        permissions: ["firebaseauth.configs.get", "firebaseauth.configs.update"],
+      },
+      afterDevApis,
+    );
+    new gcp.projects.IAMMember(n("deployer-auth-domains"), { project: dev, role: authDomainsRole.name, member: deployerMember });
     new gcp.projects.IAMMember(n("runtime-firestore"), { project: dev, role: "roles/datastore.user", member: runtimeMember });
 
     // Cloud Run in the dev project pulls the factory's access-guard image.
@@ -349,10 +397,11 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       },
       afterDevApis,
     );
-    new gcp.storage.BucketIAMMember(n("screenshots-public"), { bucket: shots.name, role: "roles/storage.objectViewer", member: "allUsers" });
-    new gcp.storage.BucketIAMMember(n("screenshots-deployer"), { bucket: shots.name, role: "roles/storage.objectCreator", member: deployerMember });
+    // Read objects by URL, but not list the bucket.
+    new gcp.storage.BucketIAMMember(n("screenshots-public"), { bucket: shots.name, role: "roles/storage.legacyObjectReader", member: "allUsers" });
+    new gcp.storage.BucketIAMMember(n("screenshots-writer"), { bucket: shots.name, role: "roles/storage.objectCreator", member: screenshotterMember });
 
-    // The CI service token, readable by the deployer only (screenshots go through Access like the owner does).
+    // The CI service token, readable by the screenshot identity only (screenshots go through Access like the owner).
     if (edge) {
       for (const [id, value] of [
         ["preview-access-client-id", edge.tokenClientId],
@@ -367,7 +416,7 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
         new gcp.secretmanager.SecretIamPolicy(n(`${id}-policy`), {
           project: dev,
           secretId: secret.secretId,
-          policyData: pulumi.jsonStringify({ bindings: [{ role: "roles/secretmanager.secretAccessor", members: [deployerMember] }] }),
+          policyData: pulumi.jsonStringify({ bindings: [{ role: "roles/secretmanager.secretAccessor", members: [screenshotterMember] }] }),
         });
       }
     }
@@ -405,12 +454,13 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
                   ],
                   resources: { limits: { cpu: "1", memory: "256Mi" }, cpuIdle: true },
                   startupProbe: { httpGet: { path: GUARD_HEALTH_PATH, port: GUARD_PORT } },
-                  dependsOns: ["app"],
                 },
                 {
                   name: "app",
                   image: PLACEHOLDER_APP_IMAGE,
-                  envs: [{ name: "PORT", value: String(APP_PORT) }],
+                  args: PLACEHOLDER_APP_ARGS,
+                  // The guard starts first and holds 8080, so PR code can never take the ingress port.
+                  dependsOns: ["guard"],
                   resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: true },
                   startupProbe: { tcpSocket: { port: APP_PORT }, periodSeconds: 2, failureThreshold: 60 },
                 },
@@ -423,6 +473,8 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
             ignoreChanges: [
               "template.containers[1].image",
               "template.containers[1].envs",
+              "template.containers[1].commands",
+              "template.containers[1].args",
               "template.revision",
               "template.labels",
               "template.annotations",
@@ -459,6 +511,7 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
         devProject: dev,
         workloadIdentityProvider: provider.name,
         deployerServiceAccount: deployer.email,
+        screenshotServiceAccount: screenshotter.email,
         runtimeServiceAccount: runtime.email,
         imageRepository: pulumi.interpolate`${region}-docker.pkg.dev/${dev}/${repo.name}`,
         screenshotBucket: shots.name,

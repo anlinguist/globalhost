@@ -24,13 +24,13 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 | Where | Resource | Notes |
 |---|---|---|
 | factory | AR `globalhost-images`, SA `globalhost-image-publisher`, WIF provider `globalhost-images` | `access-guard` image; only `access-guard-image.yml` on main can push (provider pins `job_workflow_ref`) |
-| factory | WIF provider `<product>-preview` per product | that repo's `pull_request` events by `previewActorIds` (owner + factory bot) only |
-| `<product>-dev` | APIs, AR `previews` (untagged 1 day, all 14 days), SAs `preview-deployer` and `preview-runtime` | deployer: push, `run.developer` on its services, act as runtime, `firebaseauth.admin` (authorized domains); runtime: `datastore.user` |
-| `<product>-dev` | bucket `<dev project>-previews` | public read (PR comment screenshots, dev data only), deleted after 30 days |
-| `<product>-dev` | Cloud Run `<product>-<part>-preview` per part | `guard` (ingress, :8080) + `app` (:3000, replaced per PR). `allUsers` invoker: the guard is the gate. Created once `accessGuardImage` and `cloudflare` are set |
-| `<product>-dev` | secrets `preview-access-client-id/secret` | the Access CI service token; readable by the deployer only |
+| factory | WIF provider `<product>-preview` per product | only `globalhost-preview.yml` on the repo's default branch (`job_workflow_ref`), in environment `preview-deploy` or `preview-screenshots`; `workflow_run` needs an actor in `previewActorIds` (owner + factory bot) |
+| `<product>-dev` | APIs, AR `previews` (untagged 1 day, all 30 days), SAs `preview-deployer`, `preview-screenshots`, `preview-runtime`, custom role `globalhostPreviewAuthDomains` | deployer: push, `run.developer` on its services, act as runtime, the custom role (`firebaseauth.configs.get/update`); screenshots: the token secrets and creating screenshot objects; runtime: `datastore.user` |
+| `<product>-dev` | bucket `<dev project>-previews` | public read by URL, not listable (PR comment screenshots, dev data only), deleted after 30 days |
+| `<product>-dev` | Cloud Run `<product>-<part>-preview` per part | `guard` (ingress, :8080, starts first) + `app` (:3000, depends on the guard, replaced per PR). `allUsers` invoker: the guard is the gate. Created once `accessGuardImage` and `cloudflare` are set. Run `pulumi up --refresh` so live PR tags are in state before an update |
+| `<product>-dev` | secrets `preview-access-client-id/secret` | the Access CI service token (1 year); readable by `preview-screenshots` only |
 | Cloudflare | proxied `*` AAAA `100::`, Worker `globalhost-preview-router` + route `*.<zone>/*`, Access app `globalhost previews` (owner policy + CI service-token policy), service token | the Worker's `PREVIEW_SERVICES` map is built from the services above |
-| billing | the factory budget's filter includes each dev project | runaway previews trip the same pause switch |
+| billing | the factory budget's filter includes each dev project | dev spend counts toward the alerts and the `paused` flag (preview workflows don't read the flag yet) |
 
 ### Permissions of `sa:globalhost-gh-dispatch`
 
@@ -87,7 +87,8 @@ In each product repo, create the GitHub environment `globalhost` and restrict it
    ```
 2. `pulumi up` creates the image registry, identities, buckets, edge and Access app (no Cloud Run services yet).
 3. Set repo variables on this repo from `pulumi stack output`: `GCP_IMAGES_WIF_PROVIDER`, `GCP_IMAGES_SA`, `GCP_IMAGES_REPOSITORY`. Run `gh workflow run access-guard-image.yml --ref main`; its summary prints the digest.
-4. Set `accessGuardImage` in `Pulumi.prod.yaml` to that digest by PR, then `pulumi up` again: this creates the preview services and fills the Worker's service map.
+4. Set `accessGuardImage` in `Pulumi.prod.yaml` to that digest by PR, then `pulumi up --refresh` again: this creates the preview services and fills the Worker's service map.
+5. In the product repo, create GitHub environments `preview-deploy` and `preview-screenshots` (deployment branches: the default branch only), and set the repo variable `GLOBALHOST_PREVIEW_WIF_PROVIDER` to the provider name from `pulumi stack output previews`.
 
 ## Checks after apply (P1-04 AC)
 
