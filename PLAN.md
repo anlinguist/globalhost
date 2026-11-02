@@ -137,16 +137,17 @@ Contents as in ONBOARDING Stage 2:
 Existing Cloud Build triggers untouched.
 **AC:** owner reviews and merges. The next push to `main` still deploys via the existing trigger. CI is green on `main`. The ruleset blocks a direct push to `main` from the App (verified).
 
-### P1-10 numu-know dev environment + seed data (in progress)
-**Status (2026-11-01):** project `numu-know-dev` created (Spark: the billing account is at its 5-project quota), Firestore `nam5` with the production rules (now `firestore.rules` in numu-know), seeded by `npm run seed:dev` (numu-know #22); `previewEnv` names the dev project. Left: the owner enables Firebase Auth in the Console (the API needs billing), then test users; billing for P1-11's Cloud Run previews; the refusal check moves to P1-11. Algolia and Klaviyo are off in dev by having no keys.
+### P1-10 numu-know dev environment + seed data ✅ (2026-11-02)
+**Status:** project `numu-know-dev` (billing linked 2026-11-02, inside the factory budget), Firestore `nam5` with the production rules (`firestore.rules` in numu-know), seeded by `npm run seed:dev` (numu-know #22); Auth enabled with Email/Password and Google, test users `admin@`/`reader@numu-know-dev.test`; `previewEnv` names the dev project; the refusal check is `preview_config_names_prod` (globalhost #32) plus the preview workflow's own check. Algolia and Klaviyo are off in dev by having no keys. Follow-up: fixture stories have no audio (owner, first preview).
 New Firebase/GCP project `numu-know-dev`:
 - Firestore, Auth (email/Google test users), seed script (`pnpm seed:dev`) with representative non-user fixture content (stories, dictionary entries);
 - Algolia: separate dev index (or search stubbed in preview);
 - Klaviyo: disabled in preview (env flag).
 - **Swap numu-know's `factory.yaml` `previewEnv` to the dev project's Firebase web config** (done in numu-know #22; it held the production web config until then).
-**AC:** `pnpm seed:dev` is idempotent, and a fresh dev project serves the app with realistic content. No prod data is copied (assert: seed reads only from repo fixtures). numu-know's `previewEnv` names `numu-know-dev`, and P1-11 refuses to enable previews while any `previewEnv` value names the prod project.
+**AC:** `npm run seed:dev` is idempotent, and a fresh dev project serves the app with realistic content. No prod data is copied (assert: seed reads only from repo fixtures). numu-know's `previewEnv` names `numu-know-dev`, and P1-11 refuses to enable previews while any `previewEnv` value names the prod project.
 
-### P1-11 Preview pipeline (web-app)
+### P1-11 Preview pipeline (web-app) ✅ (2026-11-02)
+**Status:** live for numu-know. `access-guard` (#36), router Worker (#33), infra (#37, #38, #39; ADR-0016: no KV, credentials pinned to the default branch's `globalhost-preview.yml`, separate deploy and screenshot identities), numu-know workflows (#25, #27, #28). Verified on numu-know #26: preview URL loads for the owner after Access login; without login it redirects to Access; the tagged `*.run.app` URL returns 403; screenshots of all four routes render in the PR comment; merging removed the tag and the authorized domain within about a minute. As built (differs from the bullets below): no Workers KV, and screenshots go to a public 30-day GCS bucket instead of a `globalhost-artifacts` repo.
 - `globalhost-preview.yml`: build image with dev config, push to AR, deploy `numu-know-web-preview` revision tagged `pr-<n>` (no traffic) in `numu-know-dev` with the `access-guard` sidecar;
 - write the KV route; register the preview host in Firebase Auth authorized domains (dev);
 - Playwright screenshots of `routes` (desktop + mobile) committed to `globalhost-artifacts`;
