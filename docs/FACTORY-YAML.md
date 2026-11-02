@@ -168,6 +168,8 @@ Each target is `{ adapter, config }`:
 
 The validator's normalized output contains the union. A product can add protection but can't remove the baseline. There's no negation syntax, and listing a baseline pattern is allowed but redundant.
 
+Separately from `immutable`, the publisher always refuses a bundle containing a file whose basename is `review.json`, `run.json`, `output.raw.json` or `inputs.json` (any case, any depth, trailing dots or spaces ignored). Those names belong to harness records, which are read only from GCS (ADR-0015 §3).
+
 Listing the same pattern in both `loadBearing` and `immutable` is an error, since the two lists mean contradictory things. The check uses the merged `immutable` list (so a baseline pattern in `loadBearing` is an error too) and ignores case, like guardrail matching. Exact repeats within one list are dropped from the normalized output.
 
 ### 3.9 `autoMerge`
