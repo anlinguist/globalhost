@@ -1,0 +1,30 @@
+# A previewed part whose config names prod's project would point previews at production (PLAN P1-11).
+# Whole IDs only: `sample-prod-dev` and `xsample-prod` are other projects. Parts with previews off aren't checked.
+# expect: parts.app.config.env.AUTH_DOMAIN preview_config_names_prod
+# expect: parts.app.config.env.PROJECT preview_config_names_prod
+# expect: parts.app.config.list[1] preview_config_names_prod
+# expect: parts.app.config["sample-prod"] preview_config_names_prod
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
+  dev: { gcpProject: sample-prod-dev, region: us-central1 }
+parts:
+  app:
+    path: app
+    profile: fake-ext
+    config:
+      env:
+        PROJECT: sample-prod
+        AUTH_DOMAIN: SAMPLE-PROD.firebaseapp.com
+        DEV_PROJECT: sample-prod-dev
+        OTHER: xsample-prod
+      list: [fine, "https://sample-prod.example/x"]
+      sample-prod: true
+  off:
+    path: off
+    profile: fake-ext
+    config: { env: { PROJECT: sample-prod } }
+    preview: { enabled: false }

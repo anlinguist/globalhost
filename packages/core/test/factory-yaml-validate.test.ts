@@ -85,7 +85,7 @@ describe("validateFactoryConfig", () => {
     const parsed = parseFactoryYaml(`version: 1
 product: sample
 owners: [{ login: octo-owner, id: 1001 }]
-environments: { dev: { gcpProject: sample-dev, region: us-central1 } }
+environments: { prod: { gcpProject: sample-prod, region: us-central1 }, dev: { gcpProject: sample-dev, region: us-central1 } }
 parts:
   web: { path: ., profile: fake-web, config: { __proto__: { port: 1 } } }
 `);
@@ -129,7 +129,7 @@ parts:
     const result = validateFactoryConfig(
       base(
         { web: { path: ".", profile: "fake-web", dependsOn: ["web"], preview: { bindings: { API_URL: "${parts.web.preview.url}" } } } },
-        { environments: { dev: { gcpProject: "sample-dev", region: "us-central1" } } },
+        { environments: { prod: { gcpProject: "sample-prod", region: "us-central1" }, dev: { gcpProject: "sample-dev", region: "us-central1" } } },
       ),
       fakeRegistry,
     );
