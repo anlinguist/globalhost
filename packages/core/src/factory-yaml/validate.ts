@@ -239,6 +239,7 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
   const partNames = Object.keys(parts);
   const hasPart = (n: string) => Object.hasOwn(parts, n);
   const hostedPreviews: string[] = [];
+  const previewConfigs: Array<[string, unknown]> = [];
   const normalizedParts: Record<string, PartConfig> = {};
 
   for (const name of partNames) {
@@ -305,6 +306,7 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
     }
 
     if (profile !== undefined && p.preview.enabled && profile.preview.kinds.includes("url")) hostedPreviews.push(name);
+    if (p.preview.enabled) previewConfigs.push([name, getAt(raw, ["parts", name, "config"])]);
 
     normalizedParts[name] = {
       path: p.path,
@@ -342,6 +344,16 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
     for (const [envName, env] of Object.entries(envs)) {
       if (envName !== "prod" && env.gcpProject === prod.gcpProject) {
         push(["environments", envName, "gcpProject"], "env_shares_prod_project", `environment ${quote(envName)} uses prod's GCP project ${quote(env.gcpProject)}`);
+      }
+    }
+    // Previews build and run with their part's config; one that names prod (e.g. a Firebase project ID or
+    // auth domain in previewEnv) would point a preview at production. Refuse until previews are disabled.
+    const namesProd = mentionsProject(prod.gcpProject);
+    for (const [name, rawConfig] of previewConfigs) {
+      for (const path of stringPaths(rawConfig, ["parts", name, "config"])) {
+        if (namesProd(path.value)) {
+          push(path.at, "preview_config_names_prod", `part ${quote(name)} has previews enabled but its config names prod's GCP project ${quote(prod.gcpProject)}`);
+        }
       }
     }
   }
@@ -447,4 +459,21 @@ function findCycles(parts: FactoryYamlShape["parts"]): string[][] {
     for (let v: string | undefined = last; v !== undefined && v !== start; v = prev.get(v)) cycle.unshift(v);
     return [start, ...cycle];
   });
+}
+
+/** True when `value` contains `project` as a whole ID: not inside a longer ID such as `<project>-dev`. */
+function mentionsProject(project: string): (value: string) => boolean {
+  const escaped = project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`, "i");
+  return (value) => re.test(value);
+}
+
+/** Every string in a parsed YAML value, with its path. Keys count too: a config key can carry a value. */
+function stringPaths(value: unknown, at: PathSegment[]): Array<{ at: PathSegment[]; value: string }> {
+  if (typeof value === "string") return [{ at, value }];
+  if (Array.isArray(value)) return value.flatMap((v, i) => stringPaths(v, [...at, i]));
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([k, v]) => [{ at: [...at, k], value: k }, ...stringPaths(v, [...at, k])]);
+  }
+  return [];
 }

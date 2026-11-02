@@ -271,6 +271,7 @@ Codes are stable, because `--json` consumers depend on them:
 | `binding_preview_disabled` | provider's or consumer's preview is disabled |
 | `env_dev_missing` | hosted preview without a `dev` environment |
 | `env_shares_prod_project` | a non-prod environment uses prod's `gcpProject` |
+| `preview_config_names_prod` | a part with previews enabled has a config string (e.g. a `previewEnv` value) naming prod's `gcpProject` as a whole ID |
 | `automerge_requires_l3` | `autoMerge` non-empty below L3 |
 | `guardrail_conflict` | same pattern in `loadBearing` and `immutable` |
 | `limits_inconsistent` | `perRunUsd` > `dailyUsd` |
