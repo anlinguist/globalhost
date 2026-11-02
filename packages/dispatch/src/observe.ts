@@ -14,7 +14,7 @@ import {
   STATUS_MAP,
   createCloudBuildTriggerAdapter,
 } from "@globalhost/adapter-cloud-build-trigger";
-import type { DeployAdapter, FactoryConfig, ReleaseHandle, ReleaseStatus, Registry } from "@globalhost/core";
+import { GCP_PROJECT_PATTERN, REGION_PATTERN, type DeployAdapter, type FactoryConfig, type ReleaseHandle, type ReleaseStatus, type Registry } from "@globalhost/core";
 import { z } from "zod";
 import { loadConfig, type Env } from "./dispatch.js";
 import { gcloudAccessToken, type AccessToken } from "./gcp.js";

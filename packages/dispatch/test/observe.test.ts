@@ -510,6 +510,9 @@ describe("observe step", () => {
     expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "us-central1" } }, "b-1")).toBe(
       "https://console.cloud.google.com/cloud-build/builds;region=us-central1/b-1?project=demo-prod",
     );
+    expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "europe-west10" } }, "b-1")).toBe(
+      "https://console.cloud.google.com/cloud-build/builds;region=europe-west10/b-1?project=demo-prod",
+    );
     expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "x)](evil", region: "global" } }, "b-1")).toBeUndefined();
     expect(buildLink({ adapter: "cloud-build-trigger", sha: SHA, data: { project: "demo-prod", region: "global" } }, "b`1")).toBeUndefined();
 
