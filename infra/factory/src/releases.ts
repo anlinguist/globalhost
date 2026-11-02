@@ -24,6 +24,9 @@ export function releaseProviderCondition(config: FactoryConfig, r: ReleaseObserv
     `assertion.event_name == 'push'`,
     `assertion.ref == '${ref}'`,
     `assertion.job_workflow_ref == '${r.repo.name}/${RELEASE_WORKFLOW}@${ref}'`,
+    // The top-level workflow too: if the release file ever became callable (workflow_call), job_workflow_ref would
+    // name it even when another workflow called it.
+    `assertion.workflow_ref == '${r.repo.name}/${RELEASE_WORKFLOW}@${ref}'`,
     `assertion.runner_environment == 'github-hosted'`,
   ].join(" && ");
 }

@@ -94,6 +94,12 @@ export function parseFactoryConfig(input: unknown): FactoryConfig {
   if (new Set(ids).size !== ids.length) throw new Error("dispatchRepos: duplicate repository id");
   const observed = config.releaseObservers.map((r) => r.product);
   if (new Set(observed).size !== observed.length) throw new Error("releaseObservers: duplicate product");
+  // One provider and one role per repo and prod project: a shared repo id would let each product's token reach both
+  // identities, and the role id is fixed per project.
+  const observedRepos = config.releaseObservers.map((r) => r.repo.id);
+  if (new Set(observedRepos).size !== observedRepos.length) throw new Error("releaseObservers: duplicate repo id");
+  const prodProjects = config.releaseObservers.map((r) => r.prodProject);
+  if (new Set(prodProjects).size !== prodProjects.length) throw new Error("releaseObservers: duplicate prodProject");
   const products = config.previews.map((p) => p.product);
   if (new Set(products).size !== products.length) throw new Error("previews: duplicate product");
   for (const p of config.previews) {

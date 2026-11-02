@@ -480,6 +480,7 @@ describe("release observer (P1-12, ADR-0017)", () => {
       "assertion.repository_owner_id == '47403803' && assertion.repository_id == '338675328' && " +
         "assertion.event_name == 'push' && assertion.ref == 'refs/heads/main' && " +
         "assertion.job_workflow_ref == 'anlinguist/numu-know/.github/workflows/globalhost-release.yml@refs/heads/main' && " +
+        "assertion.workflow_ref == 'anlinguist/numu-know/.github/workflows/globalhost-release.yml@refs/heads/main' && " +
         "assertion.runner_environment == 'github-hosted'",
     );
     expect(releaseProviderCondition(config, config.releaseObservers[0]!)).toBe(provider.inputs.attributeCondition);
@@ -505,6 +506,8 @@ describe("release observer (P1-12, ADR-0017)", () => {
     ["a -dev project as prod", { releaseObservers: [{ product: "x", prodProject: "x-proj-dev", repo: { name: "a/b", id: "1", defaultBranch: "main" } }] }],
     ["a quote in the branch (CEL injection)", { releaseObservers: [{ product: "x", prodProject: "x-proj", repo: { name: "a/b", id: "1", defaultBranch: "main' || true || '" } }] }],
     ["duplicate products", { releaseObservers: [config.releaseObservers[0], config.releaseObservers[0]] }],
+    ["a shared repo id", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", prodProject: "other-proj" }] }],
+    ["a shared prod project", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", repo: { name: "a/b", id: "9", defaultBranch: "main" } }] }],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });
