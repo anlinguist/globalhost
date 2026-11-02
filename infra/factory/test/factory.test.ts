@@ -10,6 +10,7 @@ import {
   dispatchProviderCondition,
 } from "../src/factory.js";
 import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
+import { releaseProviderCondition } from "../src/releases.js";
 
 interface Registered {
   type: string;
@@ -20,6 +21,7 @@ interface Registered {
 const PROJECT = "globalhost-factory";
 const PROJECT_NUMBER = "123456789012";
 const DEV_PROJECT = "numu-know-dev";
+const PROD_PROJECT = "numu-know";
 const DEV_PROJECT_NUMBER = "414694776649";
 const GUARD_IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/globalhost-images/access-guard@sha256:${"b".repeat(64)}`;
 const resources: Registered[] = [];
@@ -94,6 +96,7 @@ const config = parseFactoryConfig({
   previews: [{ product: "numu-know", devProject: DEV_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }, parts: ["web"] }],
   previewActorIds: ["47403803", "350478808"],
   accessGuardImage: GUARD_IMAGE,
+  releaseObservers: [{ product: "numu-know", prodProject: PROD_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" } }],
 });
 
 const GH_DISPATCH = `serviceAccount:globalhost-gh-dispatch@${PROJECT}.iam.gserviceaccount.com`;
@@ -369,9 +372,13 @@ describe("previews (P1-11)", () => {
     );
   });
 
-  it("touches no prod project: every preview resource is in the factory or the dev project", () => {
+  it("touches no prod project except the release observer's read-only role and its one grant", () => {
     const projects = new Set(resources.map((r) => r.inputs.project).filter((p) => p !== undefined));
-    expect([...projects].sort()).toEqual([DEV_PROJECT, PROJECT].sort());
+    expect([...projects].sort()).toEqual([DEV_PROJECT, PROD_PROJECT, PROJECT].sort());
+    expect(resources.filter((r) => r.inputs.project === PROD_PROJECT).map((r) => `${r.type} ${r.name}`).sort()).toEqual([
+      "gcp:projects/iAMCustomRole:IAMCustomRole numu-know-release-observer-role",
+      "gcp:projects/iAMMember:IAMMember numu-know-release-observer-grant",
+    ]);
   });
 
   it("binds each identity to its own job environment", () => {
@@ -461,6 +468,46 @@ describe("previews (P1-11)", () => {
     ["duplicate products", { previews: [config.previews[0], config.previews[0]] }],
     ["a service name too long for a tag URL", { previews: [{ ...config.previews[0], product: "a-very-long-product-name", parts: ["andlongpartname"] }] }],
     ["a quote in the default branch (CEL injection)", { previews: [{ ...config.previews[0], repo: { name: "a/b", id: "1", defaultBranch: "main' || true || '" } }] }],
+  ])("rejects config with %s", (_name, patch) => {
+    expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+  });
+});
+
+describe("release observer (P1-12, ADR-0017)", () => {
+  it("pins the provider to the default branch's release workflow on push", () => {
+    const provider = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "numu-know-release-provider");
+    expect(provider.inputs.attributeCondition).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.repository_id == '338675328' && " +
+        "assertion.event_name == 'push' && assertion.ref == 'refs/heads/main' && " +
+        "assertion.job_workflow_ref == 'anlinguist/numu-know/.github/workflows/globalhost-release.yml@refs/heads/main' && " +
+        "assertion.workflow_ref == 'anlinguist/numu-know/.github/workflows/globalhost-release.yml@refs/heads/main' && " +
+        "assertion.runner_environment == 'github-hosted'",
+    );
+    expect(releaseProviderCondition(config, config.releaseObservers[0]!)).toBe(provider.inputs.attributeCondition);
+  });
+
+  it("can only read builds in the prod project", () => {
+    const role = one("gcp:projects/iAMCustomRole:IAMCustomRole", "numu-know-release-observer-role");
+    expect(role.inputs).toMatchObject({ project: PROD_PROJECT, permissions: ["cloudbuild.builds.get", "cloudbuild.builds.list"] });
+    const grant = one("gcp:projects/iAMMember:IAMMember", "numu-know-release-observer-grant");
+    expect(grant.inputs).toMatchObject({
+      project: PROD_PROJECT,
+      role: "projects/numu-know/roles/globalhostReleaseObserver",
+      member: `serviceAccount:numu-know-release-observer@${PROJECT}.iam.gserviceaccount.com`,
+    });
+    // Its only other binding is the WIF one.
+    const member = `serviceAccount:numu-know-release-observer@${PROJECT}.iam.gserviceaccount.com`;
+    expect(resources.filter((r) => r.inputs.member === member).map((r) => r.name)).toEqual(["numu-know-release-observer-grant"]);
+    const wif = one("gcp:serviceaccount/iAMMember:IAMMember", "numu-know-release-observer-wif");
+    expect(String(wif.inputs.member)).toMatch(/attribute\.release\/338675328$/);
+  });
+
+  it.each([
+    ["a -dev project as prod", { releaseObservers: [{ product: "x", prodProject: "x-proj-dev", repo: { name: "a/b", id: "1", defaultBranch: "main" } }] }],
+    ["a quote in the branch (CEL injection)", { releaseObservers: [{ product: "x", prodProject: "x-proj", repo: { name: "a/b", id: "1", defaultBranch: "main' || true || '" } }] }],
+    ["duplicate products", { releaseObservers: [config.releaseObservers[0], config.releaseObservers[0]] }],
+    ["a shared repo id", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", prodProject: "other-proj" }] }],
+    ["a shared prod project", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", repo: { name: "a/b", id: "9", defaultBranch: "main" } }] }],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });

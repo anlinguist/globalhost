@@ -32,6 +32,17 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 | Cloudflare | proxied `*` AAAA `100::`, Worker `globalhost-preview-router` + route `*.<zone>/*`, Access app `globalhost previews` (owner policy + CI service-token policy), service token | the Worker's `PREVIEW_SERVICES` map is built from the services above |
 | billing | the factory budget's filter includes each dev project | dev spend counts toward the alerts and the `paused` flag (preview workflows don't read the flag yet) |
 
+### Release observers (PLAN P1-12, ADR-0017, `src/releases.ts`)
+
+| Where | Resource | Notes |
+|---|---|---|
+| factory | WIF provider `<product>-release`, SA `<product>-release-observer` | only `globalhost-release.yml` on the product repo's default branch, on `push` |
+| prod project | custom role `globalhostReleaseObserver` (`cloudbuild.builds.get`, `cloudbuild.builds.list`) and its one grant to the observer | the only factory resources in any prod project; read-only |
+
+Custom roles are soft-deleted: a destroyed `globalhostReleaseObserver` can be undeleted for 7 days, and its ID can't be reused for about 37 days, so a destroy and re-apply in that window fails. Before the first apply, check the product's Cloud Build trigger holds no plaintext secrets in substitutions or step env/args (ADR-0017).
+
+After `pulumi up`, set the product repo's variables `GLOBALHOST_RELEASE_WIF_PROVIDER` and `GLOBALHOST_RELEASE_SA` from `pulumi stack output releaseObservers`.
+
 ### Permissions of `sa:globalhost-gh-dispatch`
 
 | Scope | Role | Why |
