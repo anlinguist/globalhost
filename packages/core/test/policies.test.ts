@@ -59,6 +59,40 @@ describe("evaluatePathPolicy", () => {
     },
   );
 
+  it.each([
+    ["review.json", "**/review.json"],
+    ["REVIEW.JSON", "**/review.json"],
+    ["Review.Json", "**/review.json"],
+    ["run.json", "**/run.json"],
+    ["RUN.json", "**/run.json"],
+    ["a/b/c/review.json", "**/review.json"],
+    ["deep/nested/dir/Run.JSON", "**/run.json"],
+    ["review.json.", "**/review.json"],
+    ["dir/run.json ", "**/run.json"],
+    ["review.json. .", "**/review.json"],
+    ["a/output.raw.json", "**/output.raw.json"],
+    ["INPUTS.JSON", "**/inputs.json"],
+    ["run.j\u017fon", "**/run.json"],
+  ])("rejects the harness record name %j whatever factory.yaml says", (path, pattern) => {
+    const r = evaluatePathPolicy([path], { immutable: [], loadBearing: [] });
+    expect(r.rejected).toEqual([{ path, pattern }]);
+    expect(pathPolicyAllows(r)).toBe(false);
+  });
+
+  it("rejects a record name even where loadBearing would only flag it", () => {
+    const r = evaluatePathPolicy(["app/api/review.json"], policy);
+    expect(r).toEqual({ rejected: [{ path: "app/api/review.json", pattern: "**/review.json" }], needsApproval: [], malformed: [] });
+  });
+
+  // Unicode lookalikes (a Cyrillic i, fullwidth) are out of scope: records are only ever read from GCS, never
+  // from the checkout, so a lookalike name can't be misread as one. Pinned here so a change is deliberate.
+  it.each(["review.json.ts", "reviews.json", "review-json", "preview.json", "review.json/x.ts", "rev\u0456ew.json", "\uff52un.json"])(
+    "doesn't treat %j as a record name",
+    (path) => {
+      expect(evaluatePathPolicy([path], { immutable: [], loadBearing: [] }).rejected).toEqual([]);
+    },
+  );
+
   it("allows ordinary changes", () => {
     expect(pathPolicyAllows(evaluatePathPolicy(["src/a.ts", "README.md", ".githubx/a"], policy))).toBe(true);
   });
