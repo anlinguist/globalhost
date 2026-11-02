@@ -388,6 +388,7 @@ describe("previews (P1-11)", () => {
         .sort();
     expect(roles(DEPLOYER)).toEqual(
       [
+        "artifactregistry/repositoryIamMember roles/artifactregistry.reader",
         "artifactregistry/repositoryIamMember roles/artifactregistry.writer",
         "cloudrunv2/serviceIamMember roles/run.developer",
         "projects/iAMMember projects/numu-know-dev/roles/globalhostPreviewAuthDomains",
