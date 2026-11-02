@@ -23,6 +23,8 @@ packages/profiles/*  web-app, chrome-extension, service
 packages/adapters/*  deploy adapters
 packages/sanitize    untrusted-input sanitizer (vendored, MIT notice kept)
 packages/action      composite action used by installed workflows
+packages/access-guard  sidecar that requires a Cloudflare Access JWT in front of preview apps
+packages/preview-router  Cloudflare Worker routing preview hosts to Cloud Run tags
 skills/              Claude skills mounted into runs
 templates/           files rendered into product repos
 infra/               Pulumi: factory infra + reusable components

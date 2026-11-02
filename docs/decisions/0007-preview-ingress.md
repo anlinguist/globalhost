@@ -1,6 +1,6 @@
 # ADR-0007: Preview ingress — Cloudflare Worker router + Access on *.globalhost.ai; prod stays on product domains
 
-- Status: proposed
+- Status: accepted; routing state and edge credentials amended by ADR-0016 (no KV)
 - Date: 2026-10-27
 
 ## Context

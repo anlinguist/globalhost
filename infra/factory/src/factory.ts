@@ -394,7 +394,6 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     config,
     factoryRepoName,
     pool,
-    factoryProjectNumber: projectNumber,
     afterApis,
     routerScript,
     ...(cloudflare ? { cloudflare } : {}),

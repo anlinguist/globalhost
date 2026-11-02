@@ -76,7 +76,6 @@ export interface PreviewInputs {
   config: FactoryConfig;
   factoryRepoName: string;
   pool: gcp.iam.WorkloadIdentityPool;
-  factoryProjectNumber: pulumi.Input<string>;
   afterApis: pulumi.CustomResourceOptions;
   /** Absent until the owner sets it; then the edge (DNS, Worker, Access) is created. */
   cloudflare?: pulumi.Output<CloudflareConfig>;
@@ -84,7 +83,7 @@ export interface PreviewInputs {
   routerScript: string;
 }
 
-export function createPreviews({ config, factoryRepoName, pool, factoryProjectNumber, afterApis, cloudflare: cf, routerScript }: PreviewInputs) {
+export function createPreviews({ config, factoryRepoName, pool, afterApis, cloudflare: cf, routerScript }: PreviewInputs) {
   const { project, region } = config;
   const labels = { system: "globalhost", "managed-by": "pulumi" };
 
@@ -455,7 +454,7 @@ export function createPreviews({ config, factoryRepoName, pool, factoryProjectNu
     return {
       projectNumber: devNumber,
       serviceHosts: pulumi.all(serviceHosts),
-      outputs: pulumi.all({
+      outputs: pulumi.output({
         product: p.product,
         devProject: dev,
         workloadIdentityProvider: provider.name,

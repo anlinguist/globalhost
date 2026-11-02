@@ -14,6 +14,19 @@ config:
     - name: anlinguist/numu-know
       id: "338675328"
       defaultBranch: main
+  # This repo: only its main-branch .github/workflows/access-guard-image.yml may publish images.
+  globalhost-factory:factoryRepoName: anlinguist/globalhost
+  globalhost-factory:factoryRepoId: "1437394155"
+  # Hosted previews (PLAN P1-11). Each product's PR workflow deploys into its -dev project only.
+  globalhost-factory:previews:
+    - product: numu-know
+      devProject: numu-know-dev
+      repo: { name: anlinguist/numu-know, id: "338675328" }
+      parts: [web]
+  # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
+  globalhost-factory:previewActorIds: ["47403803", "350478808"]
+  # globalhost-factory:accessGuardImage: set after the first access-guard image publish (digest-pinned).
+  # globalhost-factory:cloudflare: secret object {accountId, zoneId, zone, teamDomain, ownerEmails}; see README.
   globalhost-factory:billingAccount:
     secure: v1:Zc/Y0xN5ABtVwYJl:yat2q/uZGaOUg1i/AmGrUjUdX42iKiHt43oNCDmv0NWJh6Zq
 secretsprovider: gcpkms://projects/globalhost-factory/locations/global/keyRings/pulumi/cryptoKeys/state

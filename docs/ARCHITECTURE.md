@@ -126,11 +126,11 @@ Patterns borrowed (ADR-0001): label contract + handoff comment, fail-closed gate
 ### 2.6 Previews
 
 Defined by each profile's preview contract (PROFILES.md §2). Hosted parts deploy as a **tagged, no-traffic Cloud Run revision** (`pr-<n>`) of a single `<part>-preview` service in the product's **dev project**, with:
-- an `access-guard` ingress sidecar that rejects requests without a valid Cloudflare Access JWT, so the `*.run.app` URL is not a bypass;
+- an `access-guard` ingress sidecar (`packages/access-guard`) that rejects requests without a valid Cloudflare Access JWT, so the `*.run.app` URL is not a bypass, and strips the Access credentials before the app (untrusted, agent-written code) sees the request;
 - dev/seed data only (never prod data, never prod credentials);
 - `min-instances=0`, `max-instances=1`.
 
-Routing: Cloudflare Worker on `*.globalhost.ai` maps `<product>-<part>-pr-<n>.globalhost.ai` → the tagged revision URL, behind one Cloudflare Access application (owner email only). Infra-changing PRs get a full Pulumi review stack `pr-<n>` instead. ADR-0007.
+Routing: Cloudflare Worker (`packages/preview-router`) on `*.globalhost.ai` maps `<product>-<part>-pr-<n>.globalhost.ai` → `pr-<n>---<service host>`, Cloud Run's deterministic tag URL, from a static service map set by Pulumi (no per-PR state at the edge), behind one Cloudflare Access application (owner email, plus a CI service token for screenshots). The PR workflow builds with no credentials, then a separate job deploys as `sa:preview-deployer`, which only the owner's or the factory bot's `pull_request` events can get. Infra-changing PRs get a full Pulumi review stack `pr-<n>` instead. ADR-0007, ADR-0016.
 
 ### 2.7 Release
 
@@ -208,9 +208,12 @@ Rules:
 | Owner's gcloud login (local) | `globalhost assess --gcp-project` | read-only `list` calls: Cloud Build triggers, Cloud Run services, Firestore databases, service-account keys | be passed to the agent; only names, branches and URLs are kept (env vars and substitutions are dropped) |
 | `sa:globalhost-local` | impersonated by the owner for `globalhost run` and `globalhost assess` | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014) | any GCP role; anything else |
 | `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
-| `sa:<product>-preview` | WIF from product repo, PR workflows only | deploy `<part>-preview` revisions + push images in `<product>-dev`; read dev secrets | touch prod project |
+| `sa:preview-deployer` (in `<product>-dev`) | WIF provider `<product>-preview`: that repo's `pull_request` events whose actor is the owner or the factory bot | push to AR `previews`; `run.developer` on its `<part>-preview` services; act as `sa:preview-runtime`; `firebaseauth.admin` in the dev project (authorized domains); read the preview Access token secrets; create screenshot objects | touch any prod project; change IAM; deploy from another repo, event or actor |
+| `sa:preview-runtime` (in `<product>-dev`) | Cloud Run preview services | `datastore.user` in the dev project | anything else |
+| `sa:globalhost-image-publisher` | WIF provider `globalhost-images`: factory repo `main`, `access-guard-image.yml` only | push to AR `globalhost-images` | anything else |
 | `sa:<product>-release` | WIF, `ref=refs/heads/<default>` + `workflow=release.yml` only | deploy prod per adapter | be impersonated from PRs or other workflows |
-| Cloudflare API token (preview) | dev secret | edit Worker KV / routes on `globalhost.ai` zone | other zones |
+| Cloudflare API token (Pulumi) | owner's Pulumi config secret (`cloudflare:apiToken`), used only by `pulumi up` | Workers scripts/routes, DNS on `globalhost.ai`, Access apps/policies/service tokens | reach CI or agents: no workflow holds a Cloudflare credential |
+| Access service token `globalhost preview CI` | dev-project secrets `preview-access-client-id/secret`, readable by `sa:preview-deployer` | pass Access for preview hosts (`non_identity` policy) | anything outside the previews Access app |
 | `sa:globalhost-auditor` (ADR-0012) | WIF, factory repo `main`, environment `security-audit` only | list/read/create objects in the audit report bucket | read any secret; delete or overwrite reports; any GitHub write; anything else |
 | `sa:globalhost-audit-publisher` (ADR-0012) | WIF, factory repo `main`, environment `security-audit-publish` only (job runs no repo code) | read audit reports; read `globalhost-ops-issues-token` (Issues RW on `globalhost-ops` only) | write reports; any other repo |
 

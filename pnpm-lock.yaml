@@ -35,6 +35,9 @@ importers:
 
   infra/factory:
     dependencies:
+      '@globalhost/preview-router':
+        specifier: workspace:*
+        version: link:../../packages/preview-router
       '@pulumi/cloudflare':
         specifier: 6.22.1
         version: 6.22.1(typescript@6.0.3)
