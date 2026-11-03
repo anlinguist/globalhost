@@ -170,6 +170,9 @@ export async function findPostedReview(gh: GitHubClient, repo: string, pr: numbe
     }
     if (batch.length < 100) return null;
   }
+  // The cap was reached on a full page: only refuse if there really is more.
+  const more = await gh.request("GET", `/repos/${repo}/pulls/${pr}/reviews?per_page=100&page=${MAX_REVIEW_PAGES + 1}`, undefined, ReviewListSchema);
+  if (more.length === 0) return null;
   throw new Error(`PR #${pr} has more than ${MAX_REVIEW_PAGES * 100} reviews; not posting in case one for this head is among the rest`);
 }
 

@@ -463,6 +463,9 @@ export class ReviewNotStartedError extends Error {
   }
 }
 
+/** The shortest wait for an interrupt to land, even when a deadline has (nearly) passed. */
+const MIN_INTERRUPT_WAIT_MS = 10_000;
+
 /** Least time a review needs between opening its session and its deadline's settle margin to be worth sending. */
 const MIN_REVIEW_TURN_MS = 60_000;
 
@@ -493,15 +496,19 @@ const MAX_PROBLEM_CHARS = 500;
  * throws ReviewRunError with the sessionId. Scanning, budgets, the overall verdict and posting are the caller's.
  */
 export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<ReviewRun> {
-  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) throw new Error("budgetUsd must be a finite number of at least 0.01");
-  if (!positiveFinite(spec.timeoutMinutes)) throw new Error("timeoutMinutes must be a positive finite number");
+  // Spec problems are found before anything runs, so they are "not started" too.
+  const refuse = (message: string): never => {
+    throw new ReviewNotStartedError(message);
+  };
+  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) refuse("budgetUsd must be a finite number of at least 0.01");
+  if (!positiveFinite(spec.timeoutMinutes)) refuse("timeoutMinutes must be a positive finite number");
   if (spec.hardTimeoutMinutes !== undefined) {
-    if (!positiveFinite(spec.hardTimeoutMinutes)) throw new Error("hardTimeoutMinutes must be a positive finite number");
+    if (!positiveFinite(spec.hardTimeoutMinutes)) refuse("hardTimeoutMinutes must be a positive finite number");
     if (spec.timeoutMinutes > spec.hardTimeoutMinutes - REVIEW_SETTLE_MARGIN_MINUTES) {
-      throw new Error(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
+      refuse(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
     }
   }
-  if (spec.deadlineEpochMs !== undefined && !positiveFinite(spec.deadlineEpochMs)) throw new Error("deadlineEpochMs must be a positive finite number");
+  if (spec.deadlineEpochMs !== undefined && !positiveFinite(spec.deadlineEpochMs)) refuse("deadlineEpochMs must be a positive finite number");
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const progress = { creating: false };
@@ -646,7 +653,12 @@ async function reviewWithMounts(
         deps.log(`review harness error after session ${session.sessionId} opened: ${reason}`);
         await deps.api.interrupt(session.sessionId).catch(() => undefined);
         // Let the interrupt land so the cost is final, but only briefly: the run still has to settle in time.
-        const settleUntil = Math.min(now() + (deps.settleMs ?? 30_000), spec.deadlineEpochMs === undefined ? Number.POSITIVE_INFINITY : spec.deadlineEpochMs - 60_000);
+        // At least a short wait even past deadline - 60 s: the settle margin has room for it.
+        const settleMs = deps.settleMs ?? 30_000;
+        const settleUntil = Math.max(
+          now() + Math.min(settleMs, MIN_INTERRUPT_WAIT_MS),
+          Math.min(now() + settleMs, spec.deadlineEpochMs === undefined ? Number.POSITIVE_INFINITY : spec.deadlineEpochMs - 60_000),
+        );
         await waitForTurn(deps.api, session.sessionId, { priorMessages: 0, deadline: settleUntil, now, quietMs: 10_000 }).catch(
           () => undefined,
         );
@@ -779,12 +791,13 @@ async function runTurn(
     deps.log(`timed out after ${Math.round((now() - sentAt) / 60_000)} min; interrupting`);
     await deps.api.interrupt(t.sessionId).catch(() => undefined);
     // Give the interrupt a moment to land so outputs and cost are final; the status stays "timeout".
-    const until = Math.min(now() + 120_000, t.interruptDeadline ?? Number.POSITIVE_INFINITY);
+    // At least MIN_INTERRUPT_WAIT_MS even past the interrupt deadline: the settle margin has room for it.
+    const until = Math.max(now() + MIN_INTERRUPT_WAIT_MS, Math.min(now() + 120_000, t.interruptDeadline ?? Number.POSITIVE_INFINITY));
     await waitForTurn(deps.api, t.sessionId, { priorMessages: t.priorMessages, deadline: until, now, ...(t.interruptDeadline === undefined ? {} : { quietMs: 10_000 }) });
     wait = { ...wait, stopReason: "timeout" };
   }
 
-  const session = await deps.api.retrieveSession(t.sessionId);
+  let session = await deps.api.retrieveSession(t.sessionId);
   await mkdir(t.outDir, { recursive: true });
   const problems: string[] = [];
   const oversized = new Set<string>();
@@ -806,6 +819,9 @@ async function runTurn(
       problems.push("report.json is not valid JSON in the expected shape");
     }
   } else problems.push("no report.json");
+  // The cost can still rise while outputs are collected (an interrupt landing late): keep the larger reading.
+  const later = await deps.api.retrieveSession(t.sessionId).catch(() => undefined);
+  if (later && later.costCents > session.costCents) session = { ...session, costCents: later.costCents };
   return { stopReason: wait.stopReason, session, files, oversized, report, problems };
 }
 

@@ -35,11 +35,13 @@ export class GitHubClient {
    * GETs an API path whose answer is a redirect to a download (job logs, artifact zips). The redirect is
    * followed by hand so the token is never sent to the download host, and the body is read with a byte cap.
    */
-  async download(path: string, opts: { maxBytes: number; keep?: "head" | "tail"; timeoutMs?: number }): Promise<Download> {
+  async download(path: string, opts: { maxBytes: number; keep?: "head" | "tail"; timeoutMs?: number; signal?: AbortSignal }): Promise<Download> {
     const timeoutMs = opts.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
+    // Each step is bounded by its own timeout and by the caller's overall signal, if any.
+    const bound = () => (opts.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), opts.signal]) : AbortSignal.timeout(timeoutMs));
     const resp = await this.fetchImpl(`${API}${path}`, {
       redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: bound(),
       headers: {
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
@@ -58,12 +60,12 @@ export class GitHubClient {
         throw new GitHubError("GET", path, resp.status);
       }
       if (url.protocol !== "https:") throw new GitHubError("GET", path, resp.status);
-      signal = AbortSignal.timeout(timeoutMs);
+      signal = bound();
       body = await this.fetchImpl(url, { redirect: "error", headers: { "user-agent": "globalhost-dispatch" }, signal });
     }
     if (!body.ok) throw new GitHubError("GET", path, body.status);
     // The body gets its own bound too (a fresh one when there was no redirect), so a stalled stream can't hang the job.
-    return readCapped(body, opts.maxBytes, opts.keep ?? "head", signal ?? AbortSignal.timeout(timeoutMs));
+    return readCapped(body, opts.maxBytes, opts.keep ?? "head", signal ?? bound());
   }
 }
 

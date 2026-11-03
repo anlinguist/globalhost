@@ -35,6 +35,22 @@ const JobsSchema = z.object({
   ),
 });
 
+/** One deadline for reading all review inputs (CI logs and the screenshot artifact) together. */
+export const INPUTS_TIMEOUT_MS = 3 * 60_000;
+/** Job logs fetched at once. */
+const LOG_CONCURRENCY = 4;
+
+/** Resolves like `p`, or rejects as soon as `signal` fires (for calls that can't take a signal themselves). */
+export function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(new Error("input deadline reached"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("input deadline reached"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 export interface CiSummary {
   /** Untrusted text, at most MAX_CI_SUMMARY_CHARS. Exactly what is scanned and shown to the reviewer. */
   text: string;
@@ -42,6 +58,8 @@ export interface CiSummary {
   truncated: boolean;
   /** Fixed-text problems reading it (e.g. a log that couldn't be fetched). */
   problems: string[];
+  /** The overall input deadline cut reading short; the summary holds what was read by then. */
+  deadlineReached?: boolean;
 }
 
 const TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/gm;
@@ -67,9 +85,12 @@ function tail(text: string, max: number): { text: string; cut: boolean } {
  * reviewer sees and a huge log never reaches the scan's size limit. Logs that can't be fetched are noted, not
  * fatal.
  */
-export async function readCiSummary(gh: GitHubClient, repo: string, runId: number): Promise<CiSummary> {
+export async function readCiSummary(gh: GitHubClient, repo: string, runId: number, signal?: AbortSignal): Promise<CiSummary> {
   const problems: string[] = [];
-  const { jobs: allJobs } = await gh.request("GET", `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100`, undefined, JobsSchema);
+  const { jobs: allJobs } = await untilAborted(
+    gh.request("GET", `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100`, undefined, JobsSchema),
+    signal,
+  );
   const jobs = allJobs.slice(0, MAX_JOBS);
   let truncated = allJobs.length > jobs.length;
 
@@ -83,29 +104,49 @@ export async function readCiSummary(gh: GitHubClient, repo: string, runId: numbe
   truncated ||= cutList;
 
   const share = Math.max(MIN_TAIL_CHARS, Math.floor((MAX_CI_SUMMARY_CHARS - list.length) / Math.max(1, jobs.length)) - 120);
-  let logs = "";
-  for (const j of jobs) {
-    let body: string;
-    let cut: boolean;
-    try {
-      const d = await gh.download(`/repos/${repo}/actions/jobs/${j.id}/logs`, { maxBytes: MAX_LOG_BYTES, keep: "tail" });
-      body = cleanLog(d.data.toString("utf8"));
-      cut = d.truncated;
-    } catch {
-      problems.push(`log of job ${j.id} unavailable`);
-      continue;
+  // Logs are fetched a few at a time; past the overall deadline the rest are skipped and the summary keeps
+  // what was read. Results go back in job order.
+  const sections: (string | undefined)[] = new Array(jobs.length);
+  let skipped = 0;
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      const j = jobs[i]!;
+      if (signal?.aborted) {
+        skipped++;
+        continue;
+      }
+      let body: string;
+      let cut: boolean;
+      try {
+        const d = await gh.download(`/repos/${repo}/actions/jobs/${j.id}/logs`, { maxBytes: MAX_LOG_BYTES, keep: "tail", signal });
+        body = cleanLog(d.data.toString("utf8"));
+        cut = d.truncated;
+      } catch {
+        if (signal?.aborted) skipped++;
+        else problems.push(`log of job ${j.id} unavailable`);
+        continue;
+      }
+      const t = tail(body.trimEnd(), share);
+      cut ||= t.cut;
+      truncated ||= cut;
+      sections[i] = `\n=== end of log: ${oneLine(j.name)}${cut ? " (earlier output cut)" : ""} ===\n${t.text}\n`;
     }
-    const t = tail(body.trimEnd(), share);
-    cut ||= t.cut;
-    truncated ||= cut;
-    logs += `\n=== end of log: ${oneLine(j.name)}${cut ? " (earlier output cut)" : ""} ===\n${t.text}\n`;
+  };
+  await Promise.all(Array.from({ length: Math.min(LOG_CONCURRENCY, jobs.length) }, worker));
+  const logs = sections.filter((x) => x !== undefined).join("");
+  const deadlineReached = skipped > 0;
+  if (deadlineReached) {
+    problems.push(`input deadline reached: ${skipped} job log(s) not read`);
+    truncated = true;
   }
   let text = `${list}${logs}`;
   if (text.length > MAX_CI_SUMMARY_CHARS) {
     text = `${text.slice(0, MAX_CI_SUMMARY_CHARS - 40)}\n[CI summary truncated]\n`;
     truncated = true;
   }
-  return { text, truncated, problems };
+  return { text, truncated, problems, ...(deadlineReached ? { deadlineReached } : {}) };
 }
 
 // ---- Screenshots from a CI artifact ----
@@ -139,14 +180,38 @@ export interface Screenshots {
  * holds (macOS tmp is a symlink). The zip is parsed in memory by readZip: no symlinks, special files,
  * traversal, duplicates or oversized entries. Any problem means no screenshots, never a failed review.
  */
-export async function readCiScreenshots(gh: GitHubClient, repo: string, runId: number, artifact = SCREENSHOT_ARTIFACT): Promise<Screenshots> {
+export async function readCiScreenshots(
+  gh: GitHubClient,
+  repo: string,
+  runId: number,
+  opts: { artifact?: string; signal?: AbortSignal } = {},
+): Promise<Screenshots> {
+  const artifact = opts.artifact ?? SCREENSHOT_ARTIFACT;
+  const { signal } = opts;
   const none = (problem?: string): Screenshots => ({ dir: null, files: [], problems: problem ? [problem] : [] });
-  const { artifacts } = await gh.request("GET", `/repos/${repo}/actions/runs/${runId}/artifacts?name=${encodeURIComponent(artifact)}&per_page=10`, undefined, ArtifactsSchema);
+  if (signal?.aborted) return none("input deadline reached before the screenshots were read");
+  let listed: z.infer<typeof ArtifactsSchema>;
+  let zip;
+  try {
+    listed = await untilAborted(
+      gh.request("GET", `/repos/${repo}/actions/runs/${runId}/artifacts?name=${encodeURIComponent(artifact)}&per_page=10`, undefined, ArtifactsSchema),
+      signal,
+    );
+  } catch (err) {
+    if (signal?.aborted) return none("input deadline reached before the screenshots were read");
+    throw err;
+  }
+  const { artifacts } = listed;
   const found = artifacts.filter((a) => a.name === artifact && !a.expired);
   if (found.length === 0) return none();
   if (found.length > 1) return none("more than one screenshot artifact");
   if (found[0]!.size_in_bytes > MAX_ARTIFACT_ZIP_BYTES) return none("screenshot artifact too large");
-  const zip = await gh.download(`/repos/${repo}/actions/artifacts/${found[0]!.id}/zip`, { maxBytes: MAX_ARTIFACT_ZIP_BYTES });
+  try {
+    zip = await gh.download(`/repos/${repo}/actions/artifacts/${found[0]!.id}/zip`, { maxBytes: MAX_ARTIFACT_ZIP_BYTES, signal });
+  } catch (err) {
+    if (signal?.aborted) return none("input deadline reached while downloading the screenshots");
+    throw err;
+  }
   if (zip.truncated) return none("screenshot artifact too large");
 
   let entries;

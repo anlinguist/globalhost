@@ -68,6 +68,44 @@ describe("readCiSummary", () => {
     expect(s.truncated).toBe(true);
   });
 
+  it("fetches logs at most 4 at a time and keeps job order", async () => {
+    const cloud = ciCloud(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i + 1, `log ${i + 1}\n`])));
+    let inFlight = 0;
+    let peak = 0;
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      if (!String(input).startsWith("https://blob.example/logs/")) return cloud.fetch(input, init);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      return cloud.fetch(input, init);
+    }) as typeof fetch;
+    const s = await readCiSummary(new GitHubClient("t", fetchImpl), REPO, RUN);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);
+    const order = [...s.text.matchAll(/^log (\d+)$/gm)].map((m) => Number(m[1]));
+    expect(order).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("stops at the overall input deadline and keeps what it read", async () => {
+    const cloud = ciCloud({ 1: "fast log\n", 2: "slow\n", 3: "slow\n", 4: "slow\n", 5: "slow\n", 6: "never reached\n" });
+    const fetchImpl = (async (input: string | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.startsWith("https://blob.example/logs/") && !url.endsWith("/1")) {
+        // Stalls until the caller gives up.
+        return new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+      }
+      return cloud.fetch(input, init);
+    }) as typeof fetch;
+    const deadline = AbortSignal.timeout(200);
+    const started = Date.now();
+    const s = await readCiSummary(new GitHubClient("t", fetchImpl), REPO, RUN, deadline);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(s.deadlineReached).toBe(true);
+    expect(s.text).toContain("fast log");
+    expect(s.problems.at(-1)).toBe("input deadline reached: 5 job log(s) not read");
+  });
+
   it("notes a log it can't fetch instead of failing", async () => {
     const cloud = ciCloud({}, [5]);
     const s = await readCiSummary(new GitHubClient("t", cloud.fetch), REPO, RUN);
@@ -193,6 +231,14 @@ describe("readCiScreenshots", () => {
     const shots = await readCiScreenshots(new GitHubClient("t", cloud.fetch), REPO, RUN);
     expect(shots.problems).toEqual(["screenshot artifact too large"]);
     expect(cloud.calls.some((c) => c.path.includes("/zip"))).toBe(false);
+  });
+
+  it("gives up on the screenshots at the overall input deadline", async () => {
+    const zip = writeZip([{ name: "screenshots/a.png", data: png() }]);
+    const cloud = artifactCloud(zip);
+    const shots = await readCiScreenshots(new GitHubClient("t", cloud.fetch), REPO, RUN, { signal: AbortSignal.abort() });
+    expect(shots).toEqual({ dir: null, files: [], problems: ["input deadline reached before the screenshots were read"] });
+    expect(cloud.calls).toEqual([]);
   });
 
   it("refuses an ambiguous artifact name and treats a missing one as no screenshots", async () => {

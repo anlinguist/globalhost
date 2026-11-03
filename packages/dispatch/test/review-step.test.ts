@@ -275,6 +275,8 @@ describe("reviewStep: a CI-success review", () => {
     const bad = setup();
     bad.deps.env.GLOBALHOST_JOB_STARTED_AT = String(Math.floor(Date.now() / 1000) + 3600);
     await expect(reviewStep(bad.deps)).rejects.toThrow(/outside this job's lifetime/);
+    expect(claim(bad)).toBeUndefined(); // refused before claiming: nothing stranded
+    expect(await ledger(bad)).toBeNull();
   });
 
   it("passes CI screenshots by realpath with their entry names as labels", async () => {

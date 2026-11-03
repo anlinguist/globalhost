@@ -41,7 +41,7 @@ import { ControlPlane, ObjectStore, RUNS_BUCKET, accessSecret, gcloudAccessToken
 import { GitHubClient, GitHubError, reviewInstallationToken } from "./github.js";
 import { githubSnapshot, profileRunSettings, type RunSettings } from "./profile-settings.js";
 import { decideReview, REVIEW_LABEL, type ReviewTarget } from "./review-gate.js";
-import { readCiScreenshots, readCiSummary, readDiff, UNKNOWN_PATCH_ID, type CiSummary, type DiffInfo, type Screenshots } from "./review-inputs.js";
+import { INPUTS_TIMEOUT_MS, readCiScreenshots, readCiSummary, readDiff, UNKNOWN_PATCH_ID, type CiSummary, type DiffInfo, type Screenshots } from "./review-inputs.js";
 import { postReview, renderReviewBody } from "./review-post.js";
 
 export interface ReviewDeps extends DispatchDeps {
@@ -192,6 +192,8 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
   try {
     const control = new ControlPlane(new ObjectStore(gcpToken, deps.fetchImpl), () => new Date(now()));
     const jobTimeout = intFrom(env, "GLOBALHOST_JOB_TIMEOUT_MINUTES");
+    // Validated before claiming, so a bad value never strands an in-flight claim.
+    const jobStartMs = jobStartedAt(env, stepStart, jobTimeout);
     if (jobTimeout > config.limits.perRunMinutes) {
       throw new Error(`the review job's timeout (${jobTimeout} min) is over limits.perRunMinutes (${config.limits.perRunMinutes})`);
     }
@@ -207,7 +209,6 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       return { outcome: "not-claimed", reason: claim.reason };
     }
     log(`review: PR #${target.pr} at ${target.sha.slice(0, 12)}, attempt ${claim.claim.attempt} (${runId})`);
-    const jobStartMs = jobStartedAt(env, stepStart, jobTimeout);
     return await runClaimed({ deps, reader, writer, control, config, ownerIds, botLogin, target, head, runId, jobDeadlineMs: jobStartMs + jobTimeout * 60_000, now });
   } finally {
     if (target.viaLabel) await unlabel(target.pr);
@@ -257,6 +258,8 @@ interface InputsRecord {
   ciSummary: CiSummary | null;
   screenshots: { label: string }[];
   screenshotProblems: string[];
+  /** The overall input deadline cut reading CI logs or screenshots short. */
+  inputsDeadlineReached: boolean;
   taint: ReviewRecord["taint"];
   /** Findings whose file is outside the diff: the harness cleared file and line. */
   outsideDiff: { index: number; file: string }[];
@@ -306,11 +309,13 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
         env.GITHUB_TOKEN,
       );
       diff = await readDiff(bundle.bareDir, bundle.mergeBaseSha, bundle.headSha);
-      ci = await readCiSummary(reader, head.repo, target.ciRunId).catch((err: unknown) => {
+      // One deadline across CI logs and the screenshot artifact; past it, the review goes ahead with what was read.
+      const inputsSignal = AbortSignal.timeout(INPUTS_TIMEOUT_MS);
+      ci = await readCiSummary(reader, head.repo, target.ciRunId, inputsSignal).catch((err: unknown) => {
         log(`review: CI summary unavailable: ${(err as Error).message}`);
         return null;
       });
-      shots = await readCiScreenshots(reader, head.repo, target.ciRunId).catch((err: unknown) => {
+      shots = await readCiScreenshots(reader, head.repo, target.ciRunId, { signal: inputsSignal }).catch((err: unknown) => {
         log(`review: screenshots unavailable: ${(err as Error).message}`);
         return { dir: null, files: [], problems: ["screenshot artifact unavailable"] };
       });
@@ -424,6 +429,7 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
       ciSummary: ci,
       screenshots: (shots?.files ?? []).map((s) => ({ label: s.label })),
       screenshotProblems: shots?.problems ?? [],
+      inputsDeadlineReached: ci?.deadlineReached === true || (shots?.problems ?? []).some((p) => p.startsWith("input deadline")),
       taint,
       outsideDiff: [...outsideDiff].map((index) => ({ index, file: run!.output!.findings[index]!.file! })),
       timeoutMinutes,

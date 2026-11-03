@@ -66,6 +66,12 @@ describe("findPostedReview pagination", () => {
     expect(requested.at(-1)).toBe(13);
   });
 
+  it("doesn't refuse when the last readable page is full but nothing follows it", async () => {
+    const { gh, requested } = paged(MAX_REVIEW_PAGES);
+    expect(await findPostedReview(gh, REPO, PR, HEAD, BOT.login)).toBeNull();
+    expect(requested.at(-1)).toBe(MAX_REVIEW_PAGES + 1);
+  });
+
   it("refuses to post when there are more reviews than it can read", async () => {
     const { gh } = paged(MAX_REVIEW_PAGES + 5);
     await expect(findPostedReview(gh, REPO, PR, HEAD, BOT.login)).rejects.toThrow(/not posting/);

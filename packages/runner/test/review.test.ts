@@ -557,9 +557,23 @@ describe("startReview", () => {
     ["an infinite timeout", { timeoutMinutes: Number.POSITIVE_INFINITY }],
     ["a negative timeout", { timeoutMinutes: -1 }],
     ["a timeout without the settle margin", { timeoutMinutes: 28, hardTimeoutMinutes: 30 }],
-  ])("refuses %s", async (_, over) => {
-    await expect(startReview(spec(join(dir, "out"), over), deps(new FakeApi()))).rejects.toThrow();
+    ["a bad hard timeout", { hardTimeoutMinutes: Number.NaN }],
+    ["a bad deadline", { deadlineEpochMs: -5 }],
+  ])("refuses %s, as not started", async (_, over) => {
+    await expect(startReview(spec(join(dir, "out"), over), deps(new FakeApi()))).rejects.toBeInstanceOf(ReviewNotStartedError);
     expect(tokensSeen).toEqual([]);
+  });
+
+  it("records the higher cost when it rises while outputs are collected", async () => {
+    const api = new FakeApi();
+    reviewerSession(api, JSON.stringify(VALID)); // finishes the turn at 180 cents
+    const list = api.listOutputFiles.bind(api);
+    api.listOutputFiles = async () => {
+      for (const s of api.sessions.values()) s.costCents = 240; // a late charge lands during collection
+      return list();
+    };
+    const r = await startReview(spec(join(dir, "out")), deps(api));
+    expect(r.costUsd).toBe(2.4);
   });
 
   it("accepts a timeout that leaves the settle margin, and rounds the budget to cents", async () => {
