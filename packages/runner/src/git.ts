@@ -3,7 +3,7 @@
 // (no checkout, no hooks), and the harness checks its shape before anything uses it.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -77,6 +77,114 @@ export async function createRepoBundle(cloneUrl: string, branch: string, token?:
   const bundlePath = join(dir, "repo.bundle");
   await git(["bundle", "create", "--quiet", bundlePath, "HEAD", `refs/heads/${branch}`], { cwd: bareDir });
   return { bareDir, bundlePath, baseSha };
+}
+
+export interface ReviewBundle extends RepoBundle {
+  /** Tip of the base branch when the bundle was made. */
+  baseSha: string;
+  /** The PR head, checked against the SHA the caller asked to review. */
+  headSha: string;
+  /** `git merge-base` of base and head: the reviewer diffs merge-base..head, as GitHub shows the PR. */
+  mergeBaseSha: string;
+  baseBranch: string;
+  /** The branch in the bundle that holds the head; the bundle's HEAD points at it. */
+  headBranch: string;
+}
+
+export interface ReviewBundleRequest {
+  baseBranch: string;
+  pr: number;
+  /** The head SHA the caller decided to review (e.g. the CI run's head). A PR that moved since is refused. */
+  headSha: string;
+}
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}$/;
+export const reviewHeadBranch = (pr: number) => `globalhost-review/pr-${pr}`;
+
+const CREDENTIAL_KEY = /(^|\.)(extraheader|credential|askpass|password|token)(\.|$)|^credential\./i;
+const URL_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i;
+
+/**
+ * Throws if the repo's own config holds anything credential-shaped: an http extra header, a credential helper,
+ * or a remote URL with userinfo. The token is only ever passed through git's environment; this checks that
+ * nothing persisted it.
+ */
+export async function assertNoStoredCredentials(repoDir: string): Promise<void> {
+  const listed = await git(["config", "--local", "--list", "-z"], { cwd: repoDir });
+  for (const entry of listed.split("\0").filter(Boolean)) {
+    const nl = entry.indexOf("\n");
+    const key = nl === -1 ? entry : entry.slice(0, nl);
+    const value = nl === -1 ? "" : entry.slice(nl + 1);
+    if (CREDENTIAL_KEY.test(key)) throw new Error(`repo config holds a credential-like key: ${key}`);
+    if (/^remote\..*\.(url|pushurl)$/i.test(key) && URL_USERINFO.test(value)) throw new Error(`remote URL in ${key} carries credentials`);
+  }
+}
+
+/**
+ * Bundles a PR for review: the base branch and the PR head (`refs/pull/<n>/head`), full history, no tags, with
+ * HEAD on the head so `git clone` of the bundle checks it out and the reviewer can diff and revert against the
+ * base. The token, if any, is a read-only one used only for this fetch; nothing in the bundle or the bare repo's
+ * config carries it, and it never reaches the session.
+ */
+export async function createReviewBundle(cloneUrl: string, req: ReviewBundleRequest, token?: string): Promise<ReviewBundle> {
+  if (!CLONE_URL.test(cloneUrl)) throw new Error(`unexpected clone URL: ${cloneUrl}`);
+  return bundleReviewFrom(cloneUrl, req, token);
+}
+
+/**
+ * createReviewBundle without the GitHub URL check, so tests can bundle from a local repository. Trusted callers
+ * only: `source` is passed to git as a remote.
+ */
+export async function bundleReviewFrom(source: string, req: ReviewBundleRequest, token?: string): Promise<ReviewBundle> {
+  const { baseBranch, pr, headSha } = req;
+  if (!Number.isSafeInteger(pr) || pr < 1) throw new Error(`bad PR number: ${pr}`);
+  if (!FULL_SHA.test(headSha)) throw new Error("head SHA must be a full lowercase hex commit ID");
+  if (!BRANCH.test(baseBranch)) throw new Error(`unexpected base branch name: ${baseBranch}`);
+  const headBranch = reviewHeadBranch(pr);
+  if (baseBranch === headBranch) throw new Error(`base branch collides with ${headBranch}`);
+  await git(["check-ref-format", `refs/heads/${baseBranch}`]);
+
+  const dir = await mkdtemp(join(tmpdir(), "globalhost-review-"));
+  try {
+    return await bundleReviewInto(dir, source, req, headBranch, token);
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+async function bundleReviewInto(
+  dir: string,
+  source: string,
+  { baseBranch, pr, headSha }: ReviewBundleRequest,
+  headBranch: string,
+  token: string | undefined,
+): Promise<ReviewBundle> {
+  const bareDir = join(dir, "repo.git");
+  await git(["clone", "--quiet", "--bare", "--single-branch", "--no-tags", "--branch", baseBranch, "--", source, bareDir], {
+    token,
+  });
+  await git(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", source, `+refs/pull/${pr}/head:refs/heads/${headBranch}`], {
+    cwd: bareDir,
+    token,
+  });
+  await assertNoStoredCredentials(bareDir);
+  const fetchedHead = (await git(["rev-parse", "--verify", `refs/heads/${headBranch}^{commit}`], { cwd: bareDir })).trim();
+  if (fetchedHead !== headSha) {
+    throw new Error(`PR #${pr} head is ${fetchedHead.slice(0, 12)}, not ${headSha.slice(0, 12)}: it moved since the review was requested`);
+  }
+  const baseSha = (await git(["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`], { cwd: bareDir })).trim();
+  let mergeBaseSha: string;
+  try {
+    mergeBaseSha = (await git(["merge-base", baseSha, headSha], { cwd: bareDir })).trim();
+  } catch {
+    throw new Error(`PR #${pr} head shares no history with ${baseBranch}`);
+  }
+  await git(["symbolic-ref", "HEAD", `refs/heads/${headBranch}`], { cwd: bareDir });
+  const bundlePath = join(dir, "repo.bundle");
+  await git(["bundle", "create", "--quiet", bundlePath, "HEAD", `refs/heads/${headBranch}`, `refs/heads/${baseBranch}`], { cwd: bareDir });
+  return { bareDir, bundlePath, baseSha, headSha, mergeBaseSha, baseBranch, headBranch };
 }
 
 /**

@@ -1,10 +1,13 @@
 // The harness: drive one role's session for one issue and turn its outputs into a trusted run.json.
 // It's host-specific (RunnerHost = Managed Agents here, ADR-0011) but publishing is not: the dispatcher
 // (P1-07) and `globalhost run` both call these functions and then decide what to do with the record.
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
-import { createRepoBundle, inspectResultBundle, type RepoBundle } from "./git.js";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, posix, resolve } from "node:path";
+import { parseReviewOutput, type ReviewOutput, type ReviewOutputIssue, type ReviewStatus } from "@globalhost/core";
+import { REVIEW_OUTPUT_FILE, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
+import { createRepoBundle, createReviewBundle, inspectResultBundle, type RepoBundle, type ReviewBundle } from "./git.js";
 import { ensureSkill } from "./skills.js";
 import type { GitHubReader } from "./github.js";
 import {
@@ -12,13 +15,29 @@ import {
   ensureAgent,
   ensureEnvironment,
   waitForTurn,
+  type AgentRef,
   type EnvironmentSpec,
   type ManagedAgentsApi,
   type OutputFile,
   type SessionEvent,
 } from "./managed-agents.js";
-import { REPO_BUNDLE_MOUNT, buildAssessTaskMessage, buildFeedbackMessage, buildTaskMessage } from "./prompt.js";
-import { AgentReportSchema, RunRecordSchema, type AgentReport, type RunRecord, type RunStatus } from "./records.js";
+import {
+  REPO_BUNDLE_MOUNT,
+  SCREENSHOT_MOUNT_DIR,
+  buildAssessTaskMessage,
+  buildFeedbackMessage,
+  buildReviewTaskMessage,
+  buildTaskMessage,
+} from "./prompt.js";
+import {
+  AgentReportSchema,
+  ReviewRunSchema,
+  RunRecordSchema,
+  type AgentReport,
+  type ReviewRun,
+  type RunRecord,
+  type RunStatus,
+} from "./records.js";
 
 export const DEFAULT_ENVIRONMENT: EnvironmentSpec = { name: "globalhost-default", allowedHosts: [] };
 
@@ -30,12 +49,15 @@ const OUTPUT_LIMITS: Record<string, number> = {
   "assessment.md": 256 * 1024,
   // The factory.yaml parser's own cap (MAX_FACTORY_YAML_BYTES).
   "factory.yaml": 64 * 1024,
+  // Comfortably above the largest output ReviewOutputSchema accepts; anything bigger is invalid, not clipped.
+  [REVIEW_OUTPUT_FILE]: 1024 * 1024,
 };
 /** Which of those each role may hand back (plus screenshots). An assessor's result.bundle is never even fetched. */
 const ROLE_OUTPUTS: Record<RoleId, readonly string[]> = {
   planner: ["report.json", "plan.md"],
   builder: ["report.json", "result.bundle"],
   assessor: ["report.json", "assessment.md", "factory.yaml"],
+  reviewer: ["report.json", REVIEW_OUTPUT_FILE],
 };
 const SCREENSHOT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$/;
 const SCREENSHOT_LIMIT = 10 * 1024 * 1024;
@@ -52,6 +74,10 @@ export interface RunDeps {
   now?: () => number;
   /** Test seam for cloning; defaults to a bare clone from GitHub. */
   cloneRepo?: typeof createRepoBundle;
+  /** How long a failed review waits for its interrupt to land before reading the cost (default 30 s). */
+  settleMs?: number;
+  /** Test seam for bundling a PR for review; defaults to createReviewBundle. */
+  cloneReview?: typeof createReviewBundle;
 }
 
 export interface StartSpec {
@@ -91,6 +117,8 @@ const META = {
   base: "globalhost_base",
   budget: "globalhost_budget_usd",
   model: "globalhost_model",
+  pr: "globalhost_pr",
+  head: "globalhost_head",
 } as const;
 
 interface SessionLaunch {
@@ -103,22 +131,32 @@ interface SessionLaunch {
   model?: string;
   environment?: EnvironmentSpec;
   skillDirs?: string[];
+  /** A review's PR and head; its title and metadata name the PR. */
+  review?: { pr: number; headSha: string };
+  /** Extra read-only files to mount (local path → mount path under the uploads root). */
+  mounts?: readonly { localPath: string; mountPath: string }[];
 }
 
 /** Syncs the role's agent (with its pinned skills) and environment, uploads the bundle, and opens the session. */
-async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle): Promise<{ sessionId: string; model: string }> {
+async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle,
+): Promise<{ sessionId: string; model: string; agent: AgentRef; environmentId: string }> {
   const skills = [];
   for (const dir of l.skillDirs ?? []) skills.push(await ensureSkill(deps.api, dir));
   const def = roleDefinition(l.role, l.model, skills);
   const agent = await ensureAgent(deps.api, def, definitionHash(def));
   const environmentId = await ensureEnvironment(deps.api, l.environment ?? DEFAULT_ENVIRONMENT);
-  const fileId = await deps.api.uploadFile(bundle.bundlePath);
+  const files = [{ fileId: await deps.api.uploadFile(bundle.bundlePath), mountPath: REPO_BUNDLE_MOUNT }];
+  for (const m of l.mounts ?? []) files.push({ fileId: await deps.api.uploadFile(m.localPath), mountPath: m.mountPath });
 
+  const title =
+    l.review ? `${l.repo} PR #${l.review.pr} ${l.role}`
+    : l.issue === null ? `${l.repo} ${l.role}`
+    : `${l.repo}#${l.issue} ${l.role}`;
   const sessionId = await deps.api.createSession({
     agent,
     environmentId,
-    budgetCents: l.budgetUsd * 100,
-    title: l.issue === null ? `${l.repo} ${l.role}` : `${l.repo}#${l.issue} ${l.role}`,
+    budgetCents: Math.round(l.budgetUsd * 100),
+    title,
     metadata: {
       [META.run]: l.runId,
       [META.repo]: l.repo,
@@ -127,15 +165,17 @@ async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle):
       [META.base]: bundle.baseSha,
       [META.budget]: String(l.budgetUsd),
       [META.model]: def.model,
+      ...(l.review ? { [META.pr]: String(l.review.pr), [META.head]: l.review.headSha } : {}),
     },
-    files: [{ fileId, mountPath: REPO_BUNDLE_MOUNT }],
+    files,
   });
   deps.log(`session ${sessionId} (agent ${def.agentName} v${agent.version}, budget $${l.budgetUsd})`);
-  return { sessionId, model: def.model };
+  return { sessionId, model: def.model, agent, environmentId };
 }
 
 export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecord> {
   if (spec.role === "assessor") throw new Error("the assessor runs through startAssessment, not on an issue");
+  if (spec.role === "reviewer") throw new Error("the reviewer runs through startReview, on a pull request");
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const repo = await deps.github.repo(spec.repo);
@@ -232,6 +272,359 @@ export async function startAssessment(spec: AssessSpec, deps: RunDeps): Promise<
   }
 }
 
+export interface ScreenshotInput {
+  /** Local file the harness already holds (e.g. downloaded from the preview workflow's artifact). */
+  path: string;
+  /**
+   * What the caller calls it (e.g. the artifact's file name). Untrusted: it is shown to the reviewer only inside
+   * an untrusted fence, never used as a path. The mounted name is assigned by the harness.
+   */
+  label?: string;
+}
+
+export interface ScreenshotMount {
+  /** Harness-assigned: screenshot-01.png, screenshot-02.png, … */
+  name: string;
+  label?: string;
+  /** The harness's own copy, in a directory it created; this is what gets uploaded. */
+  localPath: string;
+  /** Under SCREENSHOT_MOUNT_DIR, relative to the session's uploads root. */
+  mountPath: string;
+}
+
+export const MAX_REVIEW_SCREENSHOTS = MAX_SCREENSHOTS;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_LABEL = 200;
+
+/**
+ * Copies screenshots into a fresh harness-owned directory under harness-assigned names. Each input is opened
+ * once with O_NOFOLLOW (a symlinked file is refused), its parent must resolve to itself (no symlinked
+ * directories), and the bytes read through that one handle are checked (regular file, size cap, PNG header)
+ * and written to the copy, so what was checked is what gets uploaded. Throws on the first problem; the caller
+ * removes `dir` when done.
+ */
+export async function prepareScreenshotMounts(inputs: readonly ScreenshotInput[]): Promise<{ dir: string; mounts: ScreenshotMount[] }> {
+  if (inputs.length > MAX_REVIEW_SCREENSHOTS) throw new Error(`too many screenshots (${inputs.length}, max ${MAX_REVIEW_SCREENSHOTS})`);
+  const dir = await mkdtemp(join(tmpdir(), "globalhost-shots-"));
+  try {
+    const mounts: ScreenshotMount[] = [];
+    for (const [i, input] of inputs.entries()) {
+      const name = `screenshot-${String(i + 1).padStart(2, "0")}.png`;
+      const given = resolve(input.path);
+      if ((await realpath(dirname(given))) !== dirname(given)) throw new Error(`screenshot ${i + 1}: its directory is reached through a symlink; pass a canonical (realpath) path`);
+      let data: Buffer;
+      // O_NONBLOCK so a FIFO opens immediately (and then fails the regular-file check) instead of hanging.
+      const fh = await open(given, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch((err: NodeJS.ErrnoException) => {
+        throw new Error(`screenshot ${i + 1}: can't open it without following links (${err.code ?? "error"})`);
+      });
+      try {
+        const st = await fh.stat();
+        if (!st.isFile()) throw new Error(`screenshot ${i + 1} is not a regular file`);
+        if (st.size === 0 || st.size > SCREENSHOT_LIMIT) throw new Error(`screenshot ${i + 1} is ${st.size} bytes (limit ${SCREENSHOT_LIMIT})`);
+        data = Buffer.alloc(st.size);
+        const { bytesRead } = await fh.read(data, 0, st.size, 0);
+        if (bytesRead !== st.size) throw new Error(`screenshot ${i + 1} changed while it was read`);
+      } finally {
+        await fh.close();
+      }
+      if (!data.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) throw new Error(`screenshot ${i + 1} is not a PNG`);
+      const localPath = join(dir, name);
+      await writeFile(localPath, data, { flag: "wx", mode: 0o600 });
+      const label = input.label === undefined ? undefined : input.label.slice(0, MAX_LABEL);
+      mounts.push({ name, ...(label ? { label } : {}), localPath, mountPath: posix.join(SCREENSHOT_MOUNT_DIR, name) });
+    }
+    return { dir, mounts };
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+/**
+ * Minutes the harness may spend after a review's timeout (interrupt, settle, output retries, writing run.json).
+ * A caller with a hard job timeout must pass it as `hardTimeoutMinutes`; startReview refuses a `timeoutMinutes`
+ * that doesn't leave this margin.
+ */
+export const REVIEW_SETTLE_MARGIN_MINUTES = 3;
+
+export interface ReviewSpec {
+  runId: string;
+  repo: string;
+  pr: number;
+  /** The head to review (from the CI run or the PR event); the review is refused if the PR has moved. */
+  headSha: string;
+  /** The PR's base branch. Must be the repo's default branch: factory PRs never target anything else. */
+  baseBranch: string;
+  /** The issue the PR implements (factory/issue-<n>); its title and body are the spec, fenced. Comments are not passed. */
+  issue?: number;
+  /** PR title and description (builder-written; fenced). */
+  prTitle?: string;
+  prBody?: string;
+  /** The caller's summary of the CI run on this head (fenced). */
+  ciSummary?: string;
+  /** Preview screenshots as local files, copied and mounted read-only under SCREENSHOT_MOUNT_DIR. */
+  screenshots?: readonly ScreenshotInput[];
+  budgetUsd: number;
+  timeoutMinutes: number;
+  /** The job's own hard limit, if any; timeoutMinutes must be at most this minus REVIEW_SETTLE_MARGIN_MINUTES. */
+  hardTimeoutMinutes?: number;
+  outDir: string;
+  /** Defaults to the builder's pinned model (DEFAULT_MODEL). */
+  model?: string;
+  environment?: EnvironmentSpec;
+  skillDirs?: string[];
+  ownerIds?: number[];
+  guidance?: string;
+}
+
+/** Fail-closed status for a review: how the session stopped first, then whether the output passed the schema. */
+export function decideReviewStatus(stopReason: string, output: "valid" | "invalid" | "missing"): ReviewStatus {
+  if (stopReason === "budget_reached") return "budget_exhausted";
+  if (stopReason === "timeout") return "timeout";
+  if (stopReason !== "end_turn") return "failed";
+  if (output === "invalid") return "invalid_output";
+  if (output === "missing") return "missing_output";
+  return "completed";
+}
+
+export type ReviewOutputCheck =
+  | { kind: "valid"; output: ReviewOutput }
+  | { kind: "invalid"; issues: ReviewOutputIssue[] }
+  | { kind: "missing" };
+
+/**
+ * True if any object in `text` (already known to be valid JSON) repeats a key. JSON.parse keeps the last copy,
+ * so `{"verdicts":…escalate…,"verdicts":…pass…}` would otherwise read as pass. Keys are compared decoded, so
+ * `"a"` and `"a"` are the same key. One linear pass.
+ */
+export function hasDuplicateJsonKeys(text: string): boolean {
+  const stack: ({ keys: Set<string>; expectKey: boolean } | null)[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      const top = stack.at(-1);
+      if (top?.expectKey) {
+        const key = JSON.parse(text.slice(i, j + 1)) as string;
+        if (top.keys.has(key)) return true;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = j;
+    } else if (c === "{") stack.push({ keys: new Set(), expectKey: true });
+    else if (c === "[") stack.push(null);
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === ",") {
+      const top = stack.at(-1);
+      if (top) top.expectKey = true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parses the reviewer's raw output file: strict UTF-8 (no BOM), exactly one JSON value, no duplicate keys, then
+ * core's parseReviewOutput. Never clips or repairs. Issues use fixed text so nothing the reviewer wrote is echoed.
+ */
+export function checkReviewOutput(raw: Buffer | undefined, oversized: boolean): ReviewOutputCheck {
+  if (oversized) return { kind: "invalid", issues: [{ path: "", code: "too_big", message: "output file over its size limit" }] };
+  if (raw === undefined) return { kind: "missing" };
+  let text: string;
+  let value: unknown;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+    value = JSON.parse(text);
+  } catch {
+    return { kind: "invalid", issues: [{ path: "", code: "invalid_json", message: "not a single JSON value in UTF-8" }] };
+  }
+  if (hasDuplicateJsonKeys(text)) return { kind: "invalid", issues: [{ path: "", code: "duplicate_key", message: "an object repeats a key" }] };
+  const parsed = parseReviewOutput(value);
+  return parsed.ok ? { kind: "valid", output: parsed.output } : { kind: "invalid", issues: parsed.issues };
+}
+
+/** Thrown when a review session exists but the harness couldn't write its run.json; carries what's needed to settle it. */
+export class ReviewRunError extends Error {
+  constructor(
+    message: string,
+    readonly sessionId: string,
+    /** The session's cost, or the run's budget when it couldn't be read (worst case). */
+    readonly costUsd: number,
+  ) {
+    super(message);
+    this.name = "ReviewRunError";
+  }
+}
+
+const positiveFinite = (n: number) => typeof n === "number" && Number.isFinite(n) && n > 0;
+const MAX_PROBLEM_CHARS = 500;
+
+/**
+ * Runs the reviewer on one PR head (ADR-0015, shadow mode). The harness bundles base + head with a read-only
+ * token that never reaches the session, copies and mounts screenshots read-only under harness-assigned names,
+ * and validates the verdict strictly: an output that doesn't fit ReviewOutputSchema is rejected whole (status
+ * invalid_output). Writes run.json (ReviewRunSchema) and leaves the raw review-output.json in outDir.
+ *
+ * Once a session exists, every exit writes a run.json with its sessionId and cost: a harness error after that
+ * point interrupts the session (best effort) and records status `failed`. If even that can't be written, it
+ * throws ReviewRunError with the sessionId. Scanning, budgets, the overall verdict and posting are the caller's.
+ */
+export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<ReviewRun> {
+  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) throw new Error("budgetUsd must be a finite number of at least 0.01");
+  if (!positiveFinite(spec.timeoutMinutes)) throw new Error("timeoutMinutes must be a positive finite number");
+  if (spec.hardTimeoutMinutes !== undefined) {
+    if (!positiveFinite(spec.hardTimeoutMinutes)) throw new Error("hardTimeoutMinutes must be a positive finite number");
+    if (spec.timeoutMinutes > spec.hardTimeoutMinutes - REVIEW_SETTLE_MARGIN_MINUTES) {
+      throw new Error(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
+    }
+  }
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const shots = await prepareScreenshotMounts(spec.screenshots ?? []);
+  try {
+    const repo = await deps.github.repo(spec.repo);
+    if (spec.baseBranch !== repo.default_branch) throw new Error(`PR #${spec.pr} targets ${spec.baseBranch}, not the default branch`);
+    const issue = spec.issue === undefined ? undefined : await deps.github.issue(spec.repo, spec.issue);
+    const ownerIds = new Set(spec.ownerIds ?? [repo.owner.id]);
+
+    const bundle: ReviewBundle = await (deps.cloneReview ?? createReviewBundle)(
+      repo.clone_url,
+      { baseBranch: repo.default_branch, pr: spec.pr, headSha: spec.headSha },
+      deps.githubToken,
+    );
+    try {
+      if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
+      deps.log(`review PR #${spec.pr} head ${bundle.headSha.slice(0, 12)} on ${bundle.baseBranch}@${bundle.baseSha.slice(0, 12)}`);
+      const session = await openSession(
+        deps,
+        {
+          runId: spec.runId,
+          role: "reviewer",
+          repo: spec.repo,
+          issue: spec.issue ?? null,
+          budgetUsd: spec.budgetUsd,
+          model: spec.model,
+          environment: spec.environment,
+          skillDirs: spec.skillDirs,
+          review: { pr: spec.pr, headSha: bundle.headSha },
+          mounts: shots.mounts,
+        },
+        bundle,
+      );
+
+      const base = {
+        version: 1 as const,
+        kind: "review" as const,
+        runId: spec.runId,
+        repo: spec.repo,
+        pr: spec.pr,
+        issue: spec.issue ?? null,
+        headSha: bundle.headSha,
+        baseSha: bundle.baseSha,
+        mergeBaseSha: bundle.mergeBaseSha,
+        sessionId: session.sessionId,
+        agent: session.agent,
+        environmentId: session.environmentId,
+        model: session.model,
+        screenshots: shots.mounts.map((s) => s.name),
+        budgetUsd: spec.budgetUsd,
+      };
+      const timing = () => ({
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date(now()).toISOString(),
+        wallSeconds: Math.round((now() - startedAt) / 1000),
+      });
+      const write = async (record: ReviewRun) => {
+        ReviewRunSchema.parse(record);
+        await mkdir(spec.outDir, { recursive: true });
+        await writeFile(join(spec.outDir, "run.json"), `${JSON.stringify(record, null, 2)}\n`);
+        return record;
+      };
+
+      try {
+        const message = buildReviewTaskMessage({
+          repo: spec.repo,
+          pr: spec.pr,
+          baseBranch: bundle.baseBranch,
+          headBranch: bundle.headBranch,
+          baseSha: bundle.baseSha,
+          headSha: bundle.headSha,
+          mergeBaseSha: bundle.mergeBaseSha,
+          ownerIds,
+          issue,
+          prTitle: spec.prTitle,
+          prBody: spec.prBody,
+          ciSummary: spec.ciSummary,
+          screenshots: shots.mounts.map((s) => ({ name: s.name, label: s.label })),
+          guidance: spec.guidance,
+        });
+        const turn = await runTurn(deps, {
+          sessionId: session.sessionId,
+          role: "reviewer",
+          message,
+          priorMessages: 0,
+          timeoutMinutes: spec.timeoutMinutes,
+          outDir: spec.outDir,
+        });
+
+        const raw = turn.files.get(REVIEW_OUTPUT_FILE);
+        const check = checkReviewOutput(raw, turn.oversized.has(REVIEW_OUTPUT_FILE));
+        const problems = [...turn.problems];
+        if (check.kind === "missing") problems.push(`no ${REVIEW_OUTPUT_FILE}`);
+        if (check.kind === "invalid") problems.push(`${REVIEW_OUTPUT_FILE} rejected: it doesn't match the review schema`);
+        return await write({
+          ...base,
+          agent: turn.session.agent,
+          environmentId: turn.session.environmentId,
+          status: decideReviewStatus(turn.stopReason, check.kind),
+          stopReason: turn.stopReason,
+          output: check.kind === "valid" ? check.output : null,
+          outputIssues: check.kind === "invalid" ? check.issues : [],
+          outputBytes: raw?.length ?? null,
+          report: turn.report,
+          ...timing(),
+          activeSeconds: turn.session.activeSeconds,
+          costUsd: turn.session.costCents / 100,
+          problems,
+        });
+      } catch (err) {
+        // The session exists, so this run must still settle: stop it, find out what it cost, and record a failure.
+        const reason = (err instanceof Error ? err.message : String(err)).slice(0, MAX_PROBLEM_CHARS);
+        deps.log(`review harness error after session ${session.sessionId} opened: ${reason}`);
+        await deps.api.interrupt(session.sessionId).catch(() => undefined);
+        // Let the interrupt land so the cost is final, but only briefly: the run still has to settle in time.
+        await waitForTurn(deps.api, session.sessionId, { priorMessages: 0, deadline: now() + (deps.settleMs ?? 30_000), now }).catch(
+          () => undefined,
+        );
+        const info = await deps.api.retrieveSession(session.sessionId).catch(() => undefined);
+        // Unknown cost is recorded at the worst case, so the PR's budget ledger never undercounts.
+        const costUsd = info ? info.costCents / 100 : spec.budgetUsd;
+        try {
+          return await write({
+            ...base,
+            status: "failed",
+            stopReason: "harness_error",
+            output: null,
+            outputIssues: [],
+            outputBytes: null,
+            ...timing(),
+            activeSeconds: info?.activeSeconds ?? null,
+            costUsd,
+            problems: [`harness error: ${reason}`, ...(info ? [] : ["cost unknown; recorded at budget"])],
+          });
+        } catch (writeErr) {
+          const why = (writeErr instanceof Error ? writeErr.message : String(writeErr)).slice(0, MAX_PROBLEM_CHARS);
+          throw new ReviewRunError(`review session ${session.sessionId} failed (${reason}) and its run.json couldn't be written (${why})`, session.sessionId, costUsd);
+        }
+      }
+    } finally {
+      await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
+    }
+  } finally {
+    await rm(shots.dir, { recursive: true, force: true });
+  }
+}
+
 /** Continues a finished session with owner feedback (ADR-0011: redirects resume sessions). */
 export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRecord> {
   const now = deps.now ?? Date.now;
@@ -277,7 +670,7 @@ export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRec
 
 interface Turn {
   runId: string;
-  role: RoleId;
+  role: Exclude<RoleId, "reviewer">;
   repo: string;
   issue: number | null;
   sessionId: string;
@@ -291,36 +684,52 @@ interface Turn {
   startedAt: number;
 }
 
-async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
+interface TurnResult {
+  stopReason: string;
+  session: Awaited<ReturnType<ManagedAgentsApi["retrieveSession"]>>;
+  files: Map<string, Buffer>;
+  /** Accepted outputs the session wrote over their size cap (not downloaded). */
+  oversized: Set<string>;
+  report: AgentReport | undefined;
+  problems: string[];
+}
+
+/** Sends the message, waits for the turn (interrupting at the deadline), and collects the role's outputs. */
+async function runTurn(
+  deps: RunDeps,
+  t: { sessionId: string; role: RoleId; message: string; priorMessages: number; timeoutMinutes: number; outDir: string },
+): Promise<TurnResult> {
   const now = deps.now ?? Date.now;
   const sentAt = now();
-  await deps.api.sendMessage(turn.sessionId, turn.message);
-  const deadline = sentAt + turn.timeoutMinutes * 60_000;
-  let wait = await waitForTurn(deps.api, turn.sessionId, {
-    priorMessages: turn.priorMessages,
+  await deps.api.sendMessage(t.sessionId, t.message);
+  const deadline = sentAt + t.timeoutMinutes * 60_000;
+  let wait = await waitForTurn(deps.api, t.sessionId, {
+    priorMessages: t.priorMessages,
     deadline,
     onEvent: deps.onEvent,
     now,
   });
   if (wait.reconnects > 0) deps.log(`event stream reconnected ${wait.reconnects} time(s)`);
   if (wait.stopReason === "timeout") {
-    deps.log(`timed out after ${turn.timeoutMinutes} min; interrupting`);
-    await deps.api.interrupt(turn.sessionId).catch(() => undefined);
+    deps.log(`timed out after ${t.timeoutMinutes} min; interrupting`);
+    await deps.api.interrupt(t.sessionId).catch(() => undefined);
     // Give the interrupt a moment to land so outputs and cost are final; the status stays "timeout".
-    await waitForTurn(deps.api, turn.sessionId, { priorMessages: turn.priorMessages, deadline: now() + 120_000, now });
+    await waitForTurn(deps.api, t.sessionId, { priorMessages: t.priorMessages, deadline: now() + 120_000, now });
     wait = { ...wait, stopReason: "timeout" };
   }
 
-  const session = await deps.api.retrieveSession(turn.sessionId);
-  await mkdir(turn.outDir, { recursive: true });
+  const session = await deps.api.retrieveSession(t.sessionId);
+  await mkdir(t.outDir, { recursive: true });
   const problems: string[] = [];
+  const oversized = new Set<string>();
   const files = await collectOutputs(
     deps.api,
-    turn.sessionId,
-    turn.outDir,
-    ROLE_OUTPUTS[turn.role],
-    turn.priorMessages > 0 ? sentAt - CLOCK_SKEW_MS : 0,
+    t.sessionId,
+    t.outDir,
+    ROLE_OUTPUTS[t.role],
+    t.priorMessages > 0 ? sentAt - CLOCK_SKEW_MS : 0,
     problems,
+    oversized,
   );
 
   let report: AgentReport | undefined;
@@ -331,6 +740,12 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
       problems.push("report.json is not valid JSON in the expected shape");
     }
   } else problems.push("no report.json");
+  return { stopReason: wait.stopReason, session, files, oversized, report, problems };
+}
+
+async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
+  const now = deps.now ?? Date.now;
+  const { stopReason, session, files, report, problems } = await runTurn(deps, turn);
 
   const outputs: RunRecord["outputs"] = {};
   if (turn.role === "builder" && files.has("result.bundle")) {
@@ -368,8 +783,8 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
     environmentId: session.environmentId,
     model: turn.model,
     turn: turn.priorMessages + 1,
-    status: decideStatus(turn.role, wait.stopReason, report, outputs),
-    stopReason: wait.stopReason,
+    status: decideStatus(turn.role, stopReason, report, outputs),
+    stopReason,
     startedAt: new Date(turn.startedAt).toISOString(),
     finishedAt: new Date(now()).toISOString(),
     wallSeconds: Math.round((now() - turn.startedAt) / 1000),
@@ -386,7 +801,7 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
 }
 
 export function decideStatus(
-  role: RoleId,
+  role: Exclude<RoleId, "reviewer">,
   stopReason: string,
   report: AgentReport | undefined,
   outputs: RunRecord["outputs"],
@@ -409,6 +824,7 @@ async function collectOutputs(
   accepted: readonly string[],
   notBefore: number,
   problems: string[],
+  oversized: Set<string>,
 ): Promise<Map<string, Buffer>> {
   let listed: OutputFile[] = [];
   // Outputs can take a moment to appear after the session idles.
@@ -431,11 +847,13 @@ async function collectOutputs(
     if (limit === SCREENSHOT_LIMIT && ++screenshots > MAX_SCREENSHOTS) continue;
     if (f.sizeBytes > limit) {
       problems.push(`${name} is ${f.sizeBytes} bytes (limit ${limit}); ignored`);
+      oversized.add(name);
       continue;
     }
     const data = await api.downloadFile(f.id);
     if (data.length > limit) {
       problems.push(`${name} downloaded larger than its limit; ignored`);
+      oversized.add(name);
       continue;
     }
     files.set(name, data);

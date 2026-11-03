@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.134.0",
+    "@globalhost/core": "workspace:*",
     "@globalhost/roles": "workspace:*",
     "@globalhost/sanitize": "workspace:*",
     "zod": "4.6.7"
