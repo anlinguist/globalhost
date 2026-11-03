@@ -41,7 +41,14 @@ export interface FactoryConfig {
   git: { defaultBranch: string; baseBranch: string };
   environments: Record<string, { gcpProject: string; region: string }>;
   parts: Record<string, PartConfig>;
-  limits: { maxConcurrentBuilders: number; perRunUsd: number; perRunMinutes: number; dailyUsd: number };
+  limits: {
+    maxConcurrentBuilders: number;
+    perRunUsd: number;
+    perRunMinutes: number;
+    dailyUsd: number;
+    reviewPerPrUsd: number;
+    reviewPerRunUsd: number;
+  };
   guardrails: { loadBearing: string[]; immutable: string[] };
   autoMerge: Array<(typeof AUTO_MERGE_CATEGORIES)[number]>;
   notifications: { blocking: NotificationMode; previews: NotificationMode; routine: NotificationMode };
@@ -371,6 +378,16 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
 
   if (s.limits.perRunUsd > s.limits.dailyUsd) {
     push(["limits", "perRunUsd"], "limits_inconsistent", `perRunUsd ${s.limits.perRunUsd} exceeds dailyUsd ${s.limits.dailyUsd}`);
+  }
+  // Review runs count toward both the PR's review budget and the repo's daily budget.
+  const reviewCap = Math.min(s.limits.reviewPerPrUsd, s.limits.dailyUsd);
+  if (s.limits.reviewPerRunUsd > reviewCap) {
+    const over = s.limits.reviewPerPrUsd <= s.limits.dailyUsd ? "reviewPerPrUsd" : "dailyUsd";
+    push(
+      ["limits", "reviewPerRunUsd"],
+      "limits_inconsistent",
+      `reviewPerRunUsd ${s.limits.reviewPerRunUsd} exceeds ${over} ${reviewCap}`,
+    );
   }
 
   const immutable = [...new Set<string>([...IMMUTABLE_BASELINE, ...s.guardrails.immutable])];

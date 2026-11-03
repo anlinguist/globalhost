@@ -54,7 +54,9 @@
     "maxConcurrentBuilders": 1,
     "perRunUsd": 4,
     "perRunMinutes": 45,
-    "dailyUsd": 20
+    "dailyUsd": 20,
+    "reviewPerPrUsd": 8,
+    "reviewPerRunUsd": 2
   },
   "guardrails": {
     "loadBearing": [

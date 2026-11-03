@@ -152,6 +152,10 @@ export const factoryYamlShape = z
         perRunUsd: money(0.01, 50).default(4),
         perRunMinutes: z.number().int().min(5).max(180).default(45),
         dailyUsd: money(0.01, 200).default(20),
+        /** Review spend per PR across all its review runs (ADR-0015 §13). Going over it escalates. */
+        reviewPerPrUsd: money(0.01, 50).default(8),
+        /** Per review run; a review starts only if the PR's spend plus this fits under reviewPerPrUsd. */
+        reviewPerRunUsd: money(0.01, 50).default(2),
       })
       .prefault({}),
     guardrails: z

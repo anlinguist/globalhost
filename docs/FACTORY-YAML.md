@@ -150,8 +150,12 @@ Each target is `{ adapter, config }`:
 | `perRunUsd` | 4 | 0.01–50, at most 2 decimals |
 | `perRunMinutes` | 45 | integer 5–180 |
 | `dailyUsd` | 20 | 0.01–200, at most 2 decimals |
+| `reviewPerPrUsd` | 8 | 0.01–50, at most 2 decimals |
+| `reviewPerRunUsd` | 2 | 0.01–50, at most 2 decimals |
 
-`perRunUsd` must not exceed `dailyUsd`. The ceilings exist to catch typos (`400` for `4.00`). At run time, the factory-wide caps in factory config also apply, and the lower limit wins.
+`dailyUsd` covers builder and reviewer runs together. `reviewPerPrUsd` is the review budget for one PR, summed over all its review runs (ADR-0015 §13). Before a review starts, the dispatcher reserves `reviewPerRunUsd` against both: the PR's settled review spend plus open reservations plus `reviewPerRunUsd` must fit under `reviewPerPrUsd`, and today's spend plus open reservations plus `reviewPerRunUsd` under `dailyUsd`. Otherwise the review doesn't run and the PR escalates. The reservation is replaced by the run's actual cost when it finishes; a run that crashes stays counted at `reviewPerRunUsd` until the owner clears it. A review run is capped by `reviewPerRunUsd`, not `perRunUsd`, and doesn't take a builder slot.
+
+`perRunUsd` must not exceed `dailyUsd`, and `reviewPerRunUsd` must not exceed `reviewPerPrUsd` or `dailyUsd`. The ceilings exist to catch typos (`400` for `4.00`). At run time, the factory-wide caps in factory config also apply, and the lower limit wins.
 
 ### 3.8 `guardrails`
 
@@ -278,7 +282,7 @@ Codes are stable, because `--json` consumers depend on them:
 | `env_prod_missing` | hosted preview without a `prod` environment (needed for `preview_config_names_prod`) |
 | `automerge_requires_l3` | `autoMerge` non-empty below L3 |
 | `guardrail_conflict` | same pattern in `loadBearing` and `immutable` |
-| `limits_inconsistent` | `perRunUsd` > `dailyUsd` |
+| `limits_inconsistent` | `perRunUsd` > `dailyUsd`, or `reviewPerRunUsd` > `reviewPerPrUsd` or `dailyUsd` |
 | `owner_duplicate` | repeated owner `id` or `login` |
 
 ## 6. JSON Schema
