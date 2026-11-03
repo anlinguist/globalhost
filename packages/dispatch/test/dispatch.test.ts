@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseFactoryYaml, validateFactoryConfig, type FactoryConfig } from "@globalhost/core";
 import type { RunRecord } from "@globalhost/runner";
-import { dispatchStep, gateStep, writeOutputs, type DispatchDeps } from "../src/dispatch.js";
+import { dispatchStep, gateStep, githubIdEnv, writeOutputs, type DispatchDeps } from "../src/dispatch.js";
 import { ControlPlane, ObjectStore } from "../src/gcp.js";
 import { GitHubClient, latestMarker, marker, type Comment } from "../src/github.js";
 import { asPostable, publish } from "../src/publish.js";
@@ -421,5 +421,15 @@ describe("publish", () => {
     expect(result.outcome).toBe("failed");
     expect(cloud.comments[0]?.body).toContain("budget cap");
     expect([...cloud.labels.get(12)!]).toEqual(["factory:failed"]);
+  });
+});
+
+describe("githubIdEnv", () => {
+  it("accepts real-size run and comment IDs", () => {
+    expect(githubIdEnv({ GITHUB_RUN_ID: "41580326667" }, "GITHUB_RUN_ID")).toBe(41580326667);
+    expect(githubIdEnv({ GITHUB_RUN_ID: String(Number.MAX_SAFE_INTEGER) }, "GITHUB_RUN_ID")).toBe(Number.MAX_SAFE_INTEGER);
+  });
+  it.each(["", "0", "012", "-5", "1e10", " 41580326667", "41580326667\n", "12345678901234567", "9007199254740993"])("rejects %j", (raw) => {
+    expect(() => githubIdEnv({ GITHUB_RUN_ID: raw }, "GITHUB_RUN_ID")).toThrow(/GITHUB_RUN_ID/);
   });
 });

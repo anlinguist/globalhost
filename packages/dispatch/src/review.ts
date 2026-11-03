@@ -36,7 +36,7 @@ import {
   type ReviewBundle,
   type ReviewRun,
 } from "@globalhost/runner";
-import { loadConfig, type DispatchDeps, type Env } from "./dispatch.js";
+import { githubIdEnv, loadConfig, type DispatchDeps, type Env } from "./dispatch.js";
 import { ControlPlane, ObjectStore, RUNS_BUCKET, accessSecret, gcloudAccessToken, reviewArchivePrefix, reviewRecordPath, type ReviewHead } from "./gcp.js";
 import { GitHubClient, GitHubError, reviewInstallationToken } from "./github.js";
 import { githubSnapshot, profileRunSettings, type RunSettings } from "./profile-settings.js";
@@ -201,7 +201,7 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       log("review: the factory is paused; nothing ran");
       return { outcome: "paused" };
     }
-    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${intFrom(env, "GITHUB_RUN_ID")}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
+    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${githubIdEnv(env, "GITHUB_RUN_ID")}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
     const head: ReviewHead = { repo, pr: target.pr, sha: target.sha };
     const claim = await control.reviewClaim(head, runId, { perRunMinutes: config.limits.perRunMinutes, rereview: target.rereview });
     if (!claim.claimed) {

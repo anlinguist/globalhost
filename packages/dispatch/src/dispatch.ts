@@ -142,6 +142,14 @@ export async function writeOutputs(path: string, out: GateOutputs): Promise<void
   await appendFile(path, `${lines.join("\n")}\n`);
 }
 
+/** A GitHub database ID (run, comment, …): these passed 10 digits, so allow any safe integer. */
+export function githubIdEnv(env: Env, name: string): number {
+  const raw = env[name];
+  if (!raw) throw new Error(`${name} is not set`);
+  if (!/^[1-9][0-9]{0,15}$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error(`${name} is not a positive integer`);
+  return Number(raw);
+}
+
 const intEnv = (env: Env, name: string): number | undefined => {
   const raw = env[name];
   if (raw === undefined || raw === "") return undefined;
@@ -197,7 +205,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
   const target = pr ?? issue;
   onError.report = async () => {
     // Only fixed text and the run link: error messages can carry API responses, so they stay in the Actions log.
-    const runUrl = `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}/actions/runs/${need(env, "GITHUB_RUN_ID")}`;
+    const runUrl = `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}/actions/runs/${githubIdEnv(env, "GITHUB_RUN_ID")}`;
     const { gh } = await writer();
     await gh.request("POST", `/repos/${repo}/issues/${target}/comments`, {
       body: `**globalhost:** the ${role} run stopped on a factory error (not the agent's). Details are in the [Actions run](${runUrl}).`,
@@ -228,7 +236,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
   if (action === "resume") {
     // Builder: steering on its PR. Planner: a reply on the planned issue, to revise the plan.
     if (role === "builder" && !pr) throw new Error("builder resume without a PR");
-    const commentId = intEnv(env, "GLOBALHOST_COMMENT");
+    const commentId = githubIdEnv(env, "GLOBALHOST_COMMENT");
     const c = await reader.request("GET", `/repos/${repo}/issues/comments/${commentId}`, undefined, CommentSchema);
     // Re-check the author here: this job doesn't trust anything but its own reads.
     if (!ownerIds.includes(c.user.id) || c.user.type !== "User") throw new Error("steering comment is not by an owner");
@@ -245,14 +253,14 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
     resumeFrom = { session: prev.marker.session, costUsd: prev.marker.costUsd };
   }
 
-  const holder = `${issue}-${need(env, "GITHUB_RUN_ID")}`;
+  const holder = `${issue}-${githubIdEnv(env, "GITHUB_RUN_ID")}`;
   const slot = role === "builder" ? await control.acquireSlot(repo, holder, config.limits.maxConcurrentBuilders, config.limits.perRunMinutes + 30) : null;
   if (role === "builder" && !slot) {
     return refuse(target, `all ${config.limits.maxConcurrentBuilders} builder slot(s) for this repo are busy. Re-apply the label (or comment again) when the current run finishes.`);
   }
   try {
     const api = deps.api ?? sdkApi(anthropicClient(federationIdsFromEnv(env as NodeJS.ProcessEnv), githubActionsIdentity(env as NodeJS.ProcessEnv, deps.fetchImpl)));
-    const runId = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${role}-${issue}-${need(env, "GITHUB_RUN_ID")}`;
+    const runId = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${role}-${issue}-${githubIdEnv(env, "GITHUB_RUN_ID")}`;
     const outDir = join(need(env, "RUNNER_TEMP"), "globalhost", runId);
     const settings = deps.profiles ? await profileRunSettings(deps.profiles, config, await githubSnapshot(reader, repo, config.git.defaultBranch)) : {};
     const runDeps = {
