@@ -48,7 +48,7 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 
 `ControlPlane` also holds the reviewer's state in `gs://globalhost-control/reviews/<owner>/<name>/` (repo lowercased; repo, PR number, SHA and run ID are validated before they go into an object name; the SHA must be 40-hex, so a SHA-256 repository fails closed):
 
-- **`pr-<n>/<sha>.claim.json`:** one live review attempt per head SHA. `reviewClaim(head, runId, { perRunMinutes, rereview })` creates it (create-only). An uncompleted claim older than `minReviewStaleMinutes(perRunMinutes)` (= `perRunMinutes` + 30) is a crashed run and is taken over by compare-and-swap. A completed claim is replaced only with `rereview` (an owner's `factory:review`), as the next `attempt`; a re-review never displaces an in-flight one. A corrupt claim is never taken over (`reason: "corrupt"`).
+- **`pr-<n>/<sha>.claim.json`:** one live review attempt per head SHA. `reviewClaim(head, runId, { perRunMinutes, rereview })` creates it (create-only). An uncompleted claim older than `minReviewStaleMinutes(perRunMinutes)` (= `perRunMinutes` + 30) is a crashed run and is taken over by compare-and-swap. The claim stores the `perRunMinutes` it was taken with, and staleness is judged by that, so lowering the limit mid-run can't cut a live claim short (claims without it use the current value). A completed claim is replaced only with `rereview` (an owner's `factory:review`), as the next `attempt`; a re-review never displaces an in-flight one. A corrupt claim is never taken over (`reason: "corrupt"`).
 - **`pr-<n>.json`:** the PR's review ledger and shadow index (`ReviewLedgerSchema` in core): settled spend, open reservations, and one `ShadowEntry` per run (runs past 200 drop off, their cost kept in `truncatedSpendUsd`). A corrupt ledger counts as over budget and is never overwritten.
 - **Daily spend:** reviews share `spend/<day>/<repo>.json` with builders. Open review reservations sit there too, and `spentTodayUsd` counts them.
 
@@ -111,9 +111,9 @@ A run that crashes never settles, so its hold stays counted at the full per-run 
 
    - For release observation, add `GLOBALHOST_RELEASE_WIF_PROVIDER` and `GLOBALHOST_RELEASE_SA` (the read-only Cloud Build identity) and commit `.github/workflows/globalhost-release.yml` too.
    - For reviews (P2-01, shadow; ADR-0018):
-     - add the repo to `reviewRepos` in `infra/factory` and apply;
+     - add the repo to `reviewRepos` in `infra/factory` (GitHub's canonical `owner/name` casing) and apply;
      - in the Anthropic Console, add a second federation rule and service account for environment `globalhost-review` (workspace `globalhost-runners`);
-     - create an environment `globalhost-review` whose deployment branches are limited to the default branch;
+     - create an environment `globalhost-review` whose deployment branches are limited to the default branch, with **no** required reviewers, **no** wait timer and **no** environment secrets. Everything it needs is a repo variable or comes from WIF. A reviewer or wait timer would hold the job past its claim window;
      - add the variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` (stack outputs `reviewWorkloadIdentityProvider` and `reviewServiceAccount`), plus `ANTHROPIC_REVIEW_FEDERATION_RULE_ID` and `ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID`;
      - create the label `factory:review`;
      - make sure CI uploads the `smoke` artifact as described above;

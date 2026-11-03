@@ -57,8 +57,9 @@ jobs:
     # limits.perRunMinutes (≤ 180), so a live review is never taken over as stale (takeover is perRunMinutes + 30).
     timeout-minutes: ${{ fromJSON(needs.gate.outputs.timeout) }}
     environment: globalhost-review
-    # One review per PR (= its factory/issue-<n> head branch) at a time. Never cancel a running review: every exit
-    # after its claim must settle its spend. A newer trigger waits; GitHub keeps only the newest waiting one.
+    # One review job per PR at a time: the group key is the PR number from the gate, and the gate allows only same-repo
+    # factory/issue-<n> PRs, one per head branch. Never cancel a running review: every exit after its claim must settle
+    # its spend. A newer trigger waits; GitHub keeps only the newest waiting one.
     concurrency:
       group: globalhost-review-pr-${{ needs.gate.outputs.pr }}
       cancel-in-progress: false

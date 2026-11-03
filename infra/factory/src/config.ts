@@ -75,7 +75,8 @@ export const FactoryConfigSchema = z
     releaseObservers: z.array(ReleaseObserverSchema).default([]),
     /**
      * Product repos whose `globalhost-review.yml` may act as the review identity (PLAN P2-01, ADR-0018). Each must
-     * also be in `dispatchRepos`, with the same name and default branch.
+     * also be in `dispatchRepos`, with the same name and default branch. `name` must be GitHub's canonical casing
+     * (as GITHUB_REPOSITORY reports it): the spend-record IAM condition matches it case-sensitively.
      */
     reviewRepos: z.array(DispatchRepoSchema).default([]),
     /** GitHub environment the review job must run in to get the review identity. Never the dispatch environment. */

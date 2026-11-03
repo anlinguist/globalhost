@@ -306,7 +306,7 @@ export class ControlPlane {
   ): Promise<ReviewClaimResult> {
     const name = reviewClaimObject(head);
     checkRunId(runId);
-    const staleMs = minReviewStaleMinutes(perRunMinutes) * 60_000;
+    minReviewStaleMinutes(perRunMinutes); // validates it before anything is written
     const fresh = (attempt: number, previousRunId: string | null): ReviewClaim =>
       ReviewClaimSchema.parse({
         version: 1,
@@ -315,6 +315,7 @@ export class ControlPlane {
         runId,
         claimedAt: this.now().toISOString(),
         previousRunId,
+        perRunMinutes,
         completedAt: null,
         recordPath: null,
       });
@@ -327,6 +328,8 @@ export class ControlPlane {
     const { claim: existing, generation } = held;
     if (existing.recordPath === null) {
       if (existing.runId === runId) return { claimed: true, claim: existing };
+      // The holder's own window (stored when it claimed), not today's config: a lowered limit mustn't cut it short.
+      const staleMs = minReviewStaleMinutes(existing.perRunMinutes ?? perRunMinutes) * 60_000;
       if (!(this.now().getTime() - Date.parse(existing.claimedAt) > staleMs)) return { claimed: false, existing, reason: "in-flight" };
     } else if (!rereview) {
       return { claimed: false, existing, reason: "completed" };

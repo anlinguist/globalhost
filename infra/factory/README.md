@@ -59,7 +59,7 @@ Created only once `reviewRepos` lists a repo (each must match a `dispatchRepos` 
 | `globalhost-runs` | `roles/storage.objectCreator` | `<owner>/<name>/reviews/` (lowercased), per listed repo | create-only review archive; no read, overwrite or delete |
 | secret `github-app-key` | `roles/secretmanager.secretAccessor` | — | mint the review-scoped installation token (`REVIEW_PERMISSIONS`). The key can mint any of the App's permissions, so that scoping is self-restraint (ADR-0018) |
 
-Nothing at project level, no lock objects, no other repo's review state. Renaming a product repo means updating its `reviewRepos` (and `dispatchRepos`) name, or the name conditions stop matching and reviews fail closed. It talks to Anthropic with its own GitHub OIDC token through its own federation rule (Console; environment `globalhost-review`).
+Nothing at project level, no lock objects, no other repo's review state. Renaming a product repo means updating its `reviewRepos` (and `dispatchRepos`) name, or the name conditions stop matching and reviews fail closed. The name must use GitHub's canonical casing (`gh api repos/<owner>/<name> --jq .full_name`). The `reviews/` and runs prefixes are lowercased, but the spend records (`spend/<day>/<owner>__<name>.json`, which builders share) keep `GITHUB_REPOSITORY`'s case, and IAM conditions can't compare case-insensitively. A mismatch fails closed: the review can't reserve its spend. It talks to Anthropic with its own GitHub OIDC token through its own federation rule (Console; environment `globalhost-review`).
 
 After `pulumi up`, set the product repo's variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` from `pulumi stack output reviewWorkloadIdentityProvider` and `reviewServiceAccount`.
 

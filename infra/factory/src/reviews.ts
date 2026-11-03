@@ -18,8 +18,10 @@ export function reviewAttributeValue(repo: DispatchRepo, environment: string): s
 /**
  * Only the default branch's copy of the review workflow (both `job_workflow_ref` and `workflow_ref`, so no other
  * workflow can call it and get the token), for its two triggers, in the review environment, on a GitHub-hosted
- * runner. `ref` is the default branch for `workflow_run` and the base branch for `pull_request_target`, so a PR
- * into another branch is refused too. A PR can't change what runs with this identity.
+ * runner. A PR can't change what runs with this identity. The `ref` clause doesn't refuse PRs into other branches:
+ * since GitHub's December 2025 change, `pull_request_target` runs (and their OIDC `ref`) use the default branch
+ * whatever the PR's base. That refusal is the review gate's base-branch check (packages/dispatch review-gate.ts,
+ * `pullProblem`).
  */
 export function reviewProviderCondition(config: FactoryConfig): string {
   const repoClauses = config.reviewRepos
@@ -44,6 +46,11 @@ export function reviewProviderCondition(config: FactoryConfig): string {
 const objectPrefix = (bucket: string, prefix: string) => `resource.name.startsWith("projects/_/buckets/${bucket}/objects/${prefix}")`;
 
 /**
+ * Names in these conditions come from `reviewRepos[].name`, which must be GitHub's canonical `owner/name` casing
+ * (what GITHUB_REPOSITORY reports): the `reviews/` and runs prefixes are lowercased like packages/dispatch writes
+ * them, but the spend key keeps the case (gcp.ts builds it from GITHUB_REPOSITORY as-is, shared with builders), and
+ * CEL can't compare case-insensitively. A wrong case fails closed: the review can't reserve its spend.
+ *
  * Control bucket, read/write/delete (claims and the PR ledger are compare-and-swap): each review repo's
  * `reviews/<owner>/<name>/` (lowercased, as packages/dispatch writes it) and its daily spend records
  * `spend/<day>/<owner>__<name>.json`, which reviews share with builders. Nothing else: not `state.json`, `locks/`,
