@@ -135,8 +135,13 @@ function setup(opts: { event?: object; eventName?: string; added?: string; start
       GITHUB_RUN_ID: "41580326667",
       GITHUB_RUN_ATTEMPT: "1",
       RUNNER_TEMP: mkdtempSync(join(tmpdir(), "runner-temp-")),
+      GLOBALHOST_APP_ID: "123456",
       GLOBALHOST_APP_SLUG: "globalhost-ai",
       GLOBALHOST_JOB_TIMEOUT_MINUTES: "45",
+      ANTHROPIC_ORGANIZATION_ID: "org-test",
+      ANTHROPIC_FEDERATION_RULE_ID: "rule-test",
+      ANTHROPIC_SERVICE_ACCOUNT_ID: "sa-test",
+      ANTHROPIC_WORKSPACE_ID: "ws-test",
       ...opts.env,
     },
     registry,
@@ -320,6 +325,32 @@ describe("reviewStep: budgets", () => {
     const s = setup({ env: { GLOBALHOST_JOB_TIMEOUT_MINUTES: "120" } });
     await expect(reviewStep(s.deps)).rejects.toThrow(/perRunMinutes/);
     expect(claim(s)).toBeUndefined();
+  });
+
+  it.each([
+    ["a federation variable", { ANTHROPIC_FEDERATION_RULE_ID: "" }, /ANTHROPIC_FEDERATION_RULE_ID/],
+    ["the App ID", { GLOBALHOST_APP_ID: "" }, /GLOBALHOST_APP_ID/],
+    ["a bogus App ID", { GLOBALHOST_APP_ID: "abc" }, /GLOBALHOST_APP_ID/],
+    ["the run attempt", { GITHUB_RUN_ATTEMPT: "" }, /GITHUB_RUN_ATTEMPT/],
+    ["RUNNER_TEMP", { RUNNER_TEMP: "" }, /RUNNER_TEMP/],
+  ])("refuses a missing or invalid %s before claiming anything", async (_what, env, message) => {
+    const run = stubRun(output());
+    const s = setup({ env, start: run.fn });
+    // The App ID is read only when the review token isn't injected, as in the installed workflow.
+    delete s.deps.reviewToken;
+    await expect(reviewStep(s.deps)).rejects.toThrow(message);
+    expect(claim(s)).toBeUndefined();
+    expect(await ledger(s)).toBeNull();
+    expect([...s.cloud.objects.keys()].filter((k) => k.startsWith(`${CONTROL_BUCKET}/spend/`))).toEqual([]);
+    expect(run.calls).toEqual([]);
+  });
+
+  it("refuses to claim without the job's OIDC request variables when it builds the Anthropic client itself", async () => {
+    const s = setup();
+    delete s.deps.api;
+    await expect(reviewStep(s.deps)).rejects.toThrow(/id-token: write/);
+    expect(claim(s)).toBeUndefined();
+    expect(await ledger(s)).toBeNull();
   });
 
   it("does nothing while the factory is paused", async () => {

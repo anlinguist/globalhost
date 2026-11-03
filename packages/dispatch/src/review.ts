@@ -33,6 +33,7 @@ import {
   githubActionsIdentity,
   sdkApi,
   startReview,
+  type ManagedAgentsApi,
   type ReviewBundle,
   type ReviewRun,
 } from "@globalhost/runner";
@@ -87,7 +88,7 @@ async function readEvent(env: Env): Promise<unknown> {
 // ---- review-gate ----
 
 export interface ReviewGateOutputs {
-  /** review: run the review job. unlabel: run it only to remove an owner's factory:review. ignore: nothing. */
+  /** review: run the review job. unlabel: run the unlabel job, to remove an owner's refused factory:review. ignore: nothing. */
   action: "review" | "ignore" | "unlabel";
   pr?: number;
   /** limits.perRunMinutes: the review job's timeout-minutes, so a live review is never taken over as stale. */
@@ -191,17 +192,21 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
   const target = decision.target;
   try {
     const control = new ControlPlane(new ObjectStore(gcpToken, deps.fetchImpl), () => new Date(now()));
+    // Everything the run reads from its environment is validated before claiming, so a misconfigured repo fails
+    // here instead of stranding an in-flight claim for perRunMinutes + 30.
     const jobTimeout = intFrom(env, "GLOBALHOST_JOB_TIMEOUT_MINUTES");
-    // Validated before claiming, so a bad value never strands an in-flight claim.
     const jobStartMs = jobStartedAt(env, stepStart, jobTimeout);
     if (jobTimeout > config.limits.perRunMinutes) {
       throw new Error(`the review job's timeout (${jobTimeout} min) is over limits.perRunMinutes (${config.limits.perRunMinutes})`);
     }
+    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${githubIdEnv(env, "GITHUB_RUN_ID")}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
+    const api = reviewApi(env, deps);
+    if (!deps.reviewToken) intFrom(env, "GLOBALHOST_APP_ID");
+    need(env, "RUNNER_TEMP");
     if (await control.paused()) {
       log("review: the factory is paused; nothing ran");
       return { outcome: "paused" };
     }
-    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${githubIdEnv(env, "GITHUB_RUN_ID")}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
     const head: ReviewHead = { repo, pr: target.pr, sha: target.sha };
     const claim = await control.reviewClaim(head, runId, { perRunMinutes: config.limits.perRunMinutes, rereview: target.rereview });
     if (!claim.claimed) {
@@ -209,7 +214,7 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       return { outcome: "not-claimed", reason: claim.reason };
     }
     log(`review: PR #${target.pr} at ${target.sha.slice(0, 12)}, attempt ${claim.claim.attempt} (${runId})`);
-    return await runClaimed({ deps, reader, writer, control, config, ownerIds, botLogin, target, head, runId, jobDeadlineMs: jobStartMs + jobTimeout * 60_000, now });
+    return await runClaimed({ deps, api, reader, writer, control, config, ownerIds, botLogin, target, head, runId, jobDeadlineMs: jobStartMs + jobTimeout * 60_000, now });
   } finally {
     if (target.viaLabel) await unlabel(target.pr);
   }
@@ -217,6 +222,7 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
 
 interface ClaimedContext {
   deps: ReviewDeps;
+  api: ManagedAgentsApi;
   reader: GitHubClient;
   writer: () => Promise<GitHubClient>;
   control: ControlPlane;
@@ -229,6 +235,20 @@ interface ClaimedContext {
   /** When the Actions job will be killed (epoch ms). */
   jobDeadlineMs: number;
   now: () => number;
+}
+
+/**
+ * The Anthropic client of the review's own federation rule (ADR-0014). The federation variables are checked even
+ * when a test injects the API; the job's OIDC request variables only when it doesn't. Building it makes no request.
+ */
+function reviewApi(env: Env, deps: ReviewDeps): ManagedAgentsApi {
+  const processEnv = env as NodeJS.ProcessEnv;
+  const ids = federationIdsFromEnv(processEnv);
+  if (deps.api) return deps.api;
+  if (!env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+    throw new Error("no GitHub Actions OIDC token available (is id-token: write set?)");
+  }
+  return sdkApi(anthropicClient(ids, githubActionsIdentity(processEnv, deps.fetchImpl)));
 }
 
 /**
@@ -339,8 +359,6 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
       timeoutMinutes = Math.min(limits.perRunMinutes, remaining - REVIEW_SETTLE_MARGIN_MINUTES);
       if (timeoutMinutes < 1) throw new Error("not enough of the job's time is left to run a review");
 
-      const api =
-        deps.api ?? sdkApi(anthropicClient(federationIdsFromEnv(env as NodeJS.ProcessEnv), githubActionsIdentity(env as NodeJS.ProcessEnv, deps.fetchImpl)));
       const prepared = bundle;
       // From here a session may exist: an error with no cost to go on is charged the run's cap, unless startReview
       // says it failed before opening one (ReviewNotStartedError).
@@ -371,7 +389,7 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
             ownerIds: c.ownerIds,
           },
           {
-            api,
+            api: c.api,
             github: new GitHubReader(env.GITHUB_TOKEN, deps.fetchImpl),
             githubToken: env.GITHUB_TOKEN,
             log,

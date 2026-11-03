@@ -56,13 +56,30 @@ describe("globalhost-review.yml template", () => {
   it("runs the review job in globalhost-review, read-only plus OIDC, never cancelled, timed from the gate", () => {
     const review = job("review");
     expect(review).toContain("needs: gate");
-    expect(review).toContain("if: needs.gate.outputs.action == 'review' || needs.gate.outputs.action == 'unlabel'");
+    expect(review).toContain("if: needs.gate.outputs.action == 'review'\n");
     expect(review).toContain("environment: globalhost-review");
     expect(permissions(review)).toEqual(["contents: read", "issues: read", "pull-requests: read", "actions: read", "id-token: write"]);
     expect(review).toContain("timeout-minutes: ${{ fromJSON(needs.gate.outputs.timeout) }}");
     expect(review).toContain("GLOBALHOST_JOB_TIMEOUT_MINUTES: ${{ needs.gate.outputs.timeout }}");
     expect(review).toMatch(/concurrency:\n\s+group: globalhost-review-pr-\$\{\{ needs\.gate\.outputs\.pr \}\}\n\s+cancel-in-progress: false/);
     expect(review).toContain("step: review");
+  });
+
+  it("removes a refused factory:review in its own job: no environment, no concurrency group, label write only", () => {
+    const unlabel = job("unlabel");
+    expect(unlabel).toContain("needs: gate");
+    expect(unlabel).toContain("if: needs.gate.outputs.action == 'unlabel'\n");
+    expect(unlabel).not.toContain("environment:");
+    expect(unlabel).not.toContain("concurrency:");
+    expect(unlabel).not.toContain("uses:");
+    expect(permissions(unlabel)).toEqual(["pull-requests: write"]);
+    expect(unlabel).toContain("PR: ${{ needs.gate.outputs.pr }}");
+    expect(unlabel).toContain(`labels/${REVIEW_LABEL}"`);
+    // The shell body reads only its environment; nothing is interpolated into it.
+    const body = unlabel.split("run: |\n")[1]!;
+    expect(body).not.toContain("${{");
+    // Only the unlabel job gets a write token.
+    for (const other of ["gate", "review"]) expect(permissions(job(other)).filter((p) => p.endsWith("write"))).toEqual(other === "review" ? ["id-token: write"] : []);
   });
 
   it("records the job's start in its first step and passes it to the review step", () => {

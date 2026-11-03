@@ -67,8 +67,9 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 ```
 workflow_run (globalhost-ci completed) / pull_request_target labeled factory:review
   └─ review-gate  (read-only GITHUB_TOKEN)  decideReview → review | unlabel | ignore, pr, timeout (= limits.perRunMinutes)
+  └─ unlabel      (GITHUB_TOKEN pull-requests: write; no environment)  remove the refused factory:review
   └─ review       (environment globalhost-review)
-       decideReview again with its own reads → kill switch → claim → reserve
+       decideReview again with its own reads → validate the step's environment → kill switch → claim → reserve
        bundle base + PR head once (read-only token) → diff, commits, paths, patch-id
        CI summary (jobs, steps, log tails; capped) + CI `smoke` artifact screenshots (zip parsed in memory)
        scanDiff over diff, commits, paths and the CI summary → startReview (budget reviewPerRunUsd)
@@ -83,9 +84,9 @@ workflow_run (globalhost-ci completed) / pull_request_target labeled factory:rev
 - **Cost when it fails.** A failure before a session could exist (`ReviewNotStartedError`, or anything before startReview) settles at $0. A `ReviewRunError` settles at its cost. Any other startReview failure settles at `reviewPerRunUsd`, since a session may exist with an unknown cost.
 - **Posting.** One review per head SHA, event `COMMENT` on that commit, found again by the first-line marker `<!-- globalhost:review {"sha","run"} -->` on the bot's own reviews and updated in place. Reviewer text is shown only in code spans and fenced blocks it can't close, with control and bidi characters stripped and HTML comment delimiters broken, so it can't mention, link, close issues, inject HTML or forge a marker. An escalation adds `needs:owner-approval`; the reasons are fixed text. The token is minted by `reviewInstallationToken` with `REVIEW_PERMISSIONS` (issues and pull requests write, metadata read; no contents), through its own seam (`reviewToken`), never the publisher's `appToken`. A PR with more than 3 000 reviews is refused rather than risk a duplicate post.
 
-Step environment: `GITHUB_*`, `RUNNER_TEMP`, `GLOBALHOST_APP_ID`, `GLOBALHOST_APP_SLUG`, `GLOBALHOST_JOB_TIMEOUT_MINUTES`, `GLOBALHOST_JOB_STARTED_AT`, and the Anthropic federation variables of the review's own rule (`ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_SERVICE_ACCOUNT_ID` come from the repo variables `ANTHROPIC_REVIEW_FEDERATION_RULE_ID` and `ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID`). `review-gate` needs only `GITHUB_*`, `GITHUB_TOKEN` and `GLOBALHOST_APP_SLUG`, and outputs `action` (`ignore | review | unlabel`), `pr` and `timeout`.
+Step environment: `GITHUB_*`, `RUNNER_TEMP`, `GLOBALHOST_APP_ID`, `GLOBALHOST_APP_SLUG`, `GLOBALHOST_JOB_TIMEOUT_MINUTES`, `GLOBALHOST_JOB_STARTED_AT`, the job's OIDC request variables, and the Anthropic federation variables of the review's own rule (`ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_SERVICE_ACCOUNT_ID` come from the repo variables `ANTHROPIC_REVIEW_FEDERATION_RULE_ID` and `ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID`). `review` checks all of them before it claims, so a misconfigured repo fails without stranding a claim for `perRunMinutes` + 30. `review-gate` needs only `GITHUB_*`, `GITHUB_TOKEN` and `GLOBALHOST_APP_SLUG`, and outputs `action` (`ignore | review | unlabel`), `pr` and `timeout`.
 
-**Workflow** (`globalhost-review.yml`). The `gate` job has a read-only `GITHUB_TOKEN` (contents, pull requests, actions) and no environment. The `review` job runs only for `review` or `unlabel`, in the environment `globalhost-review`, with `timeout-minutes` set to the gate's `timeout`. Its token is read-only (contents, issues for the spec issue, pull requests, actions) plus `id-token: write`, it uses GCP WIF as `sa:globalhost-gh-review`, and it runs with `concurrency: globalhost-review-pr-<n>`, `cancel-in-progress: false`. GitHub keeps only the newest waiting run per group, so an owner's `factory:review` that was replaced while waiting stays on the PR: remove it and apply it again.
+**Workflow** (`globalhost-review.yml`). The `gate` job has a read-only `GITHUB_TOKEN` (contents, pull requests, actions) and no environment. The `unlabel` job runs only for `unlabel` (an owner's `factory:review` that's refused by the gate, e.g. because CI hasn't succeeded on the head; a label the review step can't act on, such as one for a SHA whose review is in flight, is removed by that step). Its token can only write pull requests, it has no environment and no concurrency group, and it only removes the label with `gh api`, so it can't displace a review waiting in the PR's group. The `review` job runs only for `review`, in the environment `globalhost-review`, with `timeout-minutes` set to the gate's `timeout`. Its token is read-only (contents, issues for the spec issue, pull requests, actions) plus `id-token: write`, it uses GCP WIF as `sa:globalhost-gh-review`, and it runs with `concurrency: globalhost-review-pr-<n>`, `cancel-in-progress: false`. GitHub keeps only the newest waiting run per group, so an owner's `factory:review` that was replaced while waiting stays on the PR: remove it and apply it again.
 
 A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, but only for the owner or a cleanup job; nothing calls it automatically. The P1-13 orphans job should also delete `reviews/<repo>/pr-<n>*` once the PR is closed, after any shadow-index export the metrics need.
 
@@ -94,10 +95,7 @@ A run that crashes never settles, so its hold stays counted at the full per-run 
 `globalhost install` will automate this (P1-09). Until then, set it up by hand, once per repo:
 
 1. **Factory side:** make sure the factory infra is applied (P1-04) with the repo in `dispatchRepos`, and that the `globalhost-ai` App is created and installed on the repo (P1-05).
-2. **Anthropic Console:** add a federation rule for the repo's dispatcher. Use Connect workload → GitHub Actions with these settings:
-   - the same immutable-subject form as the audit's rule;
-   - environment `globalhost`;
-   - workspace `globalhost-runners`.
+2. **Anthropic Console:** nothing to add. The dispatcher's and the reviewer's federation rules each cover every repo of the owner (ADR-0014), so reuse the existing rule and service-account IDs as repo variables. They're kept outside this public repo.
 3. **In the product repo:**
    - Create an environment `globalhost` whose deployment branches are limited to the default branch.
    - Add these repo variables. They're identifiers, not secrets:
@@ -107,14 +105,13 @@ A run that crashes never settles, so its hold stays counted at the full per-run 
      | `GLOBALHOST_WIF_PROVIDER` | stack output `workloadIdentityProvider` |
      | `GLOBALHOST_DISPATCH_SA` | `globalhost-gh-dispatch@globalhost-factory.iam.gserviceaccount.com` |
      | `GLOBALHOST_APP_ID`, `GLOBALHOST_APP_SLUG` | printed by `infra/github-app` |
-     | `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID` | from step 2 |
+     | `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID` | the existing dispatcher rule's (step 2) |
 
    - For release observation, add `GLOBALHOST_RELEASE_WIF_PROVIDER` and `GLOBALHOST_RELEASE_SA` (the read-only Cloud Build identity) and commit `.github/workflows/globalhost-release.yml` too.
    - For reviews (P2-01, shadow; ADR-0018):
      - add the repo to `reviewRepos` in `infra/factory` (GitHub's canonical `owner/name` casing) and apply;
-     - in the Anthropic Console, add a second federation rule and service account for environment `globalhost-review` (workspace `globalhost-runners`);
      - create an environment `globalhost-review` whose deployment branches are limited to the default branch, with **no** required reviewers, **no** wait timer and **no** environment secrets. Everything it needs is a repo variable or comes from WIF. A reviewer or wait timer would hold the job past its claim window;
-     - add the variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` (stack outputs `reviewWorkloadIdentityProvider` and `reviewServiceAccount`), plus `ANTHROPIC_REVIEW_FEDERATION_RULE_ID` and `ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID`;
+     - add the variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` (stack outputs `reviewWorkloadIdentityProvider` and `reviewServiceAccount`), plus `ANTHROPIC_REVIEW_FEDERATION_RULE_ID` and `ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID` (the existing review rule's IDs; no Console setup);
      - create the label `factory:review`;
      - make sure CI uploads the `smoke` artifact as described above;
      - commit `.github/workflows/globalhost-review.yml`.

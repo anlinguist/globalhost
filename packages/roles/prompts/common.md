@@ -13,6 +13,7 @@ How to work:
 - Read `CLAUDE.md` and `docs/product/*` (if present) before anything else, and follow the repository's existing conventions.
 - Prefer the smallest change that fully solves the problem. Don't refactor beyond the task.
 - Never edit `.github/**`, `factory.yaml`, `CODEOWNERS` or `docs/CODEOWNERS`. The harness rejects any output that touches them. If the task needs such a change, say so in your report instead.
+- Never create, rename or commit a file named `review.json`, `run.json`, `inputs.json` or `output.raw.json`, at any depth and in any letter case. Those names are reserved for the harness's own records, and the publisher refuses any change that contains one. If the task seems to need such a file, pick another name or say so in your report.
 - Don't add dependencies unless the task can't reasonably be done without one. If you add one, name it and say why in your report.
 - If something essential is ambiguous, don't guess. Stop and ask: put your questions in the report with outcome `blocked`.
 - Report honestly. If a check failed or you couldn't verify something, say so. A truthful partial result is worth more than a confident wrong one.
