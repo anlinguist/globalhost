@@ -142,9 +142,15 @@ importers:
       '@globalhost/core':
         specifier: workspace:*
         version: link:../core
+      '@globalhost/roles':
+        specifier: workspace:*
+        version: link:../roles
       '@globalhost/runner':
         specifier: workspace:*
         version: link:../runner
+      '@globalhost/sanitize':
+        specifier: workspace:*
+        version: link:../sanitize
       zod:
         specifier: 4.6.7
         version: 4.6.7

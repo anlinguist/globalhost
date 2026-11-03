@@ -1,6 +1,6 @@
-// `globalhost dispatch <gate|run|observe>`: the steps of the installed workflows (P1-07, P1-12), run by
+// `globalhost dispatch <gate|run|observe|review-gate|review>`: the steps of the installed workflows (P1-07, P1-12), run by
 // packages/action inside a product repo's GitHub Actions job. Not meant for interactive use.
-import { dispatchStep, gateStep, observeStep, writeOutputs } from "@globalhost/dispatch";
+import { dispatchStep, gateStep, observeStep, reviewGateStep, reviewStep, writeOutputs, writeReviewGateOutputs } from "@globalhost/dispatch";
 import { PROFILES, SKILL_DIRS, defaultDeps, printable } from "./main.js";
 
 export async function dispatchCommand(argv: readonly string[], env: NodeJS.ProcessEnv, err: (t: string) => void): Promise<number> {
@@ -26,7 +26,20 @@ export async function dispatchCommand(argv: readonly string[], env: NodeJS.Proce
       // Red when any part's prod build failed, was cancelled or wasn't seen in time.
       return out.outcome === "failed" ? 1 : 0;
     }
-    log("usage: globalhost dispatch <gate|run|observe>");
+    if (argv[1] === "review-gate" && argv.length === 2) {
+      const out = await reviewGateStep(deps);
+      log(`review-gate: ${out.action}${out.reason ? ` (${out.reason})` : ""}`);
+      if (!env.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT is not set");
+      await writeReviewGateOutputs(env.GITHUB_OUTPUT, out);
+      return 0;
+    }
+    if (argv[1] === "review" && argv.length === 2) {
+      const out = await reviewStep(deps);
+      log(`review: ${out.outcome}${out.outcome === "reviewed" ? ` ${out.record.overall}, $${out.record.costUsd.toFixed(2)}` : ""}`);
+      // A review that escalated or whose run failed is reported on the PR; the job only fails on harness errors.
+      return 0;
+    }
+    log("usage: globalhost dispatch <gate|run|observe|review-gate|review>");
     return 2;
   } catch (e) {
     log(`error: ${(e as Error).message}`);

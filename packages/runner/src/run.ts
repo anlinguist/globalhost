@@ -135,6 +135,8 @@ interface SessionLaunch {
   review?: { pr: number; headSha: string };
   /** Extra read-only files to mount (local path → mount path under the uploads root). */
   mounts?: readonly { localPath: string; mountPath: string }[];
+  /** Set to true just before createSession is called: from then on a session may exist. */
+  progress?: { creating: boolean };
 }
 
 /** Syncs the role's agent (with its pinned skills) and environment, uploads the bundle, and opens the session. */
@@ -152,6 +154,7 @@ async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle,
     l.review ? `${l.repo} PR #${l.review.pr} ${l.role}`
     : l.issue === null ? `${l.repo} ${l.role}`
     : `${l.repo}#${l.issue} ${l.role}`;
+  if (l.progress) l.progress.creating = true;
   const sessionId = await deps.api.createSession({
     agent,
     environmentId,
@@ -368,6 +371,12 @@ export interface ReviewSpec {
   timeoutMinutes: number;
   /** The job's own hard limit, if any; timeoutMinutes must be at most this minus REVIEW_SETTLE_MARGIN_MINUTES. */
   hardTimeoutMinutes?: number;
+  /**
+   * Absolute time (epoch ms) by which startReview must have returned, e.g. the job's own deadline less the
+   * caller's post-review work. The turn is cut at this minus REVIEW_SETTLE_MARGIN_MINUTES however long the
+   * setup (clone, skill and agent sync, uploads) took, and the waits after an interrupt stay inside it.
+   */
+  deadlineEpochMs?: number;
   outDir: string;
   /** Defaults to the builder's pinned model (DEFAULT_MODEL). */
   model?: string;
@@ -443,6 +452,23 @@ export function checkReviewOutput(raw: Buffer | undefined, oversized: boolean): 
   return parsed.ok ? { kind: "valid", output: parsed.output } : { kind: "invalid", issues: parsed.issues };
 }
 
+/**
+ * Thrown when a review fails before any session could exist (before createSession was called): nothing ran,
+ * so the caller settles it at $0.
+ */
+export class ReviewNotStartedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ReviewNotStartedError";
+  }
+}
+
+/** The shortest wait for an interrupt to land, even when a deadline has (nearly) passed. */
+const MIN_INTERRUPT_WAIT_MS = 10_000;
+
+/** Least time a review needs between opening its session and its deadline's settle margin to be worth sending. */
+const MIN_REVIEW_TURN_MS = 60_000;
+
 /** Thrown when a review session exists but the harness couldn't write its run.json; carries what's needed to settle it. */
 export class ReviewRunError extends Error {
   constructor(
@@ -470,18 +496,46 @@ const MAX_PROBLEM_CHARS = 500;
  * throws ReviewRunError with the sessionId. Scanning, budgets, the overall verdict and posting are the caller's.
  */
 export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<ReviewRun> {
-  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) throw new Error("budgetUsd must be a finite number of at least 0.01");
-  if (!positiveFinite(spec.timeoutMinutes)) throw new Error("timeoutMinutes must be a positive finite number");
+  // Spec problems are found before anything runs, so they are "not started" too.
+  const refuse = (message: string): never => {
+    throw new ReviewNotStartedError(message);
+  };
+  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) refuse("budgetUsd must be a finite number of at least 0.01");
+  if (!positiveFinite(spec.timeoutMinutes)) refuse("timeoutMinutes must be a positive finite number");
   if (spec.hardTimeoutMinutes !== undefined) {
-    if (!positiveFinite(spec.hardTimeoutMinutes)) throw new Error("hardTimeoutMinutes must be a positive finite number");
+    if (!positiveFinite(spec.hardTimeoutMinutes)) refuse("hardTimeoutMinutes must be a positive finite number");
     if (spec.timeoutMinutes > spec.hardTimeoutMinutes - REVIEW_SETTLE_MARGIN_MINUTES) {
-      throw new Error(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
+      refuse(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
     }
   }
+  if (spec.deadlineEpochMs !== undefined && !positiveFinite(spec.deadlineEpochMs)) refuse("deadlineEpochMs must be a positive finite number");
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const shots = await prepareScreenshotMounts(spec.screenshots ?? []);
+  const progress = { creating: false };
+  const notStarted = (err: unknown): never => {
+    if (progress.creating || err instanceof ReviewRunError) throw err;
+    throw new ReviewNotStartedError(err instanceof Error ? err.message : String(err), { cause: err });
+  };
+  const shots = await prepareScreenshotMounts(spec.screenshots ?? []).catch(notStarted);
   try {
+    return await reviewWithMounts(spec, deps, shots, progress, now, startedAt);
+  } catch (err) {
+    return notStarted(err);
+  } finally {
+    await rm(shots.dir, { recursive: true, force: true });
+  }
+}
+
+async function reviewWithMounts(
+  spec: ReviewSpec,
+  deps: RunDeps,
+  shots: { dir: string; mounts: ScreenshotMount[] },
+  progress: { creating: boolean },
+  now: () => number,
+  startedAt: number,
+): Promise<ReviewRun> {
+  const marginMs = REVIEW_SETTLE_MARGIN_MINUTES * 60_000;
+  {
     const repo = await deps.github.repo(spec.repo);
     if (spec.baseBranch !== repo.default_branch) throw new Error(`PR #${spec.pr} targets ${spec.baseBranch}, not the default branch`);
     const issue = spec.issue === undefined ? undefined : await deps.github.issue(spec.repo, spec.issue);
@@ -494,6 +548,9 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
     );
     try {
       if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
+      if (spec.deadlineEpochMs !== undefined && now() + MIN_REVIEW_TURN_MS > spec.deadlineEpochMs - marginMs) {
+        throw new Error("too little time is left before the review's deadline to open a session");
+      }
       deps.log(`review PR #${spec.pr} head ${bundle.headSha.slice(0, 12)} on ${bundle.baseBranch}@${bundle.baseSha.slice(0, 12)}`);
       const session = await openSession(
         deps,
@@ -508,6 +565,7 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
           skillDirs: spec.skillDirs,
           review: { pr: spec.pr, headSha: bundle.headSha },
           mounts: shots.mounts,
+          progress,
         },
         bundle,
       );
@@ -565,6 +623,8 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
           priorMessages: 0,
           timeoutMinutes: spec.timeoutMinutes,
           outDir: spec.outDir,
+          hardDeadline: spec.deadlineEpochMs === undefined ? undefined : spec.deadlineEpochMs - marginMs,
+          interruptDeadline: spec.deadlineEpochMs === undefined ? undefined : spec.deadlineEpochMs - 60_000,
         });
 
         const raw = turn.files.get(REVIEW_OUTPUT_FILE);
@@ -593,7 +653,13 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
         deps.log(`review harness error after session ${session.sessionId} opened: ${reason}`);
         await deps.api.interrupt(session.sessionId).catch(() => undefined);
         // Let the interrupt land so the cost is final, but only briefly: the run still has to settle in time.
-        await waitForTurn(deps.api, session.sessionId, { priorMessages: 0, deadline: now() + (deps.settleMs ?? 30_000), now }).catch(
+        // At least a short wait even past deadline - 60 s: the settle margin has room for it.
+        const settleMs = deps.settleMs ?? 30_000;
+        const settleUntil = Math.max(
+          now() + Math.min(settleMs, MIN_INTERRUPT_WAIT_MS),
+          Math.min(now() + settleMs, spec.deadlineEpochMs === undefined ? Number.POSITIVE_INFINITY : spec.deadlineEpochMs - 60_000),
+        );
+        await waitForTurn(deps.api, session.sessionId, { priorMessages: 0, deadline: settleUntil, now, quietMs: 10_000 }).catch(
           () => undefined,
         );
         const info = await deps.api.retrieveSession(session.sessionId).catch(() => undefined);
@@ -620,8 +686,6 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
     } finally {
       await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
     }
-  } finally {
-    await rm(shots.dir, { recursive: true, force: true });
   }
 }
 
@@ -697,28 +761,43 @@ interface TurnResult {
 /** Sends the message, waits for the turn (interrupting at the deadline), and collects the role's outputs. */
 async function runTurn(
   deps: RunDeps,
-  t: { sessionId: string; role: RoleId; message: string; priorMessages: number; timeoutMinutes: number; outDir: string },
+  t: {
+    sessionId: string;
+    role: RoleId;
+    message: string;
+    priorMessages: number;
+    timeoutMinutes: number;
+    outDir: string;
+    /** Absolute cap on the turn (epoch ms), whatever timeoutMinutes says. */
+    hardDeadline?: number;
+    /** Absolute cap on the wait for an interrupt to land. */
+    interruptDeadline?: number;
+  },
 ): Promise<TurnResult> {
   const now = deps.now ?? Date.now;
   const sentAt = now();
   await deps.api.sendMessage(t.sessionId, t.message);
-  const deadline = sentAt + t.timeoutMinutes * 60_000;
+  const deadline = Math.min(sentAt + t.timeoutMinutes * 60_000, t.hardDeadline ?? Number.POSITIVE_INFINITY);
   let wait = await waitForTurn(deps.api, t.sessionId, {
     priorMessages: t.priorMessages,
     deadline,
     onEvent: deps.onEvent,
     now,
+    // With a hard deadline, check it more often than the default minute of quiet.
+    ...(t.hardDeadline === undefined ? {} : { quietMs: 30_000 }),
   });
   if (wait.reconnects > 0) deps.log(`event stream reconnected ${wait.reconnects} time(s)`);
   if (wait.stopReason === "timeout") {
-    deps.log(`timed out after ${t.timeoutMinutes} min; interrupting`);
+    deps.log(`timed out after ${Math.round((now() - sentAt) / 60_000)} min; interrupting`);
     await deps.api.interrupt(t.sessionId).catch(() => undefined);
     // Give the interrupt a moment to land so outputs and cost are final; the status stays "timeout".
-    await waitForTurn(deps.api, t.sessionId, { priorMessages: t.priorMessages, deadline: now() + 120_000, now });
+    // At least MIN_INTERRUPT_WAIT_MS even past the interrupt deadline: the settle margin has room for it.
+    const until = Math.max(now() + MIN_INTERRUPT_WAIT_MS, Math.min(now() + 120_000, t.interruptDeadline ?? Number.POSITIVE_INFINITY));
+    await waitForTurn(deps.api, t.sessionId, { priorMessages: t.priorMessages, deadline: until, now, ...(t.interruptDeadline === undefined ? {} : { quietMs: 10_000 }) });
     wait = { ...wait, stopReason: "timeout" };
   }
 
-  const session = await deps.api.retrieveSession(t.sessionId);
+  let session = await deps.api.retrieveSession(t.sessionId);
   await mkdir(t.outDir, { recursive: true });
   const problems: string[] = [];
   const oversized = new Set<string>();
@@ -740,6 +819,9 @@ async function runTurn(
       problems.push("report.json is not valid JSON in the expected shape");
     }
   } else problems.push("no report.json");
+  // The cost can still rise while outputs are collected (an interrupt landing late): keep the larger reading.
+  const later = await deps.api.retrieveSession(t.sessionId).catch(() => undefined);
+  if (later && later.costCents > session.costCents) session = { ...session, costCents: later.costCents };
   return { stopReason: wait.stopReason, session, files, oversized, report, problems };
 }
 

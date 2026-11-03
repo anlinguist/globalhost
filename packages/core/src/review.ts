@@ -287,10 +287,20 @@ export const ReviewRecordFields = z.strictObject({
   verification: z.null(),
 });
 
-type VerdictInvariantFields = Pick<z.infer<typeof ReviewRecordFields>, "status" | "verdicts" | "overall" | "escalations">;
+type VerdictInvariantFields = Pick<z.infer<typeof ReviewRecordFields>, "status" | "verdicts" | "overall" | "escalations"> & {
+  /** Scan hits (records) or their distinct codes (shadow index entries). */
+  scanHits: readonly unknown[];
+};
 
 /** overallVerdict's invariants, so a record (or shadow index entry) that contradicts itself is rejected on read. */
 export function checkVerdictInvariants(r: VerdictInvariantFields, ctx: z.RefinementCtx): void {
+  if (r.scanHits.length > 0 && !r.escalations.includes("scan-hit")) {
+    ctx.addIssue({ code: "custom", path: ["escalations"], message: "a scan hit must escalate (scan-hit)" });
+  }
+  if (r.overall !== "escalate") {
+    const strictest = VERDICT_AREAS.reduce<Verdict>((v, a) => (RANK[r.verdicts[a]] > RANK[v] ? r.verdicts[a] : v), "pass");
+    if (r.overall !== strictest) ctx.addIssue({ code: "custom", path: ["overall"], message: "overall must be the strictest area verdict" });
+  }
   if (new Set(r.escalations).size !== r.escalations.length) {
     ctx.addIssue({ code: "custom", path: ["escalations"], message: "escalations must be unique" });
   }

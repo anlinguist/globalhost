@@ -44,7 +44,7 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 - `factory/issue-<n>` already exists, which is the branch claim: steer the existing PR instead;
 - all `maxConcurrentBuilders` slots are busy.
 
-## Review control state (P2-01, not wired to a workflow yet)
+## Review control state (P2-01)
 
 `ControlPlane` also holds the reviewer's state in `gs://globalhost-control/reviews/<owner>/<name>/` (repo lowercased; repo, PR number, SHA and run ID are validated before they go into an object name; the SHA must be 40-hex, so a SHA-256 repository fails closed):
 
@@ -54,11 +54,36 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 
 **Contract for the review step** (also at the top of the review section in `src/gcp.ts`):
 
-1. `reserveReview(head, runId, { perRun, perPr, dailyUsd })` before anything runs. It holds `reviewPerRunUsd` on the PR ledger and then on the day's spend record. If either is refused, don't run; the PR escalates.
-2. `reviewClaim`. If it isn't claimed, don't run.
+1. `reviewClaim`. If it isn't claimed, don't run and don't reserve, so a duplicate trigger costs nothing.
+2. `reserveReview(head, runId, { perRun, perPr, dailyUsd })` before anything runs. It holds `reviewPerRunUsd` on the PR ledger and then on the day's spend record. If either is refused, don't run; record a budget-exhausted review, which escalates.
 3. Archive under `reviewArchivePrefix(head, runId)` in `globalhost-runs` (`<repo>/reviews/pr-<n>/<sha>/<runId>/`), per attempt.
-4. `completeReviewClaim(head, runId)`. Post the GitHub review only if it returned true.
-5. `recordReviewRun` **always**, with the actual cost (0 if nothing ran). It settles the reservation on the reservation's day, then the ledger, and it is idempotent per run ID.
+4. `recordReviewRun` **always** once claimed, with the actual cost (0 if nothing ran, the per-run cap if a session may exist and its cost is unknown). It settles the reservation on the reservation's day, then the ledger, and it is idempotent per run ID.
+5. `completeReviewClaim(head, runId)`, only after archiving. Post the GitHub review only if it returned true.
+
+## Review steps (P2-01, shadow mode)
+
+`globalhost dispatch review-gate` and `globalhost dispatch review` are the steps of the review workflow (installed in PR 5 of P2-01). `src/review.ts`:
+
+```
+workflow_run (globalhost-ci completed) / pull_request_target labeled factory:review
+  └─ review-gate  (read-only GITHUB_TOKEN)  decideReview → review | unlabel | ignore, pr, timeout (= limits.perRunMinutes)
+  └─ review       (environment globalhost-review)
+       decideReview again with its own reads → kill switch → claim → reserve
+       bundle base + PR head once (read-only token) → diff, commits, paths, patch-id
+       CI summary (jobs, steps, log tails; capped) + CI `smoke` artifact screenshots (zip parsed in memory)
+       scanDiff over diff, commits, paths and the CI summary → startReview (budget reviewPerRunUsd)
+       ReviewRecord via overallVerdict → archive create-only → settle → complete claim → post
+```
+
+- **Who triggers it.** A same-repo PR from `factory/issue-<n>` into the default branch, opened by `<GLOBALHOST_APP_SLUG>[bot]` (type Bot), open, with its head equal to the CI run's head; the CI run must be `globalhost-ci` (`.github/workflows/globalhost-ci.yml`) for a `pull_request` event, and its actor and triggering actor the bot or an owner. `factory:review` counts only when an owner applies it; it re-reviews the current head if CI succeeded on it, and is removed once acted on (also when refused). Only that path re-reviews a SHA. Reviews don't take a builder slot.
+- **Inputs are untrusted and capped before scanning.** The CI summary is at most 18 000 characters (job list ≤ 5 000, an equal share of the rest per job's log tail, logs read at most 64 KB from the end), with timestamps, control characters and ANSI escapes removed and secrets masked. Screenshots are PNGs under `screenshots/` in the CI run's `smoke` artifact: at most 20, 10 MB each, 50 MB zipped; `readZip` refuses symlinks, special files, traversal, duplicates, zip64, encryption and size lies, and nothing from the zip is written except the chosen PNGs, under harness names in a realpath'd directory. Entry names are passed as untrusted labels. Downloads time out after 60 s per request and body, and the CI logs (fetched 4 at a time) and the artifact share one 3-minute deadline, past which the review goes ahead with what was read (`inputsDeadlineReached` in `inputs.json`). Issue comments are never passed.
+- **Smoke artifact contract (for PR 5 and each profile's CI).** Only entries whose path starts with `screenshots/` are read. `actions/upload-artifact` strips the least common ancestor of its `path`s, so the artifact must be uploaded from a parent directory with the screenshots in a `screenshots/` subdirectory, alongside at least one other path (as numu-know's CI does: `playwright-report`, `test-results`, `screenshots`). Uploading `screenshots/` alone would flatten its entries to the root, and the review would see no screenshots.
+- **Harness checks.** The scan covers the diff, commit messages and paths, plus the CI summary, the PR title and body, and the screenshot labels. A finding whose `file` isn't in the diff has its file and line cleared (the original is in `inputs.json`). Any scan hit escalates. Verdicts come only from `overallVerdict` over the validated output.
+- **Timeouts.** The job's deadline is `GLOBALHOST_JOB_STARTED_AT` (epoch seconds, written by the job's first step; without it, 5 min before this step) plus `GLOBALHOST_JOB_TIMEOUT_MINUTES` (≤ `limits.perRunMinutes`). startReview gets `deadlineEpochMs` = that deadline less 2 min for archiving, settling and posting. The runner cuts the turn at `deadlineEpochMs` less its 3-minute settle margin, however long the clone, agent sync and uploads took, and keeps the interrupt and settle waits inside it.
+- **Cost when it fails.** A failure before a session could exist (`ReviewNotStartedError`, or anything before startReview) settles at $0. A `ReviewRunError` settles at its cost. Any other startReview failure settles at `reviewPerRunUsd`, since a session may exist with an unknown cost.
+- **Posting.** One review per head SHA, event `COMMENT` on that commit, found again by the first-line marker `<!-- globalhost:review {"sha","run"} -->` on the bot's own reviews and updated in place. Reviewer text is shown only in code spans and fenced blocks it can't close, with control and bidi characters stripped and HTML comment delimiters broken, so it can't mention, link, close issues, inject HTML or forge a marker. An escalation adds `needs:owner-approval`; the reasons are fixed text. The token is minted by `reviewInstallationToken` with `REVIEW_PERMISSIONS` (issues and pull requests write, metadata read; no contents), through its own seam (`reviewToken`), never the publisher's `appToken`. A PR with more than 3 000 reviews is refused rather than risk a duplicate post.
+
+Step environment: `GITHUB_*`, `RUNNER_TEMP`, `GLOBALHOST_APP_ID`, `GLOBALHOST_APP_SLUG`, `GLOBALHOST_JOB_TIMEOUT_MINUTES`, `GLOBALHOST_JOB_STARTED_AT`, and the Anthropic federation variables of the review's own rule.
 
 A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, but only for the owner or a cleanup job; nothing calls it automatically. The P1-13 orphans job should also delete `reviews/<repo>/pr-<n>*` once the PR is closed, after any shadow-index export the metrics need.
 

@@ -17,7 +17,9 @@
   "dependencies": {
     "@globalhost/adapter-cloud-build-trigger": "workspace:*",
     "@globalhost/core": "workspace:*",
+    "@globalhost/roles": "workspace:*",
     "@globalhost/runner": "workspace:*",
+    "@globalhost/sanitize": "workspace:*",
     "zod": "4.6.7"
   }
 }

@@ -292,7 +292,7 @@ describe("ReviewRecordSchema", () => {
     overall: "pass",
     escalations: [],
     taint: { tainted: true, reasons: ["registry-egress"] },
-    scanHits: [hit],
+    scanHits: [],
     findings: [finding()],
     costUsd: 1.25,
     prSpendUsd: 2.5,
@@ -318,6 +318,14 @@ describe("ReviewRecordSchema", () => {
     ["duplicate escalations", { ...record, overall: "escalate", escalations: ["scan-hit", "scan-hit"] }],
     ["pass with escalations", { ...record, escalations: ["scan-hit"] }],
     ["escalate without escalations", { ...record, overall: "escalate" }],
+    ["scan hit without the scan-hit escalation", { ...record, scanHits: [hit] }],
+    [
+      "scan hit escalated for another reason only",
+      { ...record, scanHits: [hit], overall: "escalate", escalations: ["reviewer-escalated"], verdicts: { ...record.verdicts, security: "escalate" } },
+    ],
+    ["pass over a changes area", { ...record, verdicts: { ...record.verdicts, function: "changes" } }],
+    ["changes over all-pass areas", { ...record, overall: "changes" }],
+    ["changes over an escalated area", { ...record, overall: "changes", verdicts: { ...record.verdicts, security: "escalate" } }],
     [
       "timeout that didn't escalate every area",
       { ...record, status: "timeout", overall: "escalate", escalations: ["timeout"] },
@@ -335,6 +343,13 @@ describe("ReviewRecordSchema", () => {
       escalations: ["timeout"],
     };
     expect(ReviewRecordSchema.safeParse(escalated).success).toBe(true);
+  });
+
+  it("accepts a scan hit that escalates, and changes as the strictest area", () => {
+    const hitRecord = { ...record, scanHits: [hit], overall: "escalate", escalations: ["scan-hit"] };
+    expect(ReviewRecordSchema.safeParse(hitRecord).success).toBe(true);
+    const changes = { ...record, overall: "changes", verdicts: { ...record.verdicts, performance: "changes" } };
+    expect(ReviewRecordSchema.safeParse(changes).success).toBe(true);
   });
 
   it("accepts a sha256 repo's 64-hex object ids", () => {

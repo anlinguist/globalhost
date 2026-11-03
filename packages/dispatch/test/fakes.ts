@@ -44,6 +44,12 @@ export class FakeCloud {
   comments: { issue: number; body: string; user?: typeof BOT }[] = [];
   labels = new Map<number, Set<string>>();
   pulls: { number: number; head: string; base: string; title: string; draft: boolean }[] = [];
+  /** Non-JSON responses by `METHOD url-or-path` (downloads, redirects), checked before everything else. */
+  raw = new Map<string, () => Response>();
+  /** PR reviews, by PR number. */
+  reviews: { pr: number; id: number; body: string; user: { login: string; type: string }; commit_id?: string; event?: string }[] = [];
+  /** Requests that fail with this status, by `METHOD path` prefix (for fault injection). */
+  failing = new Map<string, number>();
   private gen = 1;
 
   constructor(factoryYaml = FACTORY_YAML) {
@@ -58,6 +64,15 @@ export class FakeCloud {
     const url = new URL(String(input));
     const method = init.method ?? "GET";
     const body = typeof init.body === "string" ? safeJson(init.body) : init.body;
+    for (const [prefix, status] of this.failing) {
+      if (`${method} ${url.host === "api.github.com" ? "" : url.host}${url.pathname}${url.search}`.startsWith(prefix)) return new Response("{}", { status });
+    }
+    const rawKey = `${method} ${url.host === "api.github.com" ? `${url.pathname}${url.search}` : url.href}`;
+    const raw = this.raw.get(rawKey);
+    if (raw) {
+      this.calls.push({ method, path: rawKey.slice(method.length + 1) });
+      return raw();
+    }
     if (url.host === "storage.googleapis.com") return this.gcs(url, method, init);
     const path = `${url.pathname}${url.search}`;
     this.calls.push({ method, path, body });
@@ -65,6 +80,23 @@ export class FakeCloud {
     if (this.routes.has(key)) return Response.json(this.routes.get(key));
 
     let m: RegExpExecArray | null;
+    if (method === "GET" && (m = /^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(url.pathname))) {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const all = this.reviews.filter((r) => r.pr === Number(m![1]));
+      return Response.json(page === 1 ? all.map((r) => ({ id: r.id, body: r.body, user: r.user })) : []);
+    }
+    if (method === "POST" && (m = /^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(url.pathname))) {
+      const b = body as { body: string; commit_id: string; event: string };
+      const id = 5000 + this.reviews.length;
+      this.reviews.push({ pr: Number(m[1]), id, body: b.body, user: BOT, commit_id: b.commit_id, event: b.event });
+      return Response.json({ id });
+    }
+    if (method === "PUT" && (m = /^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews\/(\d+)$/.exec(url.pathname))) {
+      const r = this.reviews.find((x) => x.id === Number(m![2]));
+      if (!r) return new Response("{}", { status: 404 });
+      r.body = (body as { body: string }).body;
+      return Response.json({ id: r.id });
+    }
     if (method === "POST" && (m = /\/issues\/(\d+)\/comments$/.exec(url.pathname))) {
       this.comments.push({ issue: Number(m[1]), body: (body as { body: string }).body });
       return Response.json({ id: this.comments.length }, { status: 201 });
