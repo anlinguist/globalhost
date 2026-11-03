@@ -9,6 +9,7 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudflareConfig, DispatchRepo, FactoryConfig } from "./config.js";
 import { createPreviews } from "./previews.js";
 import { createReleaseObservers } from "./releases.js";
+import { createReviewer } from "./reviews.js";
 
 export const RUNS_BUCKET = "globalhost-runs";
 export const CONTROL_BUCKET = "globalhost-control";
@@ -199,6 +200,9 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     member: ghDispatchMember,
   });
 
+  // ── Reviewer (PLAN P2-01, ADR-0018): its own provider and identity; review objects only ─────────────
+  const reviewer = createReviewer({ config, pool, control, runs, controlStateObject: CONTROL_STATE_OBJECT, afterApis });
+
   // ── Secret: GitHub App private key (value added by the owner via infra/github-app) ─────────────
   const appKey = new gcp.secretmanager.Secret(
     "github-app-key",
@@ -217,7 +221,11 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     project,
     secretId: appKey.secretId,
     policyData: pulumi.jsonStringify({
-      bindings: [{ role: "roles/secretmanager.secretAccessor", members: [ghDispatchMember] }],
+      // The reviewer mints only REVIEW_PERMISSIONS tokens with it, but the key itself can mint any of the App's
+      // permissions: that scoping is self-restraint in trusted code (ADR-0018).
+      bindings: [
+        { role: "roles/secretmanager.secretAccessor", members: reviewer ? [ghDispatchMember, reviewer.member] : [ghDispatchMember] },
+      ],
     }),
   });
 
@@ -442,5 +450,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     imagesWorkloadIdentityProvider: previews.imagesWorkloadIdentityProvider,
     previews: previews.previews,
     releaseObservers: releases.releaseObservers,
+    reviewServiceAccount: reviewer?.serviceAccount,
+    reviewWorkloadIdentityProvider: reviewer?.workloadIdentityProvider,
   };
 }

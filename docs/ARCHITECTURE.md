@@ -90,6 +90,8 @@ Responsibilities:
 
 Phase 2+ may move steps 4–5 into a Cloud Run "publisher" job to save Actions minutes on private repos (public repos have unlimited minutes).
 
+**Reviewer (P2-01, shadow mode; ADR-0018).** A second installed workflow, `.github/workflows/globalhost-review.yml`, runs on `workflow_run` of `globalhost-ci` (completed) and on an owner's `factory:review` label (`pull_request_target`), always from the default branch and without checking out PR code. Its gate job (read-only `GITHUB_TOKEN`, no environment) runs `globalhost dispatch review-gate`: a same-repo `factory/issue-<n>` PR the App opened, CI green on its current head. Its review job runs in the separate environment `globalhost-review` as `sa:globalhost-gh-review`, with its own Anthropic federation rule. It runs `globalhost dispatch review`: claim the head SHA, reserve the review budget, read the diff, the CI summary and the `smoke` screenshots, scan them, run the reviewer, then archive, settle and post a `COMMENT` review with a review-scoped App token. An escalation adds `needs:owner-approval`. Details: `packages/dispatch/README.md`.
+
 ### 2.4 Runner
 
 > **Primary host: Claude Managed Agents** (ADR-0011, accepted after spike P1-00): hosted sandbox with Node/pnpm/Chromium, server-side per-session budget, `limited` egress, vault secrets substituted at egress, resumable sessions, funded by the Max credit. Same contract as below: read-only inputs in, bundle + `run.json` out, trusted publisher pushes. The Cloud Run Job described below is the fallback host behind the same `RunnerHost` interface.
@@ -116,7 +118,7 @@ The runner SA reads no secrets: it authenticates to Anthropic with its own Googl
 |---|---|---|---|
 | planner | label `factory:plan` (or new owner issue at L2+) | plan comment: approach, acceptance-test list, risks, wireframe options (UI), estimated cost | no |
 | builder | label `factory:build`; owner comment on `factory/*` PR | bundle → branch + PR | yes |
-| reviewer (P2; ADR-0015) | builder's `factory/*` PR opened/updated | function, security and performance verdicts (harness-validated, archived in GCS) + a GitHub review | no |
+| reviewer (P2; ADR-0015, ADR-0018) | `globalhost-ci` green on a factory PR's head; an owner's `factory:review` | function, security and performance verdicts (harness-validated, archived in GCS) + a GitHub review | no |
 | triager (P5) | scanner finding / Sentry issue | label + classification comment | no |
 | fixer (P4) | `factory:autofix` (from triage/Sentry) | draft PR with regression test | yes |
 | assessor | `globalhost assess` (owner, local) | `assessment.md` + readiness scores → onboarding issue, composed and posted by trusted code (`packages/assess`) | no (read-only; builds and tests only in its sandbox, no bundle) |
@@ -171,6 +173,7 @@ owner files issue ──▶ label factory:plan ──▶ planner run ──▶ p
 | `factory:in-review` | PR open, awaiting CI/review/owner (or the merge policy at L3); removed when the merge deploys and the issue closes | publisher; release observer |
 | `factory:blocked` | agent needs an answer; question in comment | publisher |
 | `factory:failed` | run failed or hit a cap | publisher |
+| `factory:review` | re-review the factory PR's current head (P2-01, shadow); removed once acted on | owner (removed by the review job) |
 | `needs:owner-approval` | a guardrail tripped (permissions, breaking API, immutable path), or the merge policy escalated (ADR-0015) | CI guardrail check; merge policy |
 | `approved:<guardrail>` | owner acknowledges a specific guardrail | owner |
 | `factory:autofix` | (P4) eligible for auto-fix run | triager |
@@ -202,7 +205,10 @@ Rules:
 | Owner (`anlinguist`) | GitHub, GCP, Cloudflare | everything | — |
 | GitHub App `globalhost-ai` | installed per repo | contents RW, issues RW, PRs RW, checks R, actions R, metadata R | **workflows** (cannot modify `.github/workflows/**`), administration, secrets, members |
 | App token (read-only variant) | minted by dispatcher for the run's inputs | contents/issues/PRs read on one repo, 1h | any write |
+| App token (review-scoped, P2-01) | minted by the review job (`REVIEW_PERMISSIONS`) to post the review and labels | PRs write, issues write, metadata read on one repo, 1h | contents write (push, merge); workflows. Scoping is self-restraint in trusted code: the job can read the App key (ADR-0018) |
 | `sa:gh-dispatch` (`globalhost-gh-dispatch`) | WIF provider `github/globalhost-dispatch`: owner ID 47403803, a listed repo ID on its default branch, environment `globalhost` (product repos' `globalhost.yml`) | bucket- and secret-level only: read/write/delete objects in `globalhost-control`; create + read objects in `globalhost-runs`; access secret `github-app-key` | any project-level role; overwrite or delete run artifacts; deploy anything; read product projects |
+| `sa:globalhost-gh-review` (P2-01, ADR-0018) | WIF provider `github/globalhost-review`: owner ID 47403803, a `reviewRepos` repo ID, its default branch's `globalhost-review.yml` (`job_workflow_ref` + `workflow_ref`), `workflow_run` or `pull_request_target`, environment `globalhost-review`, GitHub-hosted | object-name-conditioned only: read/write/delete `reviews/<repo>/…` and `spend/*/<repo>.json` in `globalhost-control`; read `state.json`; create objects under `<repo>/reviews/` in `globalhost-runs`; access secret `github-app-key` | any project-level role; builder locks or other repos' state; write `state.json`; read, overwrite or delete run artifacts; be minted by a PR's workflow file or the `globalhost` environment |
+| `globalhost-review.yml`'s `GITHUB_TOKEN` | product repo, gate and review jobs | gate: contents, PRs, actions read. Review: also issues read (the spec issue) | any write |
 | `sa:runner` (**not built**; Cloud Run fallback only) | Cloud Run Job | would: write `gs://globalhost-runs/<run>`; its identity token accepted by one Anthropic federation rule (ADR-0014) | read any secret; anything else |
 | `sa:globalhost-budget-pause` | Cloud Function `globalhost-budget-pause` (runtime and Pub/Sub trigger identity) | read/write `gs://globalhost-control/state.json` only (IAM condition); invoke its own function | anything else |
 | `sa:globalhost-fn-build` | Cloud Build for that function | write logs; push to Artifact Registry `globalhost-functions`; read the function source bucket and Cloud Functions' own staging bucket `gcf-v2-sources-<number>-<region>` (project grant conditioned on that bucket name) | anything else |
@@ -222,7 +228,7 @@ Rules:
 | `sa:globalhost-auditor` (ADR-0012) | WIF, factory repo `main`, environment `security-audit` only | list/read/create objects in the audit report bucket | read any secret; delete or overwrite reports; any GitHub write; anything else |
 | `sa:globalhost-audit-publisher` (ADR-0012) | WIF, factory repo `main`, environment `security-audit-publish` only (job runs no repo code) | read audit reports; read `globalhost-ops-issues-token` (Issues RW on `globalhost-ops` only) | write reports; any other repo |
 
-No long-lived GCP keys anywhere. The GitHub App private key lives in Secret Manager in `globalhost-factory` (`github-app-key`, readable only by `sa:gh-dispatch`). There is no Anthropic key (ADR-0014). Product secrets live in the product's own projects (dev and prod separated), set via `pulumi config set --secret` or `gcloud secrets versions add` by the owner — never by agents.
+No long-lived GCP keys anywhere. The GitHub App private key lives in Secret Manager in `globalhost-factory` (`github-app-key`, readable only by `sa:gh-dispatch` and the reviewer `sa:globalhost-gh-review`). There is no Anthropic key (ADR-0014). Product secrets live in the product's own projects (dev and prod separated), set via `pulumi config set --secret` or `gcloud secrets versions add` by the owner — never by agents.
 
 ### 5.2 GCP project layout
 

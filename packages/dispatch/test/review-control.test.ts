@@ -192,6 +192,37 @@ describe("review claim", () => {
     expect(await control.completeReviewClaim(head, "crashed")).toBe(false);
   });
 
+  it("judges staleness by the holder's stored perRunMinutes, not a limit lowered mid-run", async () => {
+    let now = at("2026-11-02T12:00:00Z");
+    const cloud = new FakeCloud();
+    const control = new ControlPlane(new ObjectStore(token, cloud.fetch), () => now);
+    await control.reviewClaim(head, "live", { perRunMinutes: 180 });
+    expect(JSON.parse(cloud.objects.get(CLAIM)!.body)).toMatchObject({ perRunMinutes: 180 });
+    // The owner lowers limits.perRunMinutes to 45 (window 75 min); the live run still has 180 + 30.
+    now = at("2026-11-02T13:30:00Z");
+    expect(await control.reviewClaim(head, "eager", { perRunMinutes: 45 })).toMatchObject({ claimed: false, reason: "in-flight" });
+    now = at("2026-11-02T15:30:00Z"); // exactly 210 minutes: not yet stale
+    expect(await control.reviewClaim(head, "eager", { perRunMinutes: 45 })).toMatchObject({ claimed: false, reason: "in-flight" });
+    now = at("2026-11-02T15:30:01Z");
+    expect(await control.reviewClaim(head, "next", { perRunMinutes: 45 })).toMatchObject({
+      claimed: true,
+      claim: { runId: "next", attempt: 2, previousRunId: "live", perRunMinutes: 45 },
+    });
+  });
+
+  it("falls back to the current perRunMinutes for a claim written without one", async () => {
+    let now = at("2026-11-02T12:00:00Z");
+    const cloud = new FakeCloud();
+    const control = new ControlPlane(new ObjectStore(token, cloud.fetch), () => now);
+    await control.reviewClaim(head, "old", opts);
+    const obj = cloud.objects.get(CLAIM)!;
+    const legacy = JSON.parse(obj.body) as Record<string, unknown>;
+    delete legacy.perRunMinutes;
+    obj.body = JSON.stringify(legacy);
+    now = at("2026-11-02T13:15:01Z"); // past 45 + 30
+    expect(await control.reviewClaim(head, "next", opts)).toMatchObject({ claimed: true, claim: { previousRunId: "old" } });
+  });
+
   it("lets only one of two concurrent runs take over a stale claim", async () => {
     const { store, stats } = cloudWithConflicts();
     let now = at("2026-11-02T12:00:00Z");

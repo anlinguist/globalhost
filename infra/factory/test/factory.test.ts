@@ -11,6 +11,7 @@ import {
 } from "../src/factory.js";
 import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
 import { releaseProviderCondition } from "../src/releases.js";
+import { reviewControlCondition, reviewProviderCondition, reviewRunsCondition } from "../src/reviews.js";
 
 interface Registered {
   type: string;
@@ -97,9 +98,11 @@ const config = parseFactoryConfig({
   previewActorIds: ["47403803", "350478808"],
   accessGuardImage: GUARD_IMAGE,
   releaseObservers: [{ product: "numu-know", prodProject: PROD_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" } }],
+  reviewRepos: [{ name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }],
 });
 
 const GH_DISPATCH = `serviceAccount:globalhost-gh-dispatch@${PROJECT}.iam.gserviceaccount.com`;
+const GH_REVIEW = `serviceAccount:globalhost-gh-review@${PROJECT}.iam.gserviceaccount.com`;
 
 function ofType(type: string): Registered[] {
   return resources.filter((r) => r.type === type);
@@ -199,7 +202,7 @@ describe("factory infra", () => {
     ]);
   });
 
-  it("makes sa:gh-dispatch the only principal on the App key secret, with no version", () => {
+  it("makes sa:gh-dispatch and the reviewer the only principals on the App key secret, with no version", () => {
     const secret = one("gcp:secretmanager/secret:Secret", "github-app-key");
     expect(secret.inputs.secretId).toBe(GITHUB_APP_KEY_SECRET);
     // Its value is added by the owner; the only versions Pulumi writes are the dev project's preview token.
@@ -213,7 +216,7 @@ describe("factory infra", () => {
     const policy = JSON.parse(String(policies[0]?.inputs.policyData)) as {
       bindings: { role: string; members: string[]; condition?: unknown }[];
     };
-    expect(policy.bindings).toEqual([{ role: "roles/secretmanager.secretAccessor", members: [GH_DISPATCH] }]);
+    expect(policy.bindings).toEqual([{ role: "roles/secretmanager.secretAccessor", members: [GH_DISPATCH, GH_REVIEW] }]);
     // No additive grants on any secret.
     expect(resources.filter((r) => /^gcp:secretmanager\/secretIam(Member|Binding)/.test(r.type))).toEqual([]);
   });
@@ -317,6 +320,7 @@ describe("dispatch provider condition", () => {
   it("ORs one clause per repo and keeps the owner and environment pins", () => {
     const multi = parseFactoryConfig({
       ...config,
+      reviewRepos: [],
       dispatchRepos: [
         { name: "anlinguist/a", id: "1", defaultBranch: "main" },
         { name: "anlinguist/b", id: "2", defaultBranch: "trunk" },
@@ -338,7 +342,8 @@ describe("dispatch provider condition", () => {
     ["duplicate repo ids", { dispatchRepos: [{ name: "a/b", id: "1", defaultBranch: "main" }, { name: "a/c", id: "1", defaultBranch: "main" }] }],
     ["unknown keys", { extra: true }],
   ])("rejects config with %s", (_name, patch) => {
-    expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+    // No review repos, so a refusal comes from the dispatch fields, not from reviewRepos no longer matching.
+    expect(() => parseFactoryConfig({ ...config, reviewRepos: [], ...patch })).toThrow();
   });
 });
 
@@ -508,6 +513,96 @@ describe("release observer (P1-12, ADR-0017)", () => {
     ["duplicate products", { releaseObservers: [config.releaseObservers[0], config.releaseObservers[0]] }],
     ["a shared repo id", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", prodProject: "other-proj" }] }],
     ["a shared prod project", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", repo: { name: "a/b", id: "9", defaultBranch: "main" } }] }],
+  ])("rejects config with %s", (_name, patch) => {
+    expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+  });
+});
+
+describe("reviewer identity (P2-01, ADR-0018)", () => {
+  const WF = "anlinguist/numu-know/.github/workflows/globalhost-review.yml@refs/heads/main";
+
+  it("pins the provider to the default branch's review workflow, its two triggers and the review environment", () => {
+    const provider = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "review-provider");
+    expect(provider.inputs.workloadIdentityPoolProviderId).toBe("globalhost-review");
+    expect(provider.inputs.attributeCondition).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.environment == 'globalhost-review' && " +
+        "assertion.runner_environment == 'github-hosted' && " +
+        "assertion.event_name in ['workflow_run', 'pull_request_target'] && " +
+        `((assertion.repository_id == '338675328' && assertion.ref == 'refs/heads/main' && ` +
+        `assertion.job_workflow_ref == '${WF}' && assertion.workflow_ref == '${WF}'))`,
+    );
+    expect(reviewProviderCondition(config)).toBe(provider.inputs.attributeCondition);
+    expect((provider.inputs.attributeMapping as Record<string, string>)["attribute.review"]).toBe(
+      "assertion.repository_id + '@' + assertion.environment",
+    );
+  });
+
+  it("binds the review identity only to the review environment, and the dispatcher only to its own", () => {
+    const wif = ofType("gcp:serviceaccount/iAMMember:IAMMember").filter((r) => String(r.inputs.serviceAccountId).includes("globalhost-gh-review@"));
+    expect(wif.map((b) => [b.inputs.role, b.inputs.member])).toEqual([
+      [
+        "roles/iam.workloadIdentityUser",
+        `principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.review/338675328@globalhost-review`,
+      ],
+    ]);
+    // The dispatch provider never maps attribute.review, and its condition requires the dispatch environment.
+    const dispatch = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "dispatch-provider");
+    expect(Object.keys(dispatch.inputs.attributeMapping as object)).not.toContain("attribute.review");
+    expect(String(dispatch.inputs.attributeCondition)).toContain("assertion.environment == 'globalhost'");
+  });
+
+  it("grants the reviewer only name-conditioned bucket roles and the App key", () => {
+    const grants = resources.filter((r) => r.inputs.member === GH_REVIEW);
+    expect(grants.map((r) => `${r.type} ${String(r.inputs.bucket)} ${String(r.inputs.role)}`).sort()).toEqual([
+      `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectUser`,
+      `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectViewer`,
+      `gcp:storage/bucketIAMMember:BucketIAMMember ${RUNS_BUCKET} roles/storage.objectCreator`,
+    ]);
+    const expr = (name: string) => (one("gcp:storage/bucketIAMMember:BucketIAMMember", name).inputs.condition as { expression: string }).expression;
+    expect(expr("gh-review-control-rw")).toBe(
+      `resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/reviews/anlinguist/numu-know/") || ` +
+        `(resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/spend/") && resource.name.endsWith("/anlinguist__numu-know.json"))`,
+    );
+    expect(expr("gh-review-control-state")).toBe(`resource.name == "projects/_/buckets/${CONTROL_BUCKET}/objects/state.json"`);
+    expect(expr("gh-review-runs-create")).toBe(`resource.name.startsWith("projects/_/buckets/${RUNS_BUCKET}/objects/anlinguist/numu-know/reviews/")`);
+    // Nothing project-level, no other kind of grant.
+    const elsewhere = resources.filter(
+      (r) =>
+        JSON.stringify(r.inputs).includes("globalhost-gh-review@") &&
+        ![
+          "gcp:storage/bucketIAMMember:BucketIAMMember",
+          "gcp:secretmanager/secretIamPolicy:SecretIamPolicy",
+          "gcp:serviceaccount/iAMMember:IAMMember",
+        ].includes(r.type),
+    );
+    expect(elsewhere).toEqual([]);
+  });
+
+  it("lowercases review prefixes like packages/dispatch, but keeps the spend key's case", () => {
+    const mixed = parseFactoryConfig({
+      ...config,
+      dispatchRepos: [{ name: "AnLinguist/Numu-Know", id: "1", defaultBranch: "main" }],
+      reviewRepos: [{ name: "AnLinguist/Numu-Know", id: "1", defaultBranch: "main" }],
+    });
+    expect(reviewControlCondition(mixed, "b")).toContain('objects/reviews/anlinguist/numu-know/")');
+    expect(reviewControlCondition(mixed, "b")).toContain('endsWith("/AnLinguist__Numu-Know.json")');
+    expect(reviewRunsCondition(mixed, "b")).toBe('resource.name.startsWith("projects/_/buckets/b/objects/anlinguist/numu-know/reviews/")');
+  });
+
+  it("defaults to no review repos and the globalhost-review environment", () => {
+    const none = parseFactoryConfig({ ...config, reviewRepos: undefined, reviewEnvironment: undefined });
+    expect(none.reviewRepos).toEqual([]);
+    expect(none.reviewEnvironment).toBe("globalhost-review");
+  });
+
+  it.each([
+    ["a repo not in dispatchRepos", { reviewRepos: [{ name: "a/b", id: "9", defaultBranch: "main" }] }],
+    ["a different default branch than dispatchRepos", { reviewRepos: [{ name: "anlinguist/numu-know", id: "338675328", defaultBranch: "trunk" }] }],
+    ["a quote in the branch (CEL injection)", { reviewRepos: [{ name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main' || true || '" }] }],
+    ["a quote in the repo name", { reviewRepos: [{ name: 'anlinguist/numu"know', id: "338675328", defaultBranch: "main" }] }],
+    ["a quote in the environment", { reviewEnvironment: "x' || true || '" }],
+    ["the dispatch environment", { reviewEnvironment: "globalhost" }],
+    ["duplicate repo ids", { reviewRepos: [config.reviewRepos[0], config.reviewRepos[0]] }],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });

@@ -153,6 +153,11 @@ export const ReviewClaimSchema = z.strictObject({
   claimedAt: z.iso.datetime(),
   /** The run whose claim this one replaced (a stale takeover or a re-review), if any. */
   previousRunId: runId.nullable(),
+  /**
+   * limits.perRunMinutes when the claim was taken: its staleness window is judged by this, so lowering the limit
+   * mid-run can't make a live claim stale early. Absent on claims written before it existed (current config then).
+   */
+  perRunMinutes: z.number().int().min(5).max(180).optional(),
   completedAt: z.iso.datetime().nullable(),
   /** The archived review record of this attempt, in the runs bucket. Set when the review completes. */
   recordPath: z.string().min(1).max(500).nullable(),

@@ -1,15 +1,20 @@
-# globalhost dispatcher steps (P1-07, P1-12), used by templates/.github/workflows/globalhost*.yml in product
+# globalhost dispatcher steps (P1-07, P1-12, P2-01), used by templates/.github/workflows/globalhost*.yml in product
 # repos and pinned there by commit SHA. The steps' logic lives in packages/dispatch; this action only
 # installs the factory at the pinned commit (lockfile-exact) and runs `globalhost dispatch <step>`.
+#   gate, run      globalhost.yml (dispatcher: trust gate, then the planner/builder run and publish)
+#   observe        globalhost-release.yml (post-merge deploy report)
+#   review-gate    globalhost-review.yml, read-only job: outputs action, pr, timeout
+#   review         globalhost-review.yml, environment globalhost-review: claim, reserve, review, archive, post
+# Environment each step needs: packages/dispatch/README.md.
 name: globalhost
-description: Run one globalhost dispatcher step (gate, run or observe)
+description: Run one globalhost dispatcher step (gate, run, observe, review-gate or review)
 inputs:
   step:
-    description: gate | run | observe
+    description: gate | run | observe | review-gate | review
     required: true
 outputs:
   action:
-    description: "gate: ignore | start | resume"
+    description: "gate: ignore | start | resume. review-gate: ignore | review | unlabel"
     value: ${{ steps.dispatch.outputs.action }}
   role:
     description: "gate: planner | builder"
@@ -18,11 +23,14 @@ outputs:
     description: "gate: issue number"
     value: ${{ steps.dispatch.outputs.issue }}
   pr:
-    description: "gate: PR number (resume)"
+    description: "gate: PR number (resume). review-gate: PR number (review, unlabel)"
     value: ${{ steps.dispatch.outputs.pr }}
   comment:
     description: "gate: steering comment id (resume)"
     value: ${{ steps.dispatch.outputs.comment }}
+  timeout:
+    description: "review-gate: the review job's timeout-minutes (= limits.perRunMinutes; review, unlabel)"
+    value: ${{ steps.dispatch.outputs.timeout }}
 runs:
   using: composite
   steps:

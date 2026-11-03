@@ -74,6 +74,14 @@ export const FactoryConfigSchema = z
     previews: z.array(PreviewProductSchema).default([]),
     releaseObservers: z.array(ReleaseObserverSchema).default([]),
     /**
+     * Product repos whose `globalhost-review.yml` may act as the review identity (PLAN P2-01, ADR-0018). Each must
+     * also be in `dispatchRepos`, with the same name and default branch. `name` must be GitHub's canonical casing
+     * (as GITHUB_REPOSITORY reports it): the spend-record IAM condition matches it case-sensitively.
+     */
+    reviewRepos: z.array(DispatchRepoSchema).default([]),
+    /** GitHub environment the review job must run in to get the review identity. Never the dispatch environment. */
+    reviewEnvironment: z.string().regex(/^[A-Za-z0-9_-]+$/).default("globalhost-review"),
+    /**
      * GitHub user IDs whose PR events may deploy previews: the owner and the factory App's bot user.
      * Enforced in the WIF provider condition, so a PR from anyone else gets no GCP credentials at all.
      */
@@ -100,6 +108,16 @@ export function parseFactoryConfig(input: unknown): FactoryConfig {
   if (new Set(observedRepos).size !== observedRepos.length) throw new Error("releaseObservers: duplicate repo id");
   const prodProjects = config.releaseObservers.map((r) => r.prodProject);
   if (new Set(prodProjects).size !== prodProjects.length) throw new Error("releaseObservers: duplicate prodProject");
+  const reviewIds = config.reviewRepos.map((r) => r.id);
+  if (new Set(reviewIds).size !== reviewIds.length) throw new Error("reviewRepos: duplicate repo id");
+  for (const r of config.reviewRepos) {
+    const d = config.dispatchRepos.find((x) => x.id === r.id);
+    if (!d || d.name !== r.name || d.defaultBranch !== r.defaultBranch) {
+      throw new Error(`reviewRepos: ${r.name} must match a dispatchRepos entry (name, id and default branch)`);
+    }
+  }
+  // A separate environment is the point (ADR-0018): sharing one would let either job's token reach both identities.
+  if (config.reviewEnvironment === config.dispatchEnvironment) throw new Error("reviewEnvironment must differ from dispatchEnvironment");
   const products = config.previews.map((p) => p.product);
   if (new Set(products).size !== products.length) throw new Error("previews: duplicate product");
   for (const p of config.previews) {
