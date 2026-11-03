@@ -30,6 +30,87 @@ export class GitHubClient {
     const json: unknown = await resp.json();
     return schema ? schema.parse(json) : (json as T);
   }
+
+  /**
+   * GETs an API path whose answer is a redirect to a download (job logs, artifact zips). The redirect is
+   * followed by hand so the token is never sent to the download host, and the body is read with a byte cap.
+   */
+  async download(path: string, opts: { maxBytes: number; keep?: "head" | "tail" }): Promise<Download> {
+    const resp = await this.fetchImpl(`${API}${path}`, {
+      redirect: "manual",
+      headers: {
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "globalhost-dispatch",
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
+    });
+    let body = resp;
+    if (resp.status >= 300 && resp.status < 400) {
+      await resp.body?.cancel().catch(() => undefined);
+      let url: URL;
+      try {
+        url = new URL(resp.headers.get("location") ?? "");
+      } catch {
+        throw new GitHubError("GET", path, resp.status);
+      }
+      if (url.protocol !== "https:") throw new GitHubError("GET", path, resp.status);
+      body = await this.fetchImpl(url, { redirect: "error", headers: { "user-agent": "globalhost-dispatch" } });
+    }
+    if (!body.ok) throw new GitHubError("GET", path, body.status);
+    return readCapped(body, opts.maxBytes, opts.keep ?? "head");
+  }
+}
+
+export interface Download {
+  data: Buffer;
+  /** Bytes read from the body (all of it, unless reading stopped at a cap). */
+  totalBytes: number;
+  /** True when `data` is not the whole body. */
+  truncated: boolean;
+}
+
+/** Reading stops after this many bytes even when keeping the tail, so one huge log can't stall the job. */
+export const DOWNLOAD_HARD_CAP = 64 * 1024 * 1024;
+
+/**
+ * Reads a response body keeping at most `maxBytes`: the first bytes (`head`, then stops) or the last (`tail`,
+ * reading on up to DOWNLOAD_HARD_CAP).
+ */
+export async function readCapped(resp: Response, maxBytes: number, keep: "head" | "tail"): Promise<Download> {
+  if (!resp.body) return { data: Buffer.alloc(0), totalBytes: 0, truncated: false };
+  const reader = resp.body.getReader();
+  const chunks: Buffer[] = [];
+  let kept = 0;
+  let total = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      total += chunk.length;
+      chunks.push(chunk);
+      kept += chunk.length;
+      if (keep === "head" && kept > maxBytes) {
+        truncated = true;
+        break;
+      }
+      if (keep === "tail") {
+        while (chunks.length > 1 && kept - chunks[0]!.length >= maxBytes) kept -= chunks.shift()!.length;
+        if (total > DOWNLOAD_HARD_CAP) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const all = Buffer.concat(chunks);
+  if (all.length > maxBytes || total > all.length) truncated = true;
+  const data = keep === "head" ? all.subarray(0, maxBytes) : all.subarray(Math.max(0, all.length - maxBytes));
+  return { data: Buffer.from(data), totalBytes: total, truncated };
 }
 
 export class GitHubError extends Error {
@@ -56,18 +137,25 @@ export function appJwt(appId: string, privateKeyPem: string, now = Date.now()): 
 /** What the publisher needs, and nothing more: no workflows, no administration. */
 export const PUBLISH_PERMISSIONS = { contents: "write", issues: "write", pull_requests: "write", metadata: "read" } as const;
 
+/**
+ * What the review poster needs (P2-01, shadow mode): post and update its review, add the escalation label and
+ * remove `factory:review`. No contents write, so this token can't push or merge.
+ */
+export const REVIEW_PERMISSIONS = { issues: "write", pull_requests: "write", metadata: "read" } as const;
+
 export async function installationToken(
   appId: string,
   privateKeyPem: string,
   repo: string,
   fetchImpl: typeof fetch = fetch,
+  permissions: Readonly<Record<string, "read" | "write">> = PUBLISH_PERMISSIONS,
 ): Promise<string> {
   const app = new GitHubClient(appJwt(appId, privateKeyPem), fetchImpl);
   const installation = await app.request("GET", `/repos/${repo}/installation`, undefined, z.object({ id: z.number().int() }));
   const minted = await app.request(
     "POST",
     `/app/installations/${installation.id}/access_tokens`,
-    { repositories: [repo.split("/")[1]], permissions: PUBLISH_PERMISSIONS },
+    { repositories: [repo.split("/")[1]], permissions },
     z.object({ token: z.string() }),
   );
   return minted.token;

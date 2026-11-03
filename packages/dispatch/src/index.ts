@@ -6,3 +6,8 @@ export * from "./github.js";
 export * from "./observe.js";
 export * from "./profile-settings.js";
 export * from "./publish.js";
+export * from "./review.js";
+export * from "./review-gate.js";
+export * from "./review-inputs.js";
+export * from "./review-post.js";
+export * from "./zip.js";

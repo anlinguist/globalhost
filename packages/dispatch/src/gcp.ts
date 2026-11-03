@@ -89,14 +89,15 @@ const MAX_CAS_ATTEMPTS = 8;
 
 // ---- Review control state (P2-01) ----
 //
-// Contract for the review step (PR 4), so a review can't double-spend, double-post or lose its cost:
-//   1. reserveReview before starting: holds limits.reviewPerRunUsd against the PR budget and the repo's daily
-//      budget in one step each. Refused → don't run; the PR escalates (budget exhausted).
-//   2. reviewClaim for the head SHA (per attempt; `rereview` only for an owner's factory:review on a SHA whose
-//      last review completed). Not claimed → don't run; settle the reservation with cost 0.
+// Contract for the review step (review.ts), so a review can't double-spend, double-post or lose its cost:
+//   1. reviewClaim for the head SHA (per attempt; `rereview` only for an owner's factory:review on a SHA whose
+//      last review completed). Not claimed → don't run and don't reserve: a duplicate trigger costs nothing.
+//   2. reserveReview before starting: holds limits.reviewPerRunUsd against the PR budget and the repo's daily
+//      budget in one step each. Refused → don't run; record a budget-exhausted review (it escalates).
 //   3. Archive the run under reviewArchivePrefix(head, runId) in the runs bucket, never a shared per-SHA path.
-//   4. completeReviewClaim; post the GitHub review only if it returned true (otherwise another attempt owns it).
-//   5. recordReviewRun ALWAYS, whatever happened above, with the actual cost: it settles the reservation.
+//   4. recordReviewRun ALWAYS once claimed, whatever happened, with the actual cost (or the per-run cap when a
+//      session may exist and its cost is unknown): it settles the reservation.
+//   5. completeReviewClaim (only after archiving); post the GitHub review only if it returned true.
 // A crashed run never settles, so its reservation stays counted at the full per-run cap (fails toward
 // overcounting); releaseStaleReservation is for the owner or the P1-13 cleanup job only, never automatic.
 
