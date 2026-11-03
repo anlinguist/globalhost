@@ -51,7 +51,7 @@ jobs:
 
   unlabel:
     needs: gate
-    # Removes an owner's factory:review that won't be acted on (e.g. a review of that SHA is in flight), so it can be
+    # Removes an owner's factory:review that won't be acted on (e.g. CI hasn't succeeded on the head), so it can be
     # re-applied. Its own job, outside the review environment and the per-PR concurrency group, so it never displaces
     # a review waiting in that group. Its token can only write pull requests; it runs no factory or PR code.
     if: needs.gate.outputs.action == 'unlabel'

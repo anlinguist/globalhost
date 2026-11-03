@@ -88,7 +88,7 @@ async function readEvent(env: Env): Promise<unknown> {
 // ---- review-gate ----
 
 export interface ReviewGateOutputs {
-  /** review: run the review job. unlabel: run it only to remove an owner's factory:review. ignore: nothing. */
+  /** review: run the review job. unlabel: run the unlabel job, to remove an owner's refused factory:review. ignore: nothing. */
   action: "review" | "ignore" | "unlabel";
   pr?: number;
   /** limits.perRunMinutes: the review job's timeout-minutes, so a live review is never taken over as stale. */
