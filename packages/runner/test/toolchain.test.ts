@@ -9,7 +9,7 @@ import { bundleReviewFrom, gitSnapshot, MAX_SNAPSHOT_BLOB_BYTES } from "../src/g
 import { GitHubReader } from "../src/github.js";
 import { toolchainSection } from "../src/prompt.js";
 import { ReviewRunSchema, RunRecordSchema } from "../src/records.js";
-import { startReview, startRun, type RunDeps, type ToolchainResolver } from "../src/run.js";
+import { resumeRun, startReview, startRun, type RunDeps, type ToolchainResolver } from "../src/run.js";
 import { FakeApi } from "./fake-api.js";
 
 const OWNER = { login: "owner", id: 47403803 };
@@ -20,9 +20,10 @@ const git = (cwd: string, ...args: string[]) =>
 let dir: string;
 let work: string;
 let baseTip: string;
+let mergeBase: string;
 let headSha: string;
 
-// Base pins node 20 in .nvmrc; the PR head rewrites it to 24 (and adds a payload file); main then moves on.
+// The PR branches from a base pinning node 20; the head rewrites .nvmrc to 24; main then moves on to 22.
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "runner-toolchain-")));
   work = join(dir, "work");
@@ -31,6 +32,7 @@ beforeEach(() => {
   writeFileSync(join(work, "app.js"), "export const x = 1;\n");
   git(work, "add", ".");
   git(work, "commit", "-q", "-m", "init");
+  mergeBase = git(work, "rev-parse", "HEAD");
   git(work, "checkout", "-q", "-b", "factory/issue-7");
   writeFileSync(join(work, ".nvmrc"), "24\n");
   writeFileSync(join(work, "app.js"), "export const x = 2;\n");
@@ -40,6 +42,7 @@ beforeEach(() => {
   git(work, "update-ref", "refs/pull/7/head", headSha);
   git(work, "checkout", "-q", "main");
   writeFileSync(join(work, "README.md"), "base moved on\n");
+  writeFileSync(join(work, ".nvmrc"), "22\n");
   git(work, "add", ".");
   git(work, "commit", "-q", "-m", "unrelated change on main");
   baseTip = git(work, "rev-parse", "HEAD");
@@ -106,7 +109,8 @@ describe("gitSnapshot", () => {
     writeFileSync(join(work, ".nvmrc"), "99\n"); // uncommitted: never seen
     const base = await gitSnapshot(bare, baseTip);
     expect([...base.files].sort()).toEqual([".nvmrc", "README.md", "app.js"]);
-    expect(await base.readFile(".nvmrc")).toBe("20\n");
+    expect(await base.readFile(".nvmrc")).toBe("22\n");
+    expect(await (await gitSnapshot(bare, mergeBase)).readFile(".nvmrc")).toBe("20\n");
     expect(await (await gitSnapshot(bare, headSha)).readFile(".nvmrc")).toBe("24\n");
     expect(await base.readFile("missing")).toBeUndefined();
   });
@@ -143,7 +147,7 @@ describe("toolchainSection", () => {
     expect(text).toContain("set `toolchain`");
     expect(text).toContain("carry on with what the sandbox has");
     expect(text).toContain("- .nvmrc names an alias, not a version; ignored");
-    expect(toolchainSection(tc, "reviewer", baseTip).join("\n")).toContain("not from the PR");
+    expect(toolchainSection(tc, "reviewer", mergeBase).join("\n")).toContain(`at the merge base \`${mergeBase}\``);
   });
 
   it("is empty with nothing to say, and refuses a toolchain that isn't valid", () => {
@@ -180,20 +184,22 @@ describe("startReview with a toolchain", () => {
     ...(toolchain ? { toolchain } : {}),
   });
 
-  it("resolves versions from the base branch, never the PR head, and flags a mismatch without escalating", async () => {
+  it("resolves versions at the merge base (not the base tip, never the PR head) and flags a mismatch without escalating", async () => {
     const api = new FakeApi();
     session(api, { node: "v24.1.0" }, true);
     const seen: string[] = [];
     const outDir = join(dir, "out");
     const run = await startReview(spec(outDir, nvmrcResolver(seen)), deps(api));
 
-    expect(seen).toEqual(["20"]); // the head's .nvmrc says 24
+    expect(seen).toEqual(["20"]); // the head's .nvmrc says 24, the base tip's 22
     const message = api.sent[0]!;
     expect(message).toContain("- `node` `20` (from `.nvmrc`)");
-    expect(message).toContain(`from the base branch at \`${baseTip}\`, not from the PR`);
+    expect(message).toContain(`at the merge base \`${mergeBase}\``);
+    expect(message).toContain("not from the PR");
     expect(run.status).toBe("completed");
     expect(run.output?.verdicts.function).toBe("pass");
     expect(run.toolchain?.checks).toEqual([{ tool: "node", required: "20", source: ".nvmrc", reported: "24.1.0", status: "mismatch" }]);
+    expect(run.mergeBaseSha).toBe(mergeBase);
     expect(run.problems).toContain("toolchain: node 24.1.0 used, but .nvmrc on the base commit requires 20");
     expect(run.report?.toolchain).toEqual({ node: "v24.1.0" });
     expect(ReviewRunSchema.parse(JSON.parse(readFileSync(join(outDir, "run.json"), "utf8")))).toEqual(run);
@@ -232,15 +238,15 @@ describe("startRun with a toolchain", () => {
     const seen: string[] = [];
     const outDir = join(dir, "out");
     const record = await startRun(spec(outDir, nvmrcResolver(seen)), deps(api));
-    expect(seen).toEqual(["20"]);
-    expect(api.sent[0]).toContain("- `node` `20` (from `.nvmrc`)");
+    expect(seen).toEqual(["22"]); // the default branch the run starts from
+    expect(api.sent[0]).toContain("- `node` `22` (from `.nvmrc`)");
     // The rest of the report still counts; the bad toolchain value is dropped and flagged in fixed text.
     expect(record.report?.outcome).toBe("done");
     expect(record.report?.toolchain).toBeUndefined();
     expect(record.toolchain).toMatchObject({ reportInvalid: true, checks: [{ tool: "node", status: "unreported", reported: null }] });
     expect(record.problems).toEqual(
       expect.arrayContaining([
-        "toolchain: the agent didn't report which node it used (required 20 by .nvmrc)",
+        "toolchain: the agent didn't report which node it used (required 22 by .nvmrc)",
         "toolchain: report.json's toolchain didn't match the expected shape and was ignored",
       ]),
     );
@@ -257,6 +263,38 @@ describe("startRun with a toolchain", () => {
     expect(record.problems).toContain("toolchain: the base commit's tool versions couldn't be resolved, so none were required");
     expect(api.sent[0]).not.toContain("## Toolchain");
     expect(logs.some((l) => l.includes("boom"))).toBe(true);
+  });
+
+  it("re-checks a resumed turn at the stored base, only when it writes a report", async () => {
+    const api = new FakeApi();
+    session(api, { node: "22.1.0" });
+    const first = await startRun(spec(join(dir, "out1"), nvmrcResolver([])), deps(api));
+    expect(first.toolchain?.checks[0]?.status).toBe("match");
+    // Main moves on after the first turn; the resumed turn is still checked against the run's own base.
+    writeFileSync(join(work, ".nvmrc"), "24\n");
+    git(work, "commit", "-qam", "bump on main");
+    const seen: string[] = [];
+    session(api, { node: "24.0.0" });
+    const second = await resumeRun(
+      { sessionId: first.sessionId, feedback: "Try again.", addBudgetUsd: 1, timeoutMinutes: 5, outDir: join(dir, "out2"), toolchain: nvmrcResolver(seen) },
+      deps(api),
+    );
+    expect(seen).toEqual(["22"]);
+    expect(second.toolchain?.checks[0]).toMatchObject({ required: "22", reported: "24.0.0", status: "mismatch" });
+    expect(second.problems).toContain("toolchain: node 24.0.0 used, but .nvmrc on the base commit requires 22");
+
+    // A turn that writes no report gets no toolchain check (its missing report is already a problem).
+    api.onSend = () => {
+      // Only a plan this turn: earlier turns' reports would otherwise fall inside the clock-skew window.
+      api.outputs = [{ id: "p", filename: "plan.md", sizeBytes: 4, createdAt: new Date().toISOString(), data: Buffer.from("plan") }];
+      api.finishTurn([...api.sessions.keys()].at(-1)!, "end_turn", 60);
+    };
+    const third = await resumeRun(
+      { sessionId: first.sessionId, feedback: "Once more.", addBudgetUsd: 1, timeoutMinutes: 5, outDir: join(dir, "out3"), toolchain: nvmrcResolver([]) },
+      deps(api),
+    );
+    expect(third.toolchain).toBeUndefined();
+    expect(third.problems.some((p) => p.startsWith("toolchain"))).toBe(false);
   });
 
   it("refuses a resolver's output that isn't a valid toolchain", async () => {

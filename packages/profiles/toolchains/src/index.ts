@@ -6,7 +6,7 @@ import { MAX_TOOLCHAIN_NOTES, ToolchainSchema, type Toolchain } from "@globalhos
 
 export { bunRequirement, CI_WORKFLOW, detectBun, detectNode, NODE_VERSION_FILES, nodeRequirement } from "./node.js";
 export { detectPython, detectUv, pythonRequirement, uvRequirement } from "./python.js";
-export { ANY, canonicalToPep440, MAX_SPEC_CHARS, npmRangeToCanonical, pep440ToCanonical, type Converted } from "./ranges.js";
+export { ANY, UNSATISFIABLE, canonicalToPep440, MAX_SPEC_CHARS, npmRangeToCanonical, pep440ToCanonical, type Converted } from "./ranges.js";
 export { MAX_MANIFEST_CHARS, MAX_VERSION_FILE_CHARS, tomlString } from "./read.js";
 
 /** One part's toolchain from several detectors (each covering different tools), validated. */

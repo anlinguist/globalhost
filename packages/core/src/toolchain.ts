@@ -9,7 +9,8 @@
 //   comparator := op? version        op ∈ { >=, >, <=, <, = } (none means "=")
 //   version    := N ( "." N ( "." N )? )?   N = 1–6 digits, no leading zeros
 // A partial version is a prefix: "=22" (or "22") is any 22.x.y, ">22" is 23 and above, "<=22" is anything up to
-// the last 22.x.y. Nothing else (pre-release tags, wildcards, named aliases) is accepted.
+// the last 22.x.y. Nothing else (pre-release tags, wildcards, named aliases) is accepted, and every alternative must
+// admit at least one version (">=21 <20" is rejected).
 import { z } from "zod";
 
 /** A tool id (a runtime or package manager name). Chosen by profiles; core treats it as an opaque name. */
@@ -57,7 +58,38 @@ export function parseVersionRange(text: string): VersionRange | undefined {
     if (set.length === 0 || set.length > 4) return undefined;
     range.push(set);
   }
-  return range.length > 0 && range.length <= 8 ? range : undefined;
+  return range.length > 0 && range.length <= 8 && versionRangeSatisfiable(range) ? range : undefined;
+}
+
+const pad3 = (v: readonly number[]): number[] => [v[0] ?? 0, v[1] ?? 0, v[2] ?? 0];
+/** The first version after every version with prefix `v`: 22 → 23.0.0, 22.1 → 22.2.0. */
+const afterPrefix = (v: readonly number[]): number[] => pad3([...v.slice(0, -1), (v.at(-1) ?? 0) + 1]);
+const cmp3 = (a: readonly number[], b: readonly number[]): number => {
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return Math.sign((a[i] ?? 0) - (b[i] ?? 0));
+  return 0;
+};
+
+/**
+ * True when every `||` alternative admits at least one version. Each comparator is a half-open interval
+ * [lo, hi) of full versions; a set is satisfiable when the intersection of its intervals is non-empty.
+ */
+export function versionRangeSatisfiable(range: VersionRange): boolean {
+  return range.every((set) => {
+    let lo = [0, 0, 0];
+    let hi: number[] | undefined; // undefined = unbounded
+    const raise = (v: number[]) => (lo = cmp3(v, lo) > 0 ? v : lo);
+    const lower = (v: number[]) => (hi = hi === undefined || cmp3(v, hi) < 0 ? v : hi);
+    for (const c of set) {
+      if (c.op === "=") {
+        raise(pad3(c.version));
+        lower(afterPrefix(c.version));
+      } else if (c.op === ">=") raise(pad3(c.version));
+      else if (c.op === ">") raise(afterPrefix(c.version));
+      else if (c.op === "<") lower(pad3(c.version));
+      else lower(afterPrefix(c.version));
+    }
+    return hi === undefined || cmp3(lo, hi) < 0;
+  });
 }
 
 /** The canonical text of a range; "=" is written bare. Throws on a range that wouldn't parse back. */

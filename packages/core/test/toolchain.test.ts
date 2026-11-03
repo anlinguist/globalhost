@@ -46,6 +46,10 @@ describe("canonical version ranges", () => {
     "a".repeat(101),
     Array(5).fill(">=1").join(" "),
     Array(9).fill("1").join(" || "),
+    ">=21 <20",
+    "20 21",
+    ">22 <=22",
+    "20 || 20 21",
   ])("rejects %j", (r) => {
     expect(parseVersionRange(r)).toBeUndefined();
   });

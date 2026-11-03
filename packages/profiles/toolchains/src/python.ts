@@ -3,7 +3,7 @@
 //   uv:     pyproject.toml [tool.uv] required-version → uv.toml required-version
 // No profile uses these yet; the next one (a Python service) will, alongside detectBun for its web frontend.
 import type { RepoSnapshot, ToolRequirement, Toolchain } from "@globalhost/core";
-import { ANY, canonicalToPep440, pep440ToCanonical, type Converted } from "./ranges.js";
+import { ANY, canonicalToPep440, pep440ToCanonical, UNSATISFIABLE, type Converted } from "./ranges.js";
 import { MAX_MANIFEST_CHARS, MAX_VERSION_FILE_CHARS, firstLine, join, readCapped, selfAndParents, tomlString, type TomlLookup } from "./read.js";
 
 const PREFIX = "/tmp/toolchain";
@@ -34,7 +34,11 @@ export function uvRequirement(range: string, source: string): ToolRequirement {
 
 function fromSpec(what: string, value: Converted, notes: string[]): string | undefined {
   if (typeof value === "string") return value;
-  notes.push(value === ANY ? `${what} accepts any version; not pinned` : `${what} isn't a specifier the harness accepts; ignored`);
+  notes.push(
+    value === ANY ? `${what} accepts any version; not pinned`
+    : value === UNSATISFIABLE ? `${what} asks for a range no version satisfies; ignored`
+    : `${what} isn't a specifier the harness accepts; ignored`,
+  );
   return undefined;
 }
 

@@ -178,6 +178,7 @@ export {
   ToolchainSchema,
   toolchainProblems,
   ToolRequirementSchema,
+  versionRangeSatisfiable,
   versionSatisfies,
   type Comparator,
   type RangeOp,

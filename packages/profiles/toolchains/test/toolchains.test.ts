@@ -12,6 +12,7 @@ import {
   npmRangeToCanonical,
   pep440ToCanonical,
   tomlString,
+  UNSATISFIABLE,
 } from "../src/index.js";
 
 const without = (o: Record<string, string | object>, key: string) => Object.fromEntries(Object.entries(o).filter(([k]) => k !== key));
@@ -63,6 +64,20 @@ describe("npmRangeToCanonical", () => {
   ])("%s → %s", (input, out) => {
     expect(npmRangeToCanonical(input)).toBe(out);
     expect(parseVersionRange(out)).toBeDefined();
+  });
+
+  it.each(["^20 ^21", ">=21 <20", "20 21", ">22 <=22", "20 || ^20 ^21"])("flags %j as unsatisfiable", (input) => {
+    expect(npmRangeToCanonical(input)).toBe(UNSATISFIABLE);
+  });
+
+  it("notes an unsatisfiable engines.node and pins nothing", async () => {
+    expect(await detectNode(repo({ "package.json": { engines: { node: "^20 ^21" } } }), ".")).toEqual({
+      tools: [],
+      notes: ["package.json engines.node asks for a range no version satisfies; ignored"],
+    });
+    expect((await detectPython(repo({ "pyproject.toml": '[project]\nrequires-python = ">=3.13,<3.12"\n' }), ".")).notes).toEqual([
+      "pyproject.toml requires-python asks for a range no version satisfies; ignored",
+    ]);
   });
 
   it.each(["*", "x", "1 || *"])("treats %j as any version", (input) => {
@@ -148,30 +163,53 @@ requires-python = "nope"
   });
 });
 
-describe("detectNode: precedence .nvmrc → .node-version → engines.node → setup-node", () => {
+describe("detectNode: precedence setup-node node-version → node-version-file → .nvmrc → .node-version → engines.node", () => {
   const all = {
     ".nvmrc": "22\n",
     ".node-version": "21",
     "package.json": { engines: { node: ">=20 <23" } },
     [CI_WORKFLOW]: NUMU_CI,
   };
+  const ciWithFile = (file: string) => NUMU_CI.replace("node-version: 20 # matches the Dockerfile's node:20-alpine", `node-version-file: ${file}`);
 
-  it("takes .nvmrc first", async () => {
+  it("takes the CI workflow's setup-node node-version first (numu-know: CI pins 20)", async () => {
     const tc = await detectNode(repo(all), ".");
-    expect(tc.tools).toEqual([expect.objectContaining({ tool: "node", range: "22", source: ".nvmrc", check: "node --version" })]);
+    expect(tc.tools).toEqual([expect.objectContaining({ tool: "node", range: "20", source: CI_WORKFLOW, check: "node --version" })]);
     expect(ToolchainSchema.parse(tc)).toBeTruthy();
   });
 
-  it("then .node-version, engines.node, then the CI workflow's setup-node", async () => {
-    const noNvmrc = without(all, ".nvmrc");
+  it("then setup-node's node-version-file, read as a version file", async () => {
+    const files = { ...without(all, CI_WORKFLOW), ".tool-node": "v18.20.1\n", [CI_WORKFLOW]: ciWithFile("./.tool-node") };
+    expect((await detectNode(repo(files), ".")).tools[0]).toMatchObject({ range: "18.20.1", source: ".tool-node" });
+    const pkgFile = { ...without(all, CI_WORKFLOW), [CI_WORKFLOW]: ciWithFile("package.json") };
+    expect((await detectNode(repo(pkgFile), ".")).tools[0]).toMatchObject({ range: ">=20 <23", source: "package.json" });
+  });
+
+  it("then .nvmrc, .node-version and engines.node", async () => {
+    const noCi = without(all, CI_WORKFLOW);
+    expect((await detectNode(repo(noCi), ".")).tools[0]).toMatchObject({ range: "22", source: ".nvmrc" });
+    const noNvmrc = without(noCi, ".nvmrc");
     expect((await detectNode(repo(noNvmrc), ".")).tools[0]).toMatchObject({ range: "21", source: ".node-version" });
-    const noVersionFiles = without(noNvmrc, ".node-version");
-    expect((await detectNode(repo(noVersionFiles), ".")).tools[0]).toMatchObject({ range: ">=20 <23", source: "package.json" });
-    // numu-know today: no version files, no engines; CI pins 20.
-    expect((await detectNode(repo({ "package.json": { name: "x" }, [CI_WORKFLOW]: NUMU_CI }), ".")).tools[0]).toMatchObject({
-      range: "20",
-      source: CI_WORKFLOW,
-    });
+    expect((await detectNode(repo(without(noNvmrc, ".node-version")), ".")).tools[0]).toMatchObject({ range: ">=20 <23", source: "package.json" });
+  });
+
+  it("skips a setup-node node-version that is a range, and falls through", async () => {
+    const tc = await detectNode(repo({ ...all, [CI_WORKFLOW]: NUMU_CI.replace("node-version: 20 #", "node-version: '>=20' #") }), ".");
+    expect(tc.tools[0]).toMatchObject({ range: "22", source: ".nvmrc" });
+    expect(tc.notes).toEqual([`${CI_WORKFLOW} node-version is a range, not a version; ignored`]);
+  });
+
+  it.each([
+    ["a path escaping the repo", "../../etc/passwd", `${CI_WORKFLOW} node-version-file isn't a plain repo path; ignored`],
+    ["an absolute path", "/etc/passwd", `${CI_WORKFLOW} node-version-file isn't a plain repo path; ignored`],
+    ["an expression", "${{ inputs.file }}", `${CI_WORKFLOW} node-version-file isn't a plain repo path; ignored`],
+    ["a shell payload", "'.nvmrc; rm -rf /'", `${CI_WORKFLOW} node-version-file isn't a plain repo path; ignored`],
+    ["a missing file", "missing/.nvmrc", `${CI_WORKFLOW} node-version-file names a file that isn't on the base commit; ignored`],
+  ])("ignores a node-version-file that is %s", async (_n, file, note) => {
+    const tc = await detectNode(repo({ ...without(all, CI_WORKFLOW), [CI_WORKFLOW]: ciWithFile(file) }), ".");
+    expect(tc.tools[0]).toMatchObject({ range: "22", source: ".nvmrc" });
+    expect(tc.notes).toEqual([note]);
+    expect(JSON.stringify(tc)).not.toMatch(/passwd|rm -rf|inputs\.file/);
   });
 
   it("finds a version file in a parent of the part, nearest first", async () => {

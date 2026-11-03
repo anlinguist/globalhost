@@ -1,16 +1,19 @@
 // Ecosystem range syntaxes → core's canonical range grammar (packages/core/src/toolchain.ts), and back for install
 // hints. Inputs come from repo files, so they're untrusted: each converter accepts a strict subset and returns
 // undefined for anything else (pre-release tags, build metadata, unknown operators, stray characters).
-import { formatVersionRange, parseVersionRange, type Comparator, type RangeOp, type VersionRange } from "@globalhost/core";
+import { formatVersionRange, parseVersionRange, versionRangeSatisfiable, type Comparator, type RangeOp, type VersionRange } from "@globalhost/core";
 
 export const MAX_SPEC_CHARS = 100;
 const NUM = /^(?:0|[1-9]\d{0,5})$/;
 
 /** "Any version": the source pins nothing. */
 export const ANY = Symbol("any");
-export type Converted = string | typeof ANY | undefined;
+/** Well-formed, but no version satisfies it (e.g. "^20 ^21"). */
+export const UNSATISFIABLE = Symbol("unsatisfiable");
+export type Converted = string | typeof ANY | typeof UNSATISFIABLE | undefined;
 
-function finish(range: VersionRange): string | undefined {
+function finish(range: VersionRange): string | typeof UNSATISFIABLE | undefined {
+  if (range.length > 0 && range.every((set) => set.length > 0 && set.length <= 4) && !versionRangeSatisfiable(range)) return UNSATISFIABLE;
   try {
     // formatVersionRange throws unless the text parses back in the canonical grammar.
     return formatVersionRange(range);

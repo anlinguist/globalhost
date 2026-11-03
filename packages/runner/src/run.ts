@@ -155,6 +155,8 @@ export interface ResumeSpec {
   addBudgetUsd: number;
   timeoutMinutes: number;
   outDir: string;
+  /** Re-checks the resumed turn's reported versions against the run's stored base commit. */
+  toolchain?: ToolchainResolver;
 }
 
 export const branchFor = (issue: number) => `factory/issue-${issue}`;
@@ -439,7 +441,7 @@ export interface ReviewSpec {
   skillDirs?: string[];
   ownerIds?: number[];
   guidance?: string;
-  /** Resolves required tool versions from the base branch's commit (bundle baseSha); the PR head is never read. */
+  /** Resolves required tool versions at the PR's merge base with the base branch; the PR head is never read. */
   toolchain?: ToolchainResolver;
 }
 
@@ -606,7 +608,8 @@ async function reviewWithMounts(
     try {
       if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
       const preProblems: string[] = [];
-      const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.baseSha, deps.log, preProblems);
+      // The PR's branch point: what its own CI ran with. Never the head, whatever it changes.
+      const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.mergeBaseSha, deps.log, preProblems);
       if (spec.deadlineEpochMs !== undefined && now() + MIN_REVIEW_TURN_MS > spec.deadlineEpochMs - marginMs) {
         throw new Error("too little time is left before the review's deadline to open a session");
       }
@@ -691,7 +694,7 @@ async function reviewWithMounts(
         const check = checkReviewOutput(raw, turn.oversized.has(REVIEW_OUTPUT_FILE));
         const problems = [...preProblems, ...turn.problems];
         // A version mismatch is a note on the run, not a reason to escalate: CI on the head is the judge of record.
-        const toolchainRecord = toolchainOutcome(toolchain, turn.reportedToolchain, problems);
+        const toolchainRecord = toolchainOutcome(turn.files.has("report.json") ? toolchain : undefined, turn.reportedToolchain, problems);
         if (check.kind === "missing") problems.push(`no ${REVIEW_OUTPUT_FILE}`);
         if (check.kind === "invalid") problems.push(`${REVIEW_OUTPUT_FILE} rejected: it doesn't match the review schema`);
         return await write({
@@ -775,6 +778,9 @@ export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRec
     const priorMessages = await countMessages(deps.api, spec.sessionId);
     const branch = role === "builder" ? branchFor(issueNumber) : undefined;
     deps.log(`resuming ${spec.sessionId} (turn ${priorMessages + 1}, budget now $${budgetUsd.toFixed(2)})`);
+    // The same versions as the first turn: resolved at the stored base (in the fresh clone unless history was rewritten).
+    const preProblems: string[] = [];
+    const toolchain = await resolveToolchain(spec.toolchain, fresh.bareDir, baseSha, deps.log, preProblems);
     return await driveTurn(deps, {
       runId: meta[META.run] ?? spec.sessionId,
       role,
@@ -789,6 +795,8 @@ export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRec
       timeoutMinutes: spec.timeoutMinutes,
       outDir: spec.outDir,
       startedAt,
+      toolchain,
+      preProblems,
     });
   } finally {
     await rm(join(fresh.bareDir, ".."), { recursive: true, force: true });
@@ -902,7 +910,8 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
   const now = deps.now ?? Date.now;
   const { stopReason, session, files, report, reportedToolchain, problems: turnProblems } = await runTurn(deps, turn);
   const problems = [...(turn.preProblems ?? []), ...turnProblems];
-  const toolchain = toolchainOutcome(turn.toolchain, reportedToolchain, problems);
+  // Checked only when the turn wrote a report; a missing report is already a problem of its own.
+  const toolchain = toolchainOutcome(files.has("report.json") ? turn.toolchain : undefined, reportedToolchain, problems);
 
   const outputs: RunRecord["outputs"] = {};
   if (turn.role === "builder" && files.has("result.bundle")) {
