@@ -15,7 +15,8 @@ import { CI_RUN, ISSUE, PR, ciRun, eventFile, labelEvent, pull, routePull, workf
 import { png, writeZip } from "./zip-fixture.js";
 
 const token = async () => "gcp-token";
-const RUN_ID_RE = /^\d{8}T\d{6}Z-review-7-99-1$/;
+// A real-size run ID: GitHub passed 10 digits in 2026, which the first live review tripped on.
+const RUN_ID_RE = /^\d{8}T\d{6}Z-review-7-41580326667-1$/;
 
 /** A repo with main and a factory branch whose head adds lines (optionally reviewer-directed ones). */
 function repoFixture(added = "export const y = 2;\n") {
@@ -131,7 +132,7 @@ function setup(opts: { event?: object; eventName?: string; added?: string; start
       GITHUB_TOKEN: "read-token",
       GITHUB_EVENT_NAME: opts.eventName ?? "workflow_run",
       GITHUB_EVENT_PATH: eventFile(opts.event ?? workflowRunEvent({ headSha: repo.headSha })),
-      GITHUB_RUN_ID: "99",
+      GITHUB_RUN_ID: "41580326667",
       GITHUB_RUN_ATTEMPT: "1",
       RUNNER_TEMP: mkdtempSync(join(tmpdir(), "runner-temp-")),
       GLOBALHOST_APP_SLUG: "globalhost-ai",

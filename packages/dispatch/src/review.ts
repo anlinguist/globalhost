@@ -64,6 +64,8 @@ const need = (env: Env, name: string): string => {
 const REPO_SLUG = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const APP_SLUG = /^[a-z0-9][a-z0-9-]{0,33}$/;
 const POSITIVE_INT = /^[1-9][0-9]{0,9}$/;
+// GitHub run IDs passed 10 digits in 2026; allow any safe integer.
+const RUN_ID = /^[1-9][0-9]{0,15}$/;
 
 function repoFrom(env: Env): string {
   const repo = need(env, "GITHUB_REPOSITORY");
@@ -75,9 +77,9 @@ function botLoginFrom(env: Env): string {
   if (!APP_SLUG.test(slug)) throw new Error("GLOBALHOST_APP_SLUG is not an App slug");
   return `${slug}[bot]`;
 }
-function intFrom(env: Env, name: string): number {
+function intFrom(env: Env, name: string, pattern: RegExp = POSITIVE_INT): number {
   const raw = need(env, name);
-  if (!POSITIVE_INT.test(raw)) throw new Error(`${name} is not a positive integer`);
+  if (!pattern.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error(`${name} is not a positive integer`);
   return Number(raw);
 }
 async function readEvent(env: Env): Promise<unknown> {
@@ -201,7 +203,7 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       log("review: the factory is paused; nothing ran");
       return { outcome: "paused" };
     }
-    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${intFrom(env, "GITHUB_RUN_ID")}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
+    const runId = `${new Date(stepStart).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-review-${target.pr}-${intFrom(env, "GITHUB_RUN_ID", RUN_ID)}-${intFrom(env, "GITHUB_RUN_ATTEMPT")}`;
     const head: ReviewHead = { repo, pr: target.pr, sha: target.sha };
     const claim = await control.reviewClaim(head, runId, { perRunMinutes: config.limits.perRunMinutes, rereview: target.rereview });
     if (!claim.claimed) {
