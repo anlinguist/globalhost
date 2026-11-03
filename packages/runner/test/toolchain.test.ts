@@ -147,7 +147,7 @@ describe("toolchainSection", () => {
     expect(text).toContain("set `toolchain`");
     expect(text).toContain("carry on with what the sandbox has");
     expect(text).toContain("- .nvmrc names an alias, not a version; ignored");
-    expect(toolchainSection(tc, "reviewer", mergeBase).join("\n")).toContain(`at the merge base \`${mergeBase}\``);
+    expect(toolchainSection(tc, "reviewer", baseTip).join("\n")).toContain(`from the base branch tip \`${baseTip}\``);
   });
 
   it("is empty with nothing to say, and refuses a toolchain that isn't valid", () => {
@@ -184,30 +184,31 @@ describe("startReview with a toolchain", () => {
     ...(toolchain ? { toolchain } : {}),
   });
 
-  it("resolves versions at the merge base (not the base tip, never the PR head) and flags a mismatch without escalating", async () => {
+  it("resolves versions at the base branch tip (not the merge base, never the PR head) and flags a mismatch without escalating", async () => {
     const api = new FakeApi();
     session(api, { node: "v24.1.0" }, true);
     const seen: string[] = [];
     const outDir = join(dir, "out");
     const run = await startReview(spec(outDir, nvmrcResolver(seen)), deps(api));
 
-    expect(seen).toEqual(["20"]); // the head's .nvmrc says 24, the base tip's 22
+    expect(seen).toEqual(["22"]); // the head's .nvmrc says 24, the merge base's 20
     const message = api.sent[0]!;
-    expect(message).toContain("- `node` `20` (from `.nvmrc`)");
-    expect(message).toContain(`at the merge base \`${mergeBase}\``);
+    expect(message).toContain("- `node` `22` (from `.nvmrc`)");
+    expect(message).toContain(`from the base branch tip \`${baseTip}\``);
     expect(message).toContain("not from the PR");
     expect(run.status).toBe("completed");
     expect(run.output?.verdicts.function).toBe("pass");
-    expect(run.toolchain?.checks).toEqual([{ tool: "node", required: "20", source: ".nvmrc", reported: "24.1.0", status: "mismatch" }]);
+    expect(run.toolchain?.checks).toEqual([{ tool: "node", required: "22", source: ".nvmrc", reported: "24.1.0", status: "mismatch" }]);
     expect(run.mergeBaseSha).toBe(mergeBase);
-    expect(run.problems).toContain("toolchain: node 24.1.0 used, but .nvmrc on the base commit requires 20");
+    expect(run.baseSha).toBe(baseTip);
+    expect(run.problems).toContain("toolchain: node 24.1.0 used, but .nvmrc on the base commit requires 22");
     expect(run.report?.toolchain).toEqual({ node: "v24.1.0" });
     expect(ReviewRunSchema.parse(JSON.parse(readFileSync(join(outDir, "run.json"), "utf8")))).toEqual(run);
   });
 
   it("records a match with no problem, and leaves toolchain out when no resolver is given", async () => {
     const api = new FakeApi();
-    session(api, { node: "20.19.5" }, true);
+    session(api, { node: "22.11.0" }, true);
     const run = await startReview(spec(join(dir, "out"), nvmrcResolver([])), deps(api));
     expect(run.toolchain?.checks[0]?.status).toBe("match");
     expect(run.problems.filter((p) => p.startsWith("toolchain"))).toEqual([]);

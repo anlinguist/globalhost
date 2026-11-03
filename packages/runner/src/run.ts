@@ -441,7 +441,7 @@ export interface ReviewSpec {
   skillDirs?: string[];
   ownerIds?: number[];
   guidance?: string;
-  /** Resolves required tool versions at the PR's merge base with the base branch; the PR head is never read. */
+  /** Resolves required tool versions at the base branch tip (bundle baseSha); the PR head is never read. */
   toolchain?: ToolchainResolver;
 }
 
@@ -608,8 +608,9 @@ async function reviewWithMounts(
     try {
       if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
       const preProblems: string[] = [];
-      // The PR's branch point: what its own CI ran with. Never the head, whatever it changes.
-      const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.mergeBaseSha, deps.log, preProblems);
+      // The base branch tip: the PR's pull_request CI runs on the merge ref (base tip + head), so this is the config CI
+      // used, and the head can't steer it by choosing an old branch point. Never the head, whatever it changes.
+      const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.baseSha, deps.log, preProblems);
       if (spec.deadlineEpochMs !== undefined && now() + MIN_REVIEW_TURN_MS > spec.deadlineEpochMs - marginMs) {
         throw new Error("too little time is left before the review's deadline to open a session");
       }

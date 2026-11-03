@@ -17,6 +17,12 @@ export const CI_WORKFLOW = ".github/workflows/globalhost-ci.yml";
 export const NODE_VERSION_FILES = [".nvmrc", ".node-version"] as const;
 /** Where the sandbox installs a requested version: npm's `node` and `bun` packages fetch binaries from the registry. */
 const PREFIX = "/tmp/toolchain";
+/**
+ * The `node` npm package (third-party, one maintainer) installs the platform binary in a preinstall script through
+ * node-bin-setup; pinning that helper exactly keeps the only unpinned piece the binary package for the version asked
+ * for. Accepted for the sandbox only (no credentials there); see ARCHITECTURE §2.4.
+ */
+export const NODE_BIN_SETUP = "node-bin-setup@1.1.4";
 
 /** nvm / setup-node aliases: they move over time, so they pin nothing the harness can check. */
 const NODE_ALIAS = /^(?:lts\/.*|lts|node|stable|latest|current|system|iojs)$/i;
@@ -29,7 +35,7 @@ export function nodeRequirement(range: string, source: string): ToolRequirement 
     range,
     source,
     check: "node --version",
-    install: `npm install --prefix ${PREFIX}/node 'node@${range}', then start every later command with PATH="${PREFIX}/node/node_modules/.bin:$PATH"`,
+    install: `npm install --prefix ${PREFIX}/node 'node@${range}' ${NODE_BIN_SETUP}, then start every later command with PATH="${PREFIX}/node/node_modules/.bin:$PATH"`,
   };
 }
 
@@ -85,27 +91,33 @@ function repoPath(raw: string): string | undefined {
   return p;
 }
 
-/** One version file (.nvmrc-style first line, or package.json engines.node) → a range, with notes. */
-async function versionFile(repo: RepoSnapshot, path: string, notes: string[]): Promise<string | undefined> {
+/**
+ * One version file (.nvmrc-style first line, or package.json engines.node) → a range, with notes. `label` names the
+ * file in notes; callers pass fixed text when the path itself came from repo content.
+ */
+async function versionFile(repo: RepoSnapshot, path: string, notes: string[], label = path): Promise<string | undefined> {
   if (path === "package.json" || path.endsWith("/package.json")) {
-    const { pkg, note } = await readPackageJson(repo, path);
-    if (note) notes.push(note);
+    const { pkg } = await readPackageJson(repo, path);
+    if (!pkg && repo.files.includes(path)) notes.push(`${label} isn't a readable JSON object; ignored`);
     const engines = stringAt(pkg, "engines", "node");
-    return engines === undefined ? undefined : describe(`${path} engines.node`, npmRangeToCanonical(engines), engines, notes);
+    return engines === undefined ? undefined : describe(`${label} engines.node`, npmRangeToCanonical(engines), engines, notes);
   }
   const r = await readCapped(repo, path, MAX_VERSION_FILE_CHARS);
   if (r.kind === "absent") return undefined;
   if (r.kind === "too-big") {
-    notes.push(`${path} is too large to be a version file; ignored`);
+    notes.push(`${label} is too large to be a version file; ignored`);
     return undefined;
   }
   const line = firstLine(r.text);
   if (line === undefined) {
-    notes.push(`${path} is empty; ignored`);
+    notes.push(`${label} is empty; ignored`);
     return undefined;
   }
-  return describe(path, npmRangeToCanonical(line), line, notes);
+  return describe(label, npmRangeToCanonical(line), line, notes);
 }
+
+/** How notes name a setup-node node-version-file: its path is repo content, so it never appears in text. */
+const VERSION_FILE_LABEL = `the node-version-file named in ${CI_WORKFLOW}`;
 
 /** A single exact or partial version ("20", "20.11.1"): what setup-node installs as is. */
 const isVersion = (range: string) => {
@@ -124,12 +136,18 @@ async function fromWorkflow(repo: RepoSnapshot, notes: string[]): Promise<{ rang
     return undefined;
   }
   const ranges = new Set<string>();
+  let unreadVersion = false;
   for (const v of inputs.versions) {
-    if (v.includes("${{")) notes.push(`${CI_WORKFLOW} sets node-version from an expression; ignored`);
-    else {
+    if (v.includes("${{")) {
+      notes.push(`${CI_WORKFLOW} sets node-version from an expression; ignored`);
+      unreadVersion = true;
+    } else {
       const range = describe(`${CI_WORKFLOW} node-version`, npmRangeToCanonical(v), v, notes);
       if (range && isVersion(range)) ranges.add(range);
-      else if (range) notes.push(`${CI_WORKFLOW} node-version is a range, not a version; ignored`);
+      else {
+        if (range) notes.push(`${CI_WORKFLOW} node-version is a range, not a version; ignored`);
+        unreadVersion = true;
+      }
     }
   }
   const [only] = ranges;
@@ -150,15 +168,32 @@ async function fromWorkflow(repo: RepoSnapshot, notes: string[]): Promise<{ rang
   }
   const [file] = files;
   if (!file) return undefined;
-  const range = await versionFile(repo, file, notes);
-  if (range) return { range, source: file };
-  if (!repo.files.includes(file)) notes.push(`${CI_WORKFLOW} node-version-file names a file that isn't on the base commit; ignored`);
+  const range = await versionFile(repo, file, notes, VERSION_FILE_LABEL);
+  if (range) {
+    // setup-node prefers node-version when both are set; if that couldn't be read, CI may run something else.
+    if (unreadVersion) notes.push(`${CI_WORKFLOW} also sets a node-version the harness couldn't read; CI may run a different version than ${VERSION_FILE_LABEL}`);
+    // The source is the workflow itself: the file's path is repo content and stays out of the message.
+    return { range, source: CI_WORKFLOW };
+  }
+  if (!repo.files.includes(file)) notes.push(`${VERSION_FILE_LABEL} isn't on the base commit; ignored`);
   return undefined;
+}
+
+/** Version sources other tools use that the harness doesn't read: noted, so a difference from CI is explainable. */
+async function unreadSources(repo: RepoSnapshot, partPath: string, notes: string[]): Promise<void> {
+  const pkgPath = join(partPath, "package.json");
+  const { pkg } = await readPackageJson(repo, pkgPath);
+  if (stringAt(pkg, "volta", "node") !== undefined) notes.push(`${pkgPath} volta.node isn't read; Volta users and CI may differ from the version used`);
+  for (const dir of selfAndParents(partPath)) {
+    const path = join(dir, ".tool-versions");
+    if (repo.files.includes(path)) notes.push(`${path} isn't read; asdf/mise users may run a different version`);
+  }
 }
 
 export async function detectNode(repo: RepoSnapshot, partPath: string): Promise<Toolchain> {
   const notes: string[] = [];
   const done = (range: string, source: string): Toolchain => ({ tools: [nodeRequirement(range, source)], notes });
+  await unreadSources(repo, partPath, notes);
 
   const ci = await fromWorkflow(repo, notes);
   if (ci) return done(ci.range, ci.source);

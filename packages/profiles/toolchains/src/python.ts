@@ -10,6 +10,9 @@ const PREFIX = "/tmp/toolchain";
 /** A CPython version in .python-version: "3.12" or "3.12.3". Interpreter names (pypy3.10, system) aren't. */
 const PYTHON_VERSION_LINE = /^(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5}))?$/;
 
+// Before a profile uses these hints: `uv python install` downloads Python builds from GitHub releases (not a package
+// registry), and the sandbox image may have no pip. A Python profile must allow those hosts in its environment or
+// ship uv and the needed Python in it (docs/PROFILES.md).
 export function pythonRequirement(range: string, source: string): ToolRequirement {
   return {
     tool: "python",
