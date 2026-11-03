@@ -102,6 +102,25 @@ const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}$/;
 export const reviewHeadBranch = (pr: number) => `globalhost-review/pr-${pr}`;
 
+const CREDENTIAL_KEY = /(^|\.)(extraheader|credential|askpass|password|token)(\.|$)|^credential\./i;
+const URL_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i;
+
+/**
+ * Throws if the repo's own config holds anything credential-shaped: an http extra header, a credential helper,
+ * or a remote URL with userinfo. The token is only ever passed through git's environment; this checks that
+ * nothing persisted it.
+ */
+export async function assertNoStoredCredentials(repoDir: string): Promise<void> {
+  const listed = await git(["config", "--local", "--list", "-z"], { cwd: repoDir });
+  for (const entry of listed.split("\0").filter(Boolean)) {
+    const nl = entry.indexOf("\n");
+    const key = nl === -1 ? entry : entry.slice(0, nl);
+    const value = nl === -1 ? "" : entry.slice(nl + 1);
+    if (CREDENTIAL_KEY.test(key)) throw new Error(`repo config holds a credential-like key: ${key}`);
+    if (/^remote\..*\.(url|pushurl)$/i.test(key) && URL_USERINFO.test(value)) throw new Error(`remote URL in ${key} carries credentials`);
+  }
+}
+
 /**
  * Bundles a PR for review: the base branch and the PR head (`refs/pull/<n>/head`), full history, no tags, with
  * HEAD on the head so `git clone` of the bundle checks it out and the reviewer can diff and revert against the
@@ -135,6 +154,7 @@ export async function bundleReviewFrom(source: string, req: ReviewBundleRequest,
     cwd: bareDir,
     token,
   });
+  await assertNoStoredCredentials(bareDir);
   const fetchedHead = (await git(["rev-parse", "--verify", `refs/heads/${headBranch}^{commit}`], { cwd: bareDir })).trim();
   if (fetchedHead !== headSha) {
     throw new Error(`PR #${pr} head is ${fetchedHead.slice(0, 12)}, not ${headSha.slice(0, 12)}: it moved since the review was requested`);

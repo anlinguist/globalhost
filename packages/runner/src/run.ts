@@ -1,8 +1,10 @@
 // The harness: drive one role's session for one issue and turn its outputs into a trusted run.json.
 // It's host-specific (RunnerHost = Managed Agents here, ADR-0011) but publishing is not: the dispatcher
 // (P1-07) and `globalhost run` both call these functions and then decide what to do with the record.
-import { lstat, mkdir, open, rm, writeFile } from "node:fs/promises";
-import { basename, join, posix } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, posix, resolve } from "node:path";
 import { parseReviewOutput, type ReviewOutput, type ReviewOutputIssue, type ReviewStatus } from "@globalhost/core";
 import { REVIEW_OUTPUT_FILE, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
 import { createRepoBundle, createReviewBundle, inspectResultBundle, type RepoBundle, type ReviewBundle } from "./git.js";
@@ -13,6 +15,7 @@ import {
   ensureAgent,
   ensureEnvironment,
   waitForTurn,
+  type AgentRef,
   type EnvironmentSpec,
   type ManagedAgentsApi,
   type OutputFile,
@@ -21,7 +24,6 @@ import {
 import {
   REPO_BUNDLE_MOUNT,
   SCREENSHOT_MOUNT_DIR,
-  SCREENSHOT_NAME,
   buildAssessTaskMessage,
   buildFeedbackMessage,
   buildReviewTaskMessage,
@@ -134,7 +136,8 @@ interface SessionLaunch {
 }
 
 /** Syncs the role's agent (with its pinned skills) and environment, uploads the bundle, and opens the session. */
-async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle): Promise<{ sessionId: string; model: string }> {
+async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle,
+): Promise<{ sessionId: string; model: string; agent: AgentRef; environmentId: string }> {
   const skills = [];
   for (const dir of l.skillDirs ?? []) skills.push(await ensureSkill(deps.api, dir));
   const def = roleDefinition(l.role, l.model, skills);
@@ -150,7 +153,7 @@ async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle):
   const sessionId = await deps.api.createSession({
     agent,
     environmentId,
-    budgetCents: l.budgetUsd * 100,
+    budgetCents: Math.round(l.budgetUsd * 100),
     title,
     metadata: {
       [META.run]: l.runId,
@@ -165,7 +168,7 @@ async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle):
     files,
   });
   deps.log(`session ${sessionId} (agent ${def.agentName} v${agent.version}, budget $${l.budgetUsd})`);
-  return { sessionId, model: def.model };
+  return { sessionId, model: def.model, agent, environmentId };
 }
 
 export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecord> {
@@ -270,12 +273,18 @@ export async function startAssessment(spec: AssessSpec, deps: RunDeps): Promise<
 export interface ScreenshotInput {
   /** Local file the harness already holds (e.g. downloaded from the preview workflow's artifact). */
   path: string;
-  /** Name to mount it under; defaults to the file's basename. Must match SCREENSHOT_NAME. */
-  name?: string;
+  /**
+   * What the caller calls it (e.g. the artifact's file name). Untrusted: it is shown to the reviewer only inside
+   * an untrusted fence, never used as a path. The mounted name is assigned by the harness.
+   */
+  label?: string;
 }
 
 export interface ScreenshotMount {
+  /** Harness-assigned: screenshot-01.png, screenshot-02.png, … */
   name: string;
+  label?: string;
+  /** The harness's own copy, in a directory it created; this is what gets uploaded. */
   localPath: string;
   /** Under SCREENSHOT_MOUNT_DIR, relative to the session's uploads root. */
   mountPath: string;
@@ -283,41 +292,57 @@ export interface ScreenshotMount {
 
 export const MAX_REVIEW_SCREENSHOTS = MAX_SCREENSHOTS;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_LABEL = 200;
 
 /**
- * Checks screenshots before mounting them: a plain `.png` name that stays directly under SCREENSHOT_MOUNT_DIR,
- * no duplicates (case-insensitively), a regular file (not a symlink) within the size cap that starts like a PNG.
- * Throws on the first problem; a review with a bad screenshot input is a harness bug, not something to skip.
+ * Copies screenshots into a fresh harness-owned directory under harness-assigned names. Each input is opened
+ * once with O_NOFOLLOW (a symlinked file is refused), its parent must resolve to itself (no symlinked
+ * directories), and the bytes read through that one handle are checked (regular file, size cap, PNG header)
+ * and written to the copy, so what was checked is what gets uploaded. Throws on the first problem; the caller
+ * removes `dir` when done.
  */
-export async function prepareScreenshotMounts(inputs: readonly ScreenshotInput[]): Promise<ScreenshotMount[]> {
+export async function prepareScreenshotMounts(inputs: readonly ScreenshotInput[]): Promise<{ dir: string; mounts: ScreenshotMount[] }> {
   if (inputs.length > MAX_REVIEW_SCREENSHOTS) throw new Error(`too many screenshots (${inputs.length}, max ${MAX_REVIEW_SCREENSHOTS})`);
-  const seen = new Set<string>();
-  const mounts: ScreenshotMount[] = [];
-  for (const input of inputs) {
-    const name = input.name ?? basename(input.path);
-    if (!SCREENSHOT_NAME.test(name)) throw new Error(`bad screenshot name: ${JSON.stringify(name.slice(0, 100))}`);
-    const mountPath = posix.join(SCREENSHOT_MOUNT_DIR, name);
-    if (posix.dirname(mountPath) !== SCREENSHOT_MOUNT_DIR || posix.basename(mountPath) !== name) {
-      throw new Error(`screenshot ${name} would mount outside ${SCREENSHOT_MOUNT_DIR}`);
+  const dir = await mkdtemp(join(tmpdir(), "globalhost-shots-"));
+  try {
+    const mounts: ScreenshotMount[] = [];
+    for (const [i, input] of inputs.entries()) {
+      const name = `screenshot-${String(i + 1).padStart(2, "0")}.png`;
+      const given = resolve(input.path);
+      if ((await realpath(dirname(given))) !== dirname(given)) throw new Error(`screenshot ${i + 1}: its directory is reached through a symlink`);
+      let data: Buffer;
+      const fh = await open(given, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((err: NodeJS.ErrnoException) => {
+        throw new Error(`screenshot ${i + 1}: can't open it without following links (${err.code ?? "error"})`);
+      });
+      try {
+        const st = await fh.stat();
+        if (!st.isFile()) throw new Error(`screenshot ${i + 1} is not a regular file`);
+        if (st.size === 0 || st.size > SCREENSHOT_LIMIT) throw new Error(`screenshot ${i + 1} is ${st.size} bytes (limit ${SCREENSHOT_LIMIT})`);
+        data = Buffer.alloc(st.size);
+        const { bytesRead } = await fh.read(data, 0, st.size, 0);
+        if (bytesRead !== st.size) throw new Error(`screenshot ${i + 1} changed while it was read`);
+      } finally {
+        await fh.close();
+      }
+      if (!data.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) throw new Error(`screenshot ${i + 1} is not a PNG`);
+      const localPath = join(dir, name);
+      await writeFile(localPath, data, { flag: "wx", mode: 0o600 });
+      const label = input.label === undefined ? undefined : input.label.slice(0, MAX_LABEL);
+      mounts.push({ name, ...(label ? { label } : {}), localPath, mountPath: posix.join(SCREENSHOT_MOUNT_DIR, name) });
     }
-    if (seen.has(name.toLowerCase())) throw new Error(`duplicate screenshot name: ${name}`);
-    seen.add(name.toLowerCase());
-
-    const st = await lstat(input.path);
-    if (!st.isFile()) throw new Error(`screenshot ${name} is not a regular file`);
-    if (st.size === 0 || st.size > SCREENSHOT_LIMIT) throw new Error(`screenshot ${name} is ${st.size} bytes (limit ${SCREENSHOT_LIMIT})`);
-    const fh = await open(input.path, "r");
-    try {
-      const head = Buffer.alloc(PNG_MAGIC.length);
-      await fh.read(head, 0, head.length, 0);
-      if (!head.equals(PNG_MAGIC)) throw new Error(`screenshot ${name} is not a PNG`);
-    } finally {
-      await fh.close();
-    }
-    mounts.push({ name, localPath: input.path, mountPath });
+    return { dir, mounts };
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true });
+    throw err;
   }
-  return mounts;
 }
+
+/**
+ * Minutes the harness may spend after a review's timeout (interrupt, settle, output retries, writing run.json).
+ * A caller with a hard job timeout must pass it as `hardTimeoutMinutes`; startReview refuses a `timeoutMinutes`
+ * that doesn't leave this margin.
+ */
+export const REVIEW_SETTLE_MARGIN_MINUTES = 3;
 
 export interface ReviewSpec {
   runId: string;
@@ -325,19 +350,21 @@ export interface ReviewSpec {
   pr: number;
   /** The head to review (from the CI run or the PR event); the review is refused if the PR has moved. */
   headSha: string;
-  /** The PR's base branch. */
+  /** The PR's base branch. Must be the repo's default branch: factory PRs never target anything else. */
   baseBranch: string;
-  /** The issue the PR implements (factory/issue-<n>); its title and body are the spec, fenced. */
+  /** The issue the PR implements (factory/issue-<n>); its title and body are the spec, fenced. Comments are not passed. */
   issue?: number;
   /** PR title and description (builder-written; fenced). */
   prTitle?: string;
   prBody?: string;
   /** The caller's summary of the CI run on this head (fenced). */
   ciSummary?: string;
-  /** Preview screenshots as local files, mounted read-only under SCREENSHOT_MOUNT_DIR. */
+  /** Preview screenshots as local files, copied and mounted read-only under SCREENSHOT_MOUNT_DIR. */
   screenshots?: readonly ScreenshotInput[];
   budgetUsd: number;
   timeoutMinutes: number;
+  /** The job's own hard limit, if any; timeoutMinutes must be at most this minus REVIEW_SETTLE_MARGIN_MINUTES. */
+  hardTimeoutMinutes?: number;
   outDir: string;
   /** Defaults to the builder's pinned model (DEFAULT_MODEL). */
   model?: string;
@@ -363,126 +390,229 @@ export type ReviewOutputCheck =
   | { kind: "missing" };
 
 /**
- * Parses the reviewer's raw output file: strict UTF-8, exactly one JSON value, then core's parseReviewOutput.
- * Never clips or repairs. Issues use fixed text so nothing the reviewer wrote is echoed into the record.
+ * True if any object in `text` (already known to be valid JSON) repeats a key. JSON.parse keeps the last copy,
+ * so `{"verdicts":…escalate…,"verdicts":…pass…}` would otherwise read as pass. Keys are compared decoded, so
+ * `"a"` and `"a"` are the same key. One linear pass.
+ */
+export function hasDuplicateJsonKeys(text: string): boolean {
+  const stack: ({ keys: Set<string>; expectKey: boolean } | null)[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      const top = stack.at(-1);
+      if (top?.expectKey) {
+        const key = JSON.parse(text.slice(i, j + 1)) as string;
+        if (top.keys.has(key)) return true;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = j;
+    } else if (c === "{") stack.push({ keys: new Set(), expectKey: true });
+    else if (c === "[") stack.push(null);
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === ",") {
+      const top = stack.at(-1);
+      if (top) top.expectKey = true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parses the reviewer's raw output file: strict UTF-8 (no BOM), exactly one JSON value, no duplicate keys, then
+ * core's parseReviewOutput. Never clips or repairs. Issues use fixed text so nothing the reviewer wrote is echoed.
  */
 export function checkReviewOutput(raw: Buffer | undefined, oversized: boolean): ReviewOutputCheck {
   if (oversized) return { kind: "invalid", issues: [{ path: "", code: "too_big", message: "output file over its size limit" }] };
   if (raw === undefined) return { kind: "missing" };
+  let text: string;
   let value: unknown;
   try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw));
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+    value = JSON.parse(text);
   } catch {
     return { kind: "invalid", issues: [{ path: "", code: "invalid_json", message: "not a single JSON value in UTF-8" }] };
   }
+  if (hasDuplicateJsonKeys(text)) return { kind: "invalid", issues: [{ path: "", code: "duplicate_key", message: "an object repeats a key" }] };
   const parsed = parseReviewOutput(value);
   return parsed.ok ? { kind: "valid", output: parsed.output } : { kind: "invalid", issues: parsed.issues };
 }
 
+/** Thrown when a review session exists but the harness couldn't write its run.json; carries what's needed to settle it. */
+export class ReviewRunError extends Error {
+  constructor(
+    message: string,
+    readonly sessionId: string,
+    readonly costUsd: number | null,
+  ) {
+    super(message);
+    this.name = "ReviewRunError";
+  }
+}
+
+const positiveFinite = (n: number) => typeof n === "number" && Number.isFinite(n) && n > 0;
+const MAX_PROBLEM_CHARS = 500;
+
 /**
  * Runs the reviewer on one PR head (ADR-0015, shadow mode). The harness bundles base + head with a read-only
- * token that never reaches the session, mounts screenshots read-only, and validates the verdict strictly:
- * an output that doesn't fit ReviewOutputSchema is rejected whole (status invalid_output). Writes run.json
- * (ReviewRunSchema) and leaves the raw review-output.json in outDir. Scanning, budgets, the overall verdict
- * and posting are the caller's.
+ * token that never reaches the session, copies and mounts screenshots read-only under harness-assigned names,
+ * and validates the verdict strictly: an output that doesn't fit ReviewOutputSchema is rejected whole (status
+ * invalid_output). Writes run.json (ReviewRunSchema) and leaves the raw review-output.json in outDir.
+ *
+ * Once a session exists, every exit writes a run.json with its sessionId and cost: a harness error after that
+ * point interrupts the session (best effort) and records status `failed`. If even that can't be written, it
+ * throws ReviewRunError with the sessionId. Scanning, budgets, the overall verdict and posting are the caller's.
  */
 export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<ReviewRun> {
+  if (!positiveFinite(spec.budgetUsd)) throw new Error("budgetUsd must be a positive finite number");
+  if (!positiveFinite(spec.timeoutMinutes)) throw new Error("timeoutMinutes must be a positive finite number");
+  if (spec.hardTimeoutMinutes !== undefined) {
+    if (!positiveFinite(spec.hardTimeoutMinutes)) throw new Error("hardTimeoutMinutes must be a positive finite number");
+    if (spec.timeoutMinutes > spec.hardTimeoutMinutes - REVIEW_SETTLE_MARGIN_MINUTES) {
+      throw new Error(`timeoutMinutes must leave ${REVIEW_SETTLE_MARGIN_MINUTES} min before the hard timeout`);
+    }
+  }
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const screenshots = await prepareScreenshotMounts(spec.screenshots ?? []);
-  const repo = await deps.github.repo(spec.repo);
-  const issue = spec.issue === undefined ? undefined : await deps.github.issue(spec.repo, spec.issue);
-  const ownerIds = new Set(spec.ownerIds ?? [repo.owner.id]);
-
-  const bundle: ReviewBundle = await (deps.cloneReview ?? createReviewBundle)(
-    repo.clone_url,
-    { baseBranch: spec.baseBranch, pr: spec.pr, headSha: spec.headSha },
-    deps.githubToken,
-  );
+  const shots = await prepareScreenshotMounts(spec.screenshots ?? []);
   try {
-    if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
-    deps.log(`review PR #${spec.pr} head ${bundle.headSha.slice(0, 12)} on ${bundle.baseBranch}@${bundle.baseSha.slice(0, 12)}`);
-    const { sessionId, model } = await openSession(
-      deps,
-      {
-        runId: spec.runId,
-        role: "reviewer",
-        repo: spec.repo,
-        issue: spec.issue ?? null,
-        budgetUsd: spec.budgetUsd,
-        model: spec.model,
-        environment: spec.environment,
-        skillDirs: spec.skillDirs,
-        review: { pr: spec.pr, headSha: bundle.headSha },
-        mounts: screenshots,
-      },
-      bundle,
+    const repo = await deps.github.repo(spec.repo);
+    if (spec.baseBranch !== repo.default_branch) throw new Error(`PR #${spec.pr} targets ${spec.baseBranch}, not the default branch`);
+    const issue = spec.issue === undefined ? undefined : await deps.github.issue(spec.repo, spec.issue);
+    const ownerIds = new Set(spec.ownerIds ?? [repo.owner.id]);
+
+    const bundle: ReviewBundle = await (deps.cloneReview ?? createReviewBundle)(
+      repo.clone_url,
+      { baseBranch: repo.default_branch, pr: spec.pr, headSha: spec.headSha },
+      deps.githubToken,
     );
-    const message = buildReviewTaskMessage({
-      repo: spec.repo,
-      pr: spec.pr,
-      baseBranch: bundle.baseBranch,
-      headBranch: bundle.headBranch,
-      baseSha: bundle.baseSha,
-      headSha: bundle.headSha,
-      mergeBaseSha: bundle.mergeBaseSha,
-      ownerIds,
-      issue,
-      prTitle: spec.prTitle,
-      prBody: spec.prBody,
-      ciSummary: spec.ciSummary,
-      screenshots: screenshots.map((s) => s.name),
-      guidance: spec.guidance,
-    });
-    const turn = await runTurn(deps, {
-      sessionId,
-      role: "reviewer",
-      message,
-      priorMessages: 0,
-      timeoutMinutes: spec.timeoutMinutes,
-      outDir: spec.outDir,
-    });
+    try {
+      if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
+      deps.log(`review PR #${spec.pr} head ${bundle.headSha.slice(0, 12)} on ${bundle.baseBranch}@${bundle.baseSha.slice(0, 12)}`);
+      const session = await openSession(
+        deps,
+        {
+          runId: spec.runId,
+          role: "reviewer",
+          repo: spec.repo,
+          issue: spec.issue ?? null,
+          budgetUsd: spec.budgetUsd,
+          model: spec.model,
+          environment: spec.environment,
+          skillDirs: spec.skillDirs,
+          review: { pr: spec.pr, headSha: bundle.headSha },
+          mounts: shots.mounts,
+        },
+        bundle,
+      );
 
-    const raw = turn.files.get(REVIEW_OUTPUT_FILE);
-    const check = checkReviewOutput(raw, turn.oversized.has(REVIEW_OUTPUT_FILE));
-    const problems = [...turn.problems];
-    if (check.kind === "missing") problems.push(`no ${REVIEW_OUTPUT_FILE}`);
-    if (check.kind === "invalid") problems.push(`${REVIEW_OUTPUT_FILE} rejected: it doesn't match the review schema`);
+      const base = {
+        version: 1 as const,
+        kind: "review" as const,
+        runId: spec.runId,
+        repo: spec.repo,
+        pr: spec.pr,
+        issue: spec.issue ?? null,
+        headSha: bundle.headSha,
+        baseSha: bundle.baseSha,
+        mergeBaseSha: bundle.mergeBaseSha,
+        sessionId: session.sessionId,
+        agent: session.agent,
+        environmentId: session.environmentId,
+        model: session.model,
+        screenshots: shots.mounts.map((s) => s.name),
+        budgetUsd: spec.budgetUsd,
+      };
+      const timing = () => ({
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date(now()).toISOString(),
+        wallSeconds: Math.round((now() - startedAt) / 1000),
+      });
+      const write = async (record: ReviewRun) => {
+        ReviewRunSchema.parse(record);
+        await mkdir(spec.outDir, { recursive: true });
+        await writeFile(join(spec.outDir, "run.json"), `${JSON.stringify(record, null, 2)}\n`);
+        return record;
+      };
 
-    const record: ReviewRun = {
-      version: 1,
-      kind: "review",
-      runId: spec.runId,
-      repo: spec.repo,
-      pr: spec.pr,
-      issue: spec.issue ?? null,
-      headSha: bundle.headSha,
-      baseSha: bundle.baseSha,
-      mergeBaseSha: bundle.mergeBaseSha,
-      sessionId,
-      agent: turn.session.agent,
-      environmentId: turn.session.environmentId,
-      model,
-      status: decideReviewStatus(turn.stopReason, check.kind),
-      stopReason: turn.stopReason,
-      output: check.kind === "valid" ? check.output : null,
-      outputIssues: check.kind === "invalid" ? check.issues : [],
-      outputBytes: raw?.length ?? null,
-      screenshots: screenshots.map((s) => s.name),
-      report: turn.report,
-      startedAt: new Date(startedAt).toISOString(),
-      finishedAt: new Date(now()).toISOString(),
-      wallSeconds: Math.round((now() - startedAt) / 1000),
-      activeSeconds: turn.session.activeSeconds,
-      costUsd: turn.session.costCents / 100,
-      budgetUsd: spec.budgetUsd,
-      problems,
-    };
-    ReviewRunSchema.parse(record);
-    await writeFile(join(spec.outDir, "run.json"), `${JSON.stringify(record, null, 2)}\n`);
-    return record;
+      try {
+        const message = buildReviewTaskMessage({
+          repo: spec.repo,
+          pr: spec.pr,
+          baseBranch: bundle.baseBranch,
+          headBranch: bundle.headBranch,
+          baseSha: bundle.baseSha,
+          headSha: bundle.headSha,
+          mergeBaseSha: bundle.mergeBaseSha,
+          ownerIds,
+          issue,
+          prTitle: spec.prTitle,
+          prBody: spec.prBody,
+          ciSummary: spec.ciSummary,
+          screenshots: shots.mounts.map((s) => ({ name: s.name, label: s.label })),
+          guidance: spec.guidance,
+        });
+        const turn = await runTurn(deps, {
+          sessionId: session.sessionId,
+          role: "reviewer",
+          message,
+          priorMessages: 0,
+          timeoutMinutes: spec.timeoutMinutes,
+          outDir: spec.outDir,
+        });
+
+        const raw = turn.files.get(REVIEW_OUTPUT_FILE);
+        const check = checkReviewOutput(raw, turn.oversized.has(REVIEW_OUTPUT_FILE));
+        const problems = [...turn.problems];
+        if (check.kind === "missing") problems.push(`no ${REVIEW_OUTPUT_FILE}`);
+        if (check.kind === "invalid") problems.push(`${REVIEW_OUTPUT_FILE} rejected: it doesn't match the review schema`);
+        return await write({
+          ...base,
+          agent: turn.session.agent,
+          environmentId: turn.session.environmentId,
+          status: decideReviewStatus(turn.stopReason, check.kind),
+          stopReason: turn.stopReason,
+          output: check.kind === "valid" ? check.output : null,
+          outputIssues: check.kind === "invalid" ? check.issues : [],
+          outputBytes: raw?.length ?? null,
+          report: turn.report,
+          ...timing(),
+          activeSeconds: turn.session.activeSeconds,
+          costUsd: turn.session.costCents / 100,
+          problems,
+        });
+      } catch (err) {
+        // The session exists, so this run must still settle: stop it, find out what it cost, and record a failure.
+        const reason = (err instanceof Error ? err.message : String(err)).slice(0, MAX_PROBLEM_CHARS);
+        deps.log(`review harness error after session ${session.sessionId} opened: ${reason}`);
+        await deps.api.interrupt(session.sessionId).catch(() => undefined);
+        const info = await deps.api.retrieveSession(session.sessionId).catch(() => undefined);
+        const costUsd = info ? info.costCents / 100 : null;
+        try {
+          return await write({
+            ...base,
+            status: "failed",
+            stopReason: "harness_error",
+            output: null,
+            outputIssues: [],
+            outputBytes: null,
+            ...timing(),
+            activeSeconds: info?.activeSeconds ?? null,
+            costUsd: costUsd ?? 0,
+            problems: [`harness error: ${reason}`, ...(info ? [] : ["session cost unknown: retrieving the session failed"])],
+          });
+        } catch (writeErr) {
+          const why = (writeErr instanceof Error ? writeErr.message : String(writeErr)).slice(0, MAX_PROBLEM_CHARS);
+          throw new ReviewRunError(`review session ${session.sessionId} failed (${reason}) and its run.json couldn't be written (${why})`, session.sessionId, costUsd);
+        }
+      }
+    } finally {
+      await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
+    }
   } finally {
-    await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
+    await rm(shots.dir, { recursive: true, force: true });
   }
 }
 

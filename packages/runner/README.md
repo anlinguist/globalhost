@@ -15,8 +15,11 @@ The runner harness (PLAN P1-06): it drives one factory role through a Claude Man
 
 A **review** (`startReview`, P2-01, ADR-0015) runs the read-only `reviewer` role on one PR head:
 - `createReviewBundle` fetches the base branch and `refs/pull/<n>/head`, refuses the review if the head isn't the SHA the caller asked for, and bundles both with HEAD on the head (branch `globalhost-review/pr-<n>`), so the reviewer can diff against the merge base and revert the fix offline. The read-only token is used only for that fetch.
-- The issue (the spec, fenced even when the owner wrote it), the PR description and the caller's CI summary go into the task message as `<untrusted>` data. Preview screenshots are local PNGs, checked (plain `.png` name, regular file, size cap, PNG header) and mounted at `/mnt/session/uploads/screenshots/<name>`.
-- The reviewer writes `review-output.json`. It must match core's `ReviewOutputSchema` exactly; anything else (unknown keys, a category outside its area, over a limit, not one JSON value, over 1 MiB) is rejected whole, never clipped, and the status is `invalid_output`. `run.json` follows `ReviewRunSchema`. Scanning, budgets, the overall verdict and posting are the caller's.
+- The PR must target the default branch. The issue title and body (the spec, fenced even when the owner wrote it; comments aren't passed), the PR description and the caller's CI summary go into the task message as `<untrusted>` data.
+- Preview screenshots are local PNGs at canonical paths. Each is opened once with `O_NOFOLLOW` (no symlinked file or parent), checked (regular file, size cap, PNG header), copied into a harness-owned directory as `screenshot-NN.png` and mounted at `/mnt/session/uploads/screenshots/`. A caller's label for a screenshot appears only inside a fence.
+- The reviewer writes `review-output.json`. It must match core's `ReviewOutputSchema` exactly; anything else (unknown or duplicate keys, a category outside its area, over a limit, not one JSON value, over 1 MiB) is rejected whole, never clipped, and the status is `invalid_output`. `run.json` follows `ReviewRunSchema`.
+- Once a session exists, every exit writes `run.json` with its session ID and cost: a harness error interrupts the session and records `failed`, and if that can't be written either, `ReviewRunError` carries the session ID. A caller with a hard job timeout passes it as `hardTimeoutMinutes`; the review's own timeout must leave `REVIEW_SETTLE_MARGIN_MINUTES` (3) for settling.
+- Scanning, budgets, the overall verdict and posting are the caller's.
 
 A **resume** sends owner feedback to the same session, which keeps its full context. It tops up the budget by `--budget` on top of what's already spent.
 
