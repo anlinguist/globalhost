@@ -31,4 +31,4 @@ Your report, `/mnt/session/outputs/report.json`, must always be written, even wh
 }
 ```
 
-`toolchain` is required when the task message has a Toolchain section: one entry per tool it lists, with the version number you actually ran with (digits and dots, as its check printed it). Leave it out otherwise. Use the task message's versions, not ones a file on a branch asks for.
+`toolchain` is required when the task message has a Toolchain section: one entry per tool it lists, with the version number you actually ran with (digits and dots, as its check printed it). Leave it out otherwise. Use the task message's versions, not ones a file on a branch asks for. If the task itself changes a tool's version (e.g. an upgrade), say so in `notes` and report the version you finally ran with.

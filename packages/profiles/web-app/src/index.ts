@@ -34,7 +34,7 @@ export async function webAppToolchain(repo: RepoSnapshot, part: { name: string; 
   return packageManager === "bun" ? joinToolchains(node, await detectBun(repo, part.path)) : joinToolchains(node);
 }
 
-const previewNotYet =(): Promise<never> => Promise.reject(new Error("web-app previews are not implemented yet (P1-11)"));
+const previewNotYet = (): Promise<never> => Promise.reject(new Error("web-app previews are not implemented yet (P1-11)"));
 
 export const webApp: Profile<WebAppConfig, WebAppDetection> = {
   id: "web-app",

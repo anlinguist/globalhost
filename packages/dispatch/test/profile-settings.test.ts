@@ -118,4 +118,13 @@ describe("profileToolchain", () => {
     expect(tc.tools).toEqual([expect.objectContaining({ tool: "node", range: "20", source: ".nvmrc" })]);
     expect(tc.notes).toEqual(["node: .nvmrc asks for 20 and api/.nvmrc for 22; using 20"]);
   });
+
+  it("keeps the other parts' versions when one part's detection throws", async () => {
+    const web = config();
+    const twoParts = { ...web, parts: { ...web.parts, api: { ...web.parts.web!, path: "api", profile: "service" } } };
+    const broken: Profile = { ...stubProfile("service", []), toolchain: async () => Promise.reject(new Error("bad")) };
+    const tc = await profileToolchain([withToolchain("web-app", "20"), broken], twoParts)!({ files: ["package.json"], readFile: async () => "manifest" });
+    expect(tc.tools.map((t) => t.range)).toEqual(["20"]);
+    expect(tc.notes).toEqual(["parts.api: its tool versions couldn't be read; none required for it"]);
+  });
 });

@@ -26,7 +26,7 @@ export function nodeRequirement(range: string, source: string): ToolRequirement 
     range,
     source,
     check: "node --version",
-    install: `npm install --prefix ${PREFIX}/node 'node@${range}' && export PATH="${PREFIX}/node/node_modules/.bin:$PATH"`,
+    install: `npm install --prefix ${PREFIX}/node 'node@${range}', then start every later command with PATH="${PREFIX}/node/node_modules/.bin:$PATH"`,
   };
 }
 
@@ -36,7 +36,7 @@ export function bunRequirement(range: string, source: string): ToolRequirement {
     range,
     source,
     check: "bun --version",
-    install: `npm install --prefix ${PREFIX}/bun 'bun@${range}' && export PATH="${PREFIX}/bun/node_modules/.bin:$PATH"`,
+    install: `npm install --prefix ${PREFIX}/bun 'bun@${range}', then start every later command with PATH="${PREFIX}/bun/node_modules/.bin:$PATH"`,
   };
 }
 

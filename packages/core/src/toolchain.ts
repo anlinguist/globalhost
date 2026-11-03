@@ -108,8 +108,11 @@ const toolText = z
   .min(1)
   .max(MAX_TOOL_TEXT)
   .regex(/^[^\p{Cc}\p{Cf}]+$/u, "one line of printable text");
-/** Repo-relative path of the file a requirement came from: plain characters only, no "..". */
-const SOURCE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._/-]{1,200}$/;
+/**
+ * Repo-relative path of the file a requirement came from: the characters factory.yaml allows in part paths
+ * (repoPath) plus "/", no "." or ".." segments. Long enough for a maximal part path plus a file name.
+ */
+const SOURCE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._@+/-]{1,400}$/;
 
 export const ToolRequirementSchema = z.strictObject({
   tool: z.string().regex(TOOL_ID),
@@ -196,10 +199,11 @@ export type ToolchainRecord = z.infer<typeof ToolchainRecordSchema>;
  */
 export function checkToolchain(required: Toolchain, reportedRaw: unknown): ToolchainRecord {
   const parsed = reportedRaw === undefined ? undefined : ReportedToolchainSchema.safeParse(reportedRaw);
-  const reported = parsed?.success ? parsed.data : {};
+  // Each required tool is read on its own, so one stray key doesn't void the rest; the shape problem is still flagged.
+  const obj = typeof reportedRaw === "object" && reportedRaw !== null && !Array.isArray(reportedRaw) ? (reportedRaw as Record<string, unknown>) : {};
   const checks = required.tools.map((t): ToolCheck => {
-    const raw = Object.hasOwn(reported, t.tool) ? reported[t.tool] : undefined;
-    const version = raw === undefined ? undefined : parseToolVersion(raw);
+    const raw = Object.hasOwn(obj, t.tool) ? obj[t.tool] : undefined;
+    const version = typeof raw === "string" ? parseToolVersion(raw) : undefined;
     const range = parseVersionRange(t.range);
     const base = { tool: t.tool, required: t.range, source: t.source };
     if (!version || !range) return { ...base, reported: null, status: "unreported" };

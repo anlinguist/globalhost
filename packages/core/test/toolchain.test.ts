@@ -146,6 +146,15 @@ describe("checkToolchain (the agent's report is untrusted)", () => {
     expect(toolchainProblems(rec).join("\n")).not.toMatch(/rm -rf|__proto__|NODE/);
   });
 
+  it("still reads a valid required tool when another key is bad", () => {
+    const rec = checkToolchain(required, { node: "20.1.0", "Node.js": "20", bun: "1.2.3-beta" });
+    expect(rec.reportInvalid).toBe(true);
+    expect(rec.checks.map((c) => [c.tool, c.status])).toEqual([
+      ["node", "match"],
+      ["bun", "unreported"],
+    ]);
+  });
+
   it("records nothing reported as unreported, not invalid", () => {
     const rec = checkToolchain(required, undefined);
     expect(rec.reportInvalid).toBe(false);

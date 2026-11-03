@@ -885,8 +885,9 @@ async function runTurn(
   if (files.has("report.json")) {
     try {
       const raw: unknown = JSON.parse(files.get("report.json")!.toString("utf8"));
-      report = AgentReportSchema.parse(raw);
+      // Read before the schema check, so the versions are compared even when another field fails it.
       if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, "toolchain")) reportedToolchain = (raw as { toolchain: unknown }).toolchain;
+      report = AgentReportSchema.parse(raw);
     } catch {
       problems.push("report.json is not valid JSON in the expected shape");
     }

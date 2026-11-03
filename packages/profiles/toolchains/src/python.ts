@@ -15,9 +15,9 @@ export function pythonRequirement(range: string, source: string): ToolRequiremen
     tool: "python",
     range,
     source,
-    check: "python3 --version",
-    // uv downloads managed Pythons; `uv run` and `uv sync` then use it.
-    install: `uv python install '${canonicalToPep440(range)}'`,
+    // A uv-managed Python isn't put on python3, so check (and run) through uv, which picks it up.
+    check: "uv run --no-project python --version",
+    install: `uv python install '${canonicalToPep440(range)}', then run Python only through uv (uv run, uv sync)`,
   };
 }
 
@@ -27,7 +27,8 @@ export function uvRequirement(range: string, source: string): ToolRequirement {
     range,
     source,
     check: "uv --version",
-    install: `python3 -m venv ${PREFIX}/uv && ${PREFIX}/uv/bin/pip install 'uv${canonicalToPep440(range)}' && export PATH="${PREFIX}/uv/bin:$PATH"`,
+    // Ubuntu's Python is externally managed (PEP 668) and may lack venv, so install to a target dir.
+    install: `python3 -m pip install --break-system-packages --target ${PREFIX}/uv 'uv${canonicalToPep440(range)}', then start every later command with PATH="${PREFIX}/uv/bin:$PATH"`,
   };
 }
 

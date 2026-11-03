@@ -234,7 +234,16 @@ describe("detectNode: precedence .nvmrc → .node-version → engines.node → s
 
   it("puts only the canonical range into the install command", async () => {
     const [t] = (await detectNode(repo({ "package.json": { engines: { node: ">=20 <23" } } }), ".")).tools;
-    expect(t?.install).toBe(`npm install --prefix /tmp/toolchain/node 'node@>=20 <23' && export PATH="/tmp/toolchain/node/node_modules/.bin:$PATH"`);
+    expect(t?.install).toBe(`npm install --prefix /tmp/toolchain/node 'node@>=20 <23', then start every later command with PATH="/tmp/toolchain/node/node_modules/.bin:$PATH"`);
+  });
+
+  it("accepts part paths with the characters factory.yaml allows (@scope, +)", async () => {
+    for (const path of ["packages/@acme/web", "apps/web+x"]) {
+      const tc = await detectNode(repo({ [`${path}/.nvmrc`]: "20" }), path);
+      expect(ToolchainSchema.parse(joinToolchains(tc)).tools[0]).toMatchObject({ source: `${path}/.nvmrc` });
+    }
+    const long = `${"a".repeat(100)}/${"b".repeat(99)}`;
+    expect(joinToolchains(await detectNode(repo({ [`${long}/.node-version`]: "20" }), long)).tools).toHaveLength(1);
   });
 });
 
@@ -264,9 +273,10 @@ describe("detectPython and detectUv (garmin-mcp's shapes)", () => {
   };
 
   it("takes .python-version, then requires-python", async () => {
-    expect((await detectPython(repo(garmin), ".")).tools[0]).toMatchObject({ tool: "python", range: "3.12", source: ".python-version", install: "uv python install '==3.12.*'" });
+    expect((await detectPython(repo(garmin), ".")).tools[0]).toMatchObject({ tool: "python", range: "3.12", source: ".python-version", check: "uv run --no-project python --version" });
+    expect((await detectPython(repo(garmin), ".")).tools[0]?.install).toBe("uv python install '==3.12.*', then run Python only through uv (uv run, uv sync)");
     const rest = without(garmin, ".python-version");
-    expect((await detectPython(repo(rest), ".")).tools[0]).toMatchObject({ range: ">=3.12 <3.13", source: "pyproject.toml", install: "uv python install '>=3.12,<3.13'" });
+    expect((await detectPython(repo(rest), ".")).tools[0]).toMatchObject({ range: ">=3.12 <3.13", source: "pyproject.toml" });
   });
 
   it.each([
@@ -288,7 +298,7 @@ describe("detectPython and detectUv (garmin-mcp's shapes)", () => {
     expect(await detectUv(repo(garmin), ".")).toEqual({ tools: [], notes: [] });
     const pinned = await detectUv(repo({ ...garmin, "pyproject.toml": `${garmin["pyproject.toml"]}\n[tool.uv]\nrequired-version = ">=0.5.0"\n` }), ".");
     expect(pinned.tools[0]).toMatchObject({ tool: "uv", range: ">=0.5.0", source: "pyproject.toml" });
-    expect(pinned.tools[0]?.install).toContain("pip install 'uv>=0.5.0'");
+    expect(pinned.tools[0]?.install).toContain("pip install --break-system-packages --target /tmp/toolchain/uv 'uv>=0.5.0'");
     expect((await detectUv(repo({ "uv.toml": 'required-version = "==0.5.*"\n' }), ".")).tools[0]).toMatchObject({ range: "0.5", source: "uv.toml" });
   });
 

@@ -90,7 +90,14 @@ export function profileToolchain(profiles: readonly Profile[], config: FactoryCo
   if (parts.length === 0) return undefined;
   return async (base) => {
     const found = [];
-    for (const p of parts) found.push({ part: p.name, toolchain: await p.detect(base, { name: p.name, path: p.path }) });
+    for (const p of parts) {
+      try {
+        found.push({ part: p.name, toolchain: await p.detect(base, { name: p.name, path: p.path }) });
+      } catch {
+        // One part's failure doesn't drop the others' versions. The note is fixed text (part names are owner-authored).
+        found.push({ part: p.name, toolchain: { tools: [], notes: [`parts.${p.name}: its tool versions couldn't be read; none required for it`] } });
+      }
+    }
     return mergeToolchains(found);
   };
 }
