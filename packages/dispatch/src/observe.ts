@@ -352,6 +352,8 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
         if (status.state === "succeeded") {
           t.result = { label: t.label, outcome: "still-running", buildId, providerState, url };
           ev("built", { part: t.label, build: buildId });
+          // Verify the build that status() saw succeed, not whatever is newest for the commit by then (a re-run).
+          if (buildId && !t.handle.data.buildId) t.handle = { ...t.handle, data: { ...t.handle.data, buildId } };
           t.verifyUntil = now() + VERIFY_MINUTES * 60_000;
           await verify(t);
         } else if (TERMINAL_STATE.has(status.state)) {

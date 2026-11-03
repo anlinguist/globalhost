@@ -172,7 +172,11 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
     const token = await deps.accessToken();
     // A hung connection must not eat the job's timeout; the abort is retried like a network error.
     const res = await doFetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    const body: unknown = await res.json().catch(() => undefined);
+    const body: unknown = await res.json().catch((e: unknown) => {
+      // A timeout while reading the body is retryable like any other; only an unparseable body is swallowed.
+      if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) throw e;
+      return undefined;
+    });
     if (!res.ok) {
       const parsed = errorSchema.safeParse(body);
       const apiStatus = parsed.success ? parsed.data.error.status : undefined;
