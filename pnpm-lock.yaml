@@ -157,11 +157,23 @@ importers:
 
   packages/preview-router: {}
 
+  packages/profiles/toolchains:
+    dependencies:
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../../core
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
+
   packages/profiles/web-app:
     dependencies:
       '@globalhost/core':
         specifier: workspace:*
         version: link:../../core
+      '@globalhost/profile-toolchains':
+        specifier: workspace:*
+        version: link:../toolchains
 
   packages/roles:
     devDependencies:

@@ -19,7 +19,7 @@ packages/core        schema, state machine, policies, interfaces
 packages/cli         `globalhost` CLI
 packages/runner      Cloud Run Job harness + Dockerfile
 packages/roles       role prompts + tool policies
-packages/profiles/*  web-app, chrome-extension, service
+packages/profiles/*  web-app, chrome-extension, service (+ toolchains: shared version detection)
 packages/adapters/*  deploy adapters
 packages/sanitize    untrusted-input sanitizer (vendored, MIT notice kept)
 packages/action      composite action used by installed workflows

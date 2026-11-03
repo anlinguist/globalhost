@@ -43,6 +43,10 @@ export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg
    *  Built from owner-authored config and fixed strings only, never repo content. */
   guidance(part: PartCtx<Cfg, D>): string;
 
+  /** Optional. Tool versions the part asks for (e.g. node from .nvmrc), read from a snapshot of the run's BASE
+   *  commit, as core's generic Toolchain: tool id → canonical range + source file + check/install commands. */
+  toolchain?(repo: RepoSnapshot, part: { name: string; path: string }): Promise<Toolchain>;
+
   /** Verification contributed to CI; fails closed. */
   verify: {
     steps(part: PartCtx<Cfg, D>): VerifyStep[];  // {id, run, env?, needs?, artifacts?, image?}
@@ -85,6 +89,8 @@ export interface Guardrail {
 ```
 
 **How the runner uses a profile for a run** (P1-06): build the registry the same way the CLI does (`createRegistry<Profile, DeployAdapter>([webApp, ...], [...])`), take the part from the validated `factory.yaml`, then `profile = registry.profile(part.profile)`, `detection = await profile.detect(snapshot, part.path)`, and `profile.guidance({ name, path, config: part.config, detection })` → `startRun({ guidance })`. The session's environment is `profile.environment`, and `profile.skills` are mounted. Detection facts that reach guidance come from fixed sets (framework, package manager), so the guidance carries no untrusted repo text.
+
+**Toolchain versions** (P2-01): the dispatcher passes the parts' `profile.toolchain` hooks to the runner as one resolver (`profileToolchain`, parts merged in `factory.yaml` order; the first part wins a disagreement, with a note). The runner calls it on a snapshot of the bundle's base commit read from git objects (`gitSnapshot`: regular files only, 512 KiB cap, UTF-8), never a PR head, so a PR can't change the versions it is built or reviewed with. Range syntaxes are converted into core's canonical grammar (`packages/core/src/toolchain.ts`: `20`, `>=20 <23`, `20 || 22`); anything else (aliases like `lts/*`, expressions, junk) is skipped with a fixed-text note. The task message states each version, how to check it and how to get it in the sandbox (registry-only installs); the agent reports what it used in `report.json` `toolchain`, and the harness records `run.json` `toolchain` and a problem line per mismatch (a note only: no escalation). Shared detectors live in `packages/profiles/toolchains` (`@globalhost/profile-toolchains`, not a profile): `detectNode` (`.nvmrc`/`.node-version` in the part dir then parents → `package.json` `engines.node` → `actions/setup-node` `node-version` in `globalhost-ci.yml`), `detectBun` (`packageManager: bun@x.y.z` → `engines.bun`), `detectPython` (`.python-version` → `pyproject.toml` `requires-python`) and `detectUv` (`[tool.uv] required-version` → `uv.toml`). `web-app` uses node, plus bun when the part's package manager is bun; a Python profile adds python and uv.
 
 Rules:
 - **Core never imports a profile.** Enforced by a lint rule (`no-restricted-imports`) in `packages/core`.

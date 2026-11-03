@@ -281,6 +281,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
             approvedPlan,
             guidance: settings.guidance,
             environment: settings.environment,
+            toolchain: settings.toolchain,
             skillDirs: deps.skillDirs ? [...deps.skillDirs] : undefined,
           },
           runDeps,

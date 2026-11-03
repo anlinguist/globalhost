@@ -199,6 +199,7 @@ export async function runCommand(argv: readonly string[], io: RunIo): Promise<nu
           ownerIds: ownerIds ?? settings?.config.owners.map((o) => o.id),
           guidance: settings?.run.guidance,
           environment: settings?.run.environment,
+          toolchain: settings?.run.toolchain,
           skillDirs: [...(io.skillDirs ?? SKILL_DIRS)],
           approvedPlan: values["plan-file"] ? await readFile(values["plan-file"], "utf8") : undefined,
         },

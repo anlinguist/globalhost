@@ -5,6 +5,7 @@ import {
   detectWebApp,
   verifySteps,
   webApp,
+  webAppToolchain,
   webAppConfigSchema,
   webAppGuidance,
   type WebAppConfig,
@@ -263,5 +264,30 @@ describe("profile object", () => {
     const ctx = { product: "p", part: "web", path: ".", prNumber: 1, headSha: "0".repeat(40), config: webAppConfigSchema.parse({}), bindings: {} };
     await expect(webApp.preview.build(ctx)).rejects.toThrow("P1-11");
     await expect(webApp.preview.teardown(ctx)).rejects.toThrow("P1-11");
+  });
+});
+
+describe("toolchain", () => {
+  const ci = "jobs:\n  verify:\n    steps:\n      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\n        with:\n          node-version: 20\n";
+
+  it("is the profile's toolchain hook", () => {
+    expect(webApp.toolchain).toBe(webAppToolchain);
+  });
+
+  it("requires numu-know's CI node version when no version file pins one", async () => {
+    const r = snapshot({ files: [...numuKnow.files, ".github/workflows/globalhost-ci.yml"], contents: { ...numuKnow.contents, ".github/workflows/globalhost-ci.yml": ci } });
+    const tc = await webAppToolchain(r, { name: "web", path: "." });
+    expect(tc.tools).toEqual([expect.objectContaining({ tool: "node", range: "20", source: ".github/workflows/globalhost-ci.yml" })]);
+  });
+
+  it("adds bun only when the part uses bun", async () => {
+    const pkg = { packageManager: "bun@1.2.19", engines: { node: ">=20" }, dependencies: { vite: "7" } };
+    const withBun = await webAppToolchain(repo({ "web/package.json": pkg, "web/bun.lock": "{}" }), { name: "web", path: "web" });
+    expect(withBun.tools.map((t) => `${t.tool} ${t.range}`)).toEqual(["node >=20", "bun 1.2.19"]);
+    const npmOnly = await webAppToolchain(repo({ "package.json": { engines: { node: "22" }, dependencies: { vite: "7" } }, "package-lock.json": "{}" }), {
+      name: "web",
+      path: ".",
+    });
+    expect(npmOnly.tools.map((t) => t.tool)).toEqual(["node"]);
   });
 });

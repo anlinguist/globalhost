@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { RepoSnapshot } from "@globalhost/core";
 import type { BundleSummary } from "./records.js";
 
 const run = promisify(execFile);
@@ -185,6 +186,52 @@ async function bundleReviewInto(
   const bundlePath = join(dir, "repo.bundle");
   await git(["bundle", "create", "--quiet", bundlePath, "HEAD", `refs/heads/${headBranch}`, `refs/heads/${baseBranch}`], { cwd: bareDir });
   return { bareDir, bundlePath, baseSha, headSha, mergeBaseSha, baseBranch, headBranch };
+}
+
+/** Larger blobs read as absent: toolchain detection only needs version files and manifests. */
+export const MAX_SNAPSHOT_BLOB_BYTES = 512 * 1024;
+const MAX_SNAPSHOT_FILES = 200_000;
+
+/**
+ * A read-only RepoSnapshot of one commit in a (bare) repo, read from git objects: the tree's regular files only
+ * (no symlinks or submodules), each blob read once, larger than MAX_SNAPSHOT_BLOB_BYTES or not UTF-8 → absent.
+ * Used to resolve the toolchain at the run's base commit, so nothing on a PR head can change it.
+ */
+export async function gitSnapshot(repoDir: string, commit: string): Promise<RepoSnapshot> {
+  if (!FULL_SHA.test(commit)) throw new Error("snapshot commit must be a full lowercase hex commit ID");
+  const listing = await git(["ls-tree", "-r", "-z", "--full-tree", "-l", commit], { cwd: repoDir });
+  const blobs = new Map<string, { object: string; size: number }>();
+  for (const entry of listing.split("\0")) {
+    // <mode> SP <type> SP <object> SP+ <size> TAB <path>
+    const m = /^(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64}) +(\d+)\t(.+)$/s.exec(entry);
+    if (!m?.[2] || !m[3] || !m[4]) continue;
+    blobs.set(m[4], { object: m[2], size: Number(m[3]) });
+    if (blobs.size > MAX_SNAPSHOT_FILES) throw new Error(`commit ${commit.slice(0, 12)} has too many files to snapshot`);
+  }
+  const cache = new Map<string, Promise<string | undefined>>();
+  const read = async (path: string): Promise<string | undefined> => {
+    const blob = blobs.get(path);
+    if (!blob || blob.size > MAX_SNAPSHOT_BLOB_BYTES) return undefined;
+    const { stdout } = await run("git", ["-c", "core.hooksPath=/dev/null", "cat-file", "blob", blob.object], {
+      cwd: repoDir,
+      env: gitEnv(),
+      encoding: "buffer",
+      maxBuffer: MAX_SNAPSHOT_BLOB_BYTES + 1,
+    });
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    files: [...blobs.keys()],
+    readFile: (path) => {
+      let hit = cache.get(path);
+      if (!hit) cache.set(path, (hit = read(path)));
+      return hit;
+    },
+  };
 }
 
 /**

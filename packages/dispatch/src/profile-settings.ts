@@ -1,13 +1,15 @@
 // Profile-specific run settings (P1-03 → P1-07): for each factory.yaml part, the part's profile detects
 // against a read-only snapshot of the default branch, then contributes its guidance and network environment.
 // Profiles are passed in by the caller (the CLI), so this package names none of them.
-import type { EnvironmentSpec, FactoryConfig, Profile, RepoSnapshot } from "@globalhost/core";
+import { mergeToolchains, type EnvironmentSpec, type FactoryConfig, type Profile, type RepoSnapshot, type Toolchain } from "@globalhost/core";
 import { z } from "zod";
 import type { GitHubClient } from "./github.js";
 
 export interface RunSettings {
   guidance?: string;
   environment?: EnvironmentSpec;
+  /** Reads required tool versions; the runner calls it on its base commit (profileToolchain). */
+  toolchain?: (base: RepoSnapshot) => Promise<Toolchain>;
 }
 
 /** Larger files read as absent: detection only needs manifests and config files. */
@@ -61,6 +63,7 @@ export async function profileRunSettings(profiles: readonly Profile[], config: F
     used.set(profile.id, profile);
   }
   if (used.size === 0) return {};
+  const toolchain = profileToolchain(profiles, config);
   const envs = [...used.values()].map((p) => p.environment);
   const environment =
     envs.length === 1
@@ -69,5 +72,25 @@ export async function profileRunSettings(profiles: readonly Profile[], config: F
           name: `globalhost-${[...used.keys()].sort().join("-")}`,
           allowedHosts: [...new Set(envs.flatMap((e) => e.allowedHosts))].sort(),
         };
-  return { guidance: guidance.join("\n"), environment };
+  return { guidance: guidance.join("\n"), environment, ...(toolchain ? { toolchain } : {}) };
+}
+
+/**
+ * A toolchain resolver over the parts' profiles: each part whose profile reads tool versions contributes them, merged
+ * in factory.yaml order (mergeToolchains). The runner calls it with a snapshot of the run's base commit, so the
+ * versions come from there and never from a PR head. Undefined when no part's profile reads versions.
+ */
+export function profileToolchain(profiles: readonly Profile[], config: FactoryConfig): ((base: RepoSnapshot) => Promise<Toolchain>) | undefined {
+  const byId = new Map(profiles.map((p) => [p.id, p]));
+  const parts = Object.entries(config.parts).flatMap(([name, part]) => {
+    const profile = byId.get(part.profile);
+    if (!profile) throw new Error(`parts.${name}: profile ${part.profile} is not registered`);
+    return profile.toolchain ? [{ name, path: part.path, detect: profile.toolchain.bind(profile) }] : [];
+  });
+  if (parts.length === 0) return undefined;
+  return async (base) => {
+    const found = [];
+    for (const p of parts) found.push({ part: p.name, toolchain: await p.detect(base, { name: p.name, path: p.path }) });
+    return mergeToolchains(found);
+  };
 }
