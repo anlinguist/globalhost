@@ -3,7 +3,7 @@
 // (no checkout, no hooks), and the harness checks its shape before anything uses it.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -146,6 +146,21 @@ export async function bundleReviewFrom(source: string, req: ReviewBundleRequest,
   await git(["check-ref-format", `refs/heads/${baseBranch}`]);
 
   const dir = await mkdtemp(join(tmpdir(), "globalhost-review-"));
+  try {
+    return await bundleReviewInto(dir, source, req, headBranch, token);
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+async function bundleReviewInto(
+  dir: string,
+  source: string,
+  { baseBranch, pr, headSha }: ReviewBundleRequest,
+  headBranch: string,
+  token: string | undefined,
+): Promise<ReviewBundle> {
   const bareDir = join(dir, "repo.git");
   await git(["clone", "--quiet", "--bare", "--single-branch", "--no-tags", "--branch", baseBranch, "--", source, bareDir], {
     token,

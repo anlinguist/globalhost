@@ -74,6 +74,8 @@ export interface RunDeps {
   now?: () => number;
   /** Test seam for cloning; defaults to a bare clone from GitHub. */
   cloneRepo?: typeof createRepoBundle;
+  /** How long a failed review waits for its interrupt to land before reading the cost (default 30 s). */
+  settleMs?: number;
   /** Test seam for bundling a PR for review; defaults to createReviewBundle. */
   cloneReview?: typeof createReviewBundle;
 }
@@ -309,9 +311,10 @@ export async function prepareScreenshotMounts(inputs: readonly ScreenshotInput[]
     for (const [i, input] of inputs.entries()) {
       const name = `screenshot-${String(i + 1).padStart(2, "0")}.png`;
       const given = resolve(input.path);
-      if ((await realpath(dirname(given))) !== dirname(given)) throw new Error(`screenshot ${i + 1}: its directory is reached through a symlink`);
+      if ((await realpath(dirname(given))) !== dirname(given)) throw new Error(`screenshot ${i + 1}: its directory is reached through a symlink; pass a canonical (realpath) path`);
       let data: Buffer;
-      const fh = await open(given, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((err: NodeJS.ErrnoException) => {
+      // O_NONBLOCK so a FIFO opens immediately (and then fails the regular-file check) instead of hanging.
+      const fh = await open(given, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch((err: NodeJS.ErrnoException) => {
         throw new Error(`screenshot ${i + 1}: can't open it without following links (${err.code ?? "error"})`);
       });
       try {
@@ -445,7 +448,8 @@ export class ReviewRunError extends Error {
   constructor(
     message: string,
     readonly sessionId: string,
-    readonly costUsd: number | null,
+    /** The session's cost, or the run's budget when it couldn't be read (worst case). */
+    readonly costUsd: number,
   ) {
     super(message);
     this.name = "ReviewRunError";
@@ -466,7 +470,7 @@ const MAX_PROBLEM_CHARS = 500;
  * throws ReviewRunError with the sessionId. Scanning, budgets, the overall verdict and posting are the caller's.
  */
 export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<ReviewRun> {
-  if (!positiveFinite(spec.budgetUsd)) throw new Error("budgetUsd must be a positive finite number");
+  if (!positiveFinite(spec.budgetUsd) || spec.budgetUsd < 0.01) throw new Error("budgetUsd must be a finite number of at least 0.01");
   if (!positiveFinite(spec.timeoutMinutes)) throw new Error("timeoutMinutes must be a positive finite number");
   if (spec.hardTimeoutMinutes !== undefined) {
     if (!positiveFinite(spec.hardTimeoutMinutes)) throw new Error("hardTimeoutMinutes must be a positive finite number");
@@ -588,8 +592,13 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
         const reason = (err instanceof Error ? err.message : String(err)).slice(0, MAX_PROBLEM_CHARS);
         deps.log(`review harness error after session ${session.sessionId} opened: ${reason}`);
         await deps.api.interrupt(session.sessionId).catch(() => undefined);
+        // Let the interrupt land so the cost is final, but only briefly: the run still has to settle in time.
+        await waitForTurn(deps.api, session.sessionId, { priorMessages: 0, deadline: now() + (deps.settleMs ?? 30_000), now }).catch(
+          () => undefined,
+        );
         const info = await deps.api.retrieveSession(session.sessionId).catch(() => undefined);
-        const costUsd = info ? info.costCents / 100 : null;
+        // Unknown cost is recorded at the worst case, so the PR's budget ledger never undercounts.
+        const costUsd = info ? info.costCents / 100 : spec.budgetUsd;
         try {
           return await write({
             ...base,
@@ -600,8 +609,8 @@ export async function startReview(spec: ReviewSpec, deps: RunDeps): Promise<Revi
             outputBytes: null,
             ...timing(),
             activeSeconds: info?.activeSeconds ?? null,
-            costUsd: costUsd ?? 0,
-            problems: [`harness error: ${reason}`, ...(info ? [] : ["session cost unknown: retrieving the session failed"])],
+            costUsd,
+            problems: [`harness error: ${reason}`, ...(info ? [] : ["cost unknown; recorded at budget"])],
           });
         } catch (writeErr) {
           const why = (writeErr instanceof Error ? writeErr.message : String(writeErr)).slice(0, MAX_PROBLEM_CHARS);

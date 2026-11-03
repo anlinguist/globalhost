@@ -130,8 +130,11 @@ describe("bundleReviewFrom", () => {
     await expect(assertNoStoredCredentials(bare)).rejects.toThrow(/credential-like key/);
   });
 
-  it("refuses a PR whose head moved since the review was requested", async () => {
+  it("refuses a PR whose head moved since the review was requested, and leaves no temp dir", async () => {
+    const reviewDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("globalhost-review-")).sort();
+    const before = reviewDirs();
     await expect(bundleReviewFrom(work, req({ headSha: mergeBase }))).rejects.toThrow(/moved since the review was requested/);
+    expect(reviewDirs()).toEqual(before);
   });
 
   it.each([
@@ -283,6 +286,12 @@ describe("prepareScreenshotMounts", () => {
     await expect(prepareScreenshotMounts([{ path: join(linkedDir, "ok.png") }])).rejects.toThrow(/through a symlink/);
   });
 
+  it("refuses a FIFO without blocking on it", async () => {
+    const fifo = join(dir, "pipe.png");
+    execFileSync("mkfifo", [fifo]);
+    await expect(prepareScreenshotMounts([{ path: fifo }])).rejects.toThrow(/not a regular file/);
+  });
+
   it("refuses directories, non-PNGs, empty files and too many", async () => {
     const p = shot("ok.png");
     await expect(prepareScreenshotMounts([{ path: join(dir, "shots") }])).rejects.toThrow(/not a regular file/);
@@ -402,6 +411,7 @@ describe("startReview", () => {
       api,
       github: githubFake(),
       githubToken: FAKE_TOKEN,
+      settleMs: 0,
       log: () => undefined,
       cloneReview: async (_url, r, token) => {
         tokensSeen.push(token);
@@ -541,6 +551,7 @@ describe("startReview", () => {
 
   it.each([
     ["a zero budget", { budgetUsd: 0 }],
+    ["a sub-cent budget", { budgetUsd: 0.005 }],
     ["a NaN budget", { budgetUsd: Number.NaN }],
     ["an infinite timeout", { timeoutMinutes: Number.POSITIVE_INFINITY }],
     ["a negative timeout", { timeoutMinutes: -1 }],
@@ -583,6 +594,25 @@ describe("startReview", () => {
     expect(r).toMatchObject({ status: "failed", output: null, costUsd: 1.8 });
     expect(r.problems[0]).toContain("download failed");
     expect(api.interrupted).toBe(1);
+  });
+
+  it("records an unreadable cost at the budget, the worst case", async () => {
+    const api = new FakeApi();
+    api.sendMessage = async () => {
+      throw new Error("network down");
+    };
+    const realRetrieve = api.retrieveSession.bind(api);
+    let failRetrieve = false;
+    api.interrupt = async () => {
+      failRetrieve = true;
+    };
+    api.retrieveSession = async (id: string) => {
+      if (failRetrieve) throw new Error("API down");
+      return realRetrieve(id);
+    };
+    const r = await startReview(spec(join(dir, "out"), { budgetUsd: 2 }), deps(api));
+    expect(r).toMatchObject({ status: "failed", costUsd: 2 });
+    expect(r.problems).toContain("cost unknown; recorded at budget");
   });
 
   it("throws ReviewRunError with the session ID when even the failure record can't be written", async () => {
