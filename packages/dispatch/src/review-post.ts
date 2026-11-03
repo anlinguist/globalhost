@@ -154,17 +154,23 @@ const ReviewListSchema = z.array(
   z.object({ id: z.number().int().positive(), body: z.string().nullable(), user: z.object({ login: z.string(), type: z.string() }).nullable() }),
 );
 
-/** The bot's existing review for `sha` on the PR, by marker. Only reviews by the bot user count. */
+/** Pages of 100 reviews read when looking for an earlier post; a PR with more than this many refuses to post. */
+export const MAX_REVIEW_PAGES = 30;
+
+/**
+ * The bot's existing review for `sha` on the PR, by marker. Only reviews by the bot user count. Reads every
+ * page; if the PR has more reviews than MAX_REVIEW_PAGES can hold, it throws rather than risk posting a duplicate.
+ */
 export async function findPostedReview(gh: GitHubClient, repo: string, pr: number, sha: string, botLogin: string): Promise<number | null> {
-  for (let page = 1; page <= 5; page++) {
+  for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
     const batch = await gh.request("GET", `/repos/${repo}/pulls/${pr}/reviews?per_page=100&page=${page}`, undefined, ReviewListSchema);
     for (const r of batch) {
       if (r.user?.type !== "Bot" || r.user.login !== botLogin) continue;
       if (parseReviewMarker(r.body)?.sha === sha) return r.id;
     }
-    if (batch.length < 100) break;
+    if (batch.length < 100) return null;
   }
-  return null;
+  throw new Error(`PR #${pr} has more than ${MAX_REVIEW_PAGES * 100} reviews; not posting in case one for this head is among the rest`);
 }
 
 export interface PostReviewInput {

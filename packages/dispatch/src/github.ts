@@ -35,9 +35,11 @@ export class GitHubClient {
    * GETs an API path whose answer is a redirect to a download (job logs, artifact zips). The redirect is
    * followed by hand so the token is never sent to the download host, and the body is read with a byte cap.
    */
-  async download(path: string, opts: { maxBytes: number; keep?: "head" | "tail" }): Promise<Download> {
+  async download(path: string, opts: { maxBytes: number; keep?: "head" | "tail"; timeoutMs?: number }): Promise<Download> {
+    const timeoutMs = opts.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
     const resp = await this.fetchImpl(`${API}${path}`, {
       redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
@@ -46,6 +48,7 @@ export class GitHubClient {
       },
     });
     let body = resp;
+    let signal: AbortSignal | undefined;
     if (resp.status >= 300 && resp.status < 400) {
       await resp.body?.cancel().catch(() => undefined);
       let url: URL;
@@ -55,10 +58,12 @@ export class GitHubClient {
         throw new GitHubError("GET", path, resp.status);
       }
       if (url.protocol !== "https:") throw new GitHubError("GET", path, resp.status);
-      body = await this.fetchImpl(url, { redirect: "error", headers: { "user-agent": "globalhost-dispatch" } });
+      signal = AbortSignal.timeout(timeoutMs);
+      body = await this.fetchImpl(url, { redirect: "error", headers: { "user-agent": "globalhost-dispatch" }, signal });
     }
     if (!body.ok) throw new GitHubError("GET", path, body.status);
-    return readCapped(body, opts.maxBytes, opts.keep ?? "head");
+    // The body gets its own bound too (a fresh one when there was no redirect), so a stalled stream can't hang the job.
+    return readCapped(body, opts.maxBytes, opts.keep ?? "head", signal ?? AbortSignal.timeout(timeoutMs));
   }
 }
 
@@ -70,6 +75,9 @@ export interface Download {
   truncated: boolean;
 }
 
+/** Each request of a download, and reading its body, must finish within this. */
+export const DOWNLOAD_TIMEOUT_MS = 60_000;
+
 /** Reading stops after this many bytes even when keeping the tail, so one huge log can't stall the job. */
 export const DOWNLOAD_HARD_CAP = 64 * 1024 * 1024;
 
@@ -77,16 +85,24 @@ export const DOWNLOAD_HARD_CAP = 64 * 1024 * 1024;
  * Reads a response body keeping at most `maxBytes`: the first bytes (`head`, then stops) or the last (`tail`,
  * reading on up to DOWNLOAD_HARD_CAP).
  */
-export async function readCapped(resp: Response, maxBytes: number, keep: "head" | "tail"): Promise<Download> {
+export async function readCapped(resp: Response, maxBytes: number, keep: "head" | "tail", signal?: AbortSignal): Promise<Download> {
   if (!resp.body) return { data: Buffer.alloc(0), totalBytes: 0, truncated: false };
   const reader = resp.body.getReader();
+  // Rejects when the signal fires, even if the stream itself ignores it.
+  const aborted = new Promise<never>((_, reject) => {
+    if (!signal) return;
+    const fail = () => reject(new Error("download timed out"));
+    if (signal.aborted) fail();
+    else signal.addEventListener("abort", fail, { once: true });
+  });
+  aborted.catch(() => undefined);
   const chunks: Buffer[] = [];
   let kept = 0;
   let total = 0;
   let truncated = false;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await Promise.race([reader.read(), aborted]);
       if (done) break;
       const chunk = Buffer.from(value);
       total += chunk.length;
@@ -142,6 +158,11 @@ export const PUBLISH_PERMISSIONS = { contents: "write", issues: "write", pull_re
  * remove `factory:review`. No contents write, so this token can't push or merge.
  */
 export const REVIEW_PERMISSIONS = { issues: "write", pull_requests: "write", metadata: "read" } as const;
+
+/** An installation token scoped to REVIEW_PERMISSIONS: the only write token the review step uses. */
+export function reviewInstallationToken(appId: string, privateKeyPem: string, repo: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  return installationToken(appId, privateKeyPem, repo, fetchImpl, REVIEW_PERMISSIONS);
+}
 
 export async function installationToken(
   appId: string,

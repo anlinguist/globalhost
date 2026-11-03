@@ -107,6 +107,24 @@ describe("GitHubClient.download", () => {
     await expect(new GitHubClient("t", fetchImpl).download("/x", { maxBytes: 10 })).rejects.toThrow(/HTTP 302/);
   });
 
+  it("gives up on a download host that stalls mid-body", async () => {
+    const fetchImpl = (async (input: string | URL, init: RequestInit = {}) => {
+      if (String(input).startsWith("https://api.github.com")) return new Response(null, { status: 302, headers: { location: "https://blob.example/x" } });
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      // Sends one chunk, then nothing, and ignores the abort signal: only the reader's own bound ends it.
+      return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode("partial")) }));
+    }) as typeof fetch;
+    const started = Date.now();
+    await expect(new GitHubClient("t", fetchImpl).download("/x", { maxBytes: 100, timeoutMs: 200 })).rejects.toThrow(/timed out/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("gives up on an API that never answers", async () => {
+    const fetchImpl = ((_input: string | URL, init: RequestInit = {}) =>
+      new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+    await expect(new GitHubClient("t", fetchImpl).download("/x", { maxBytes: 100, timeoutMs: 100 })).rejects.toThrow();
+  });
+
   it("reads at most maxBytes from the head, and keeps the tail when asked", async () => {
     const head = await readCapped(new Response("0123456789"), 4, "head");
     expect(head).toMatchObject({ truncated: true });

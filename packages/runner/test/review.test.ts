@@ -16,6 +16,7 @@ import {
   hasDuplicateJsonKeys,
   prepareScreenshotMounts,
   REVIEW_SETTLE_MARGIN_MINUTES,
+  ReviewNotStartedError,
   ReviewRunError,
   startReview,
   startRun,
@@ -627,6 +628,64 @@ describe("startReview", () => {
     expect(err).toBeInstanceOf(ReviewRunError);
     expect((err as ReviewRunError).sessionId).toMatch(/^sesn_/);
     expect((err as ReviewRunError).costUsd).toBe(1.8);
+  });
+
+  it("throws ReviewNotStartedError for failures before a session could exist", async () => {
+    const moved = await startReview(spec(join(dir, "out"), { headSha: mergeBase }), deps(new FakeApi())).catch((e: unknown) => e);
+    expect(moved).toBeInstanceOf(ReviewNotStartedError);
+    const api = new FakeApi();
+    api.uploadFile = async () => {
+      throw new Error("upload failed");
+    };
+    expect(await startReview(spec(join(dir, "out")), deps(api)).catch((e: unknown) => e)).toBeInstanceOf(ReviewNotStartedError);
+    const badShot = await startReview(spec(join(dir, "out"), { screenshots: [{ path: join(dir, "missing.png") }] }), deps(new FakeApi())).catch((e: unknown) => e);
+    expect(badShot).toBeInstanceOf(ReviewNotStartedError);
+  });
+
+  it("doesn't call a createSession failure 'not started': the session may exist", async () => {
+    const api = new FakeApi();
+    api.createSession = async () => {
+      throw new Error("502 after create");
+    };
+    const err = await startReview(spec(join(dir, "out")), deps(api)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ReviewNotStartedError);
+  });
+
+  it("caps the turn at the deadline less the settle margin when setup was slow, and returns before the deadline", async () => {
+    let clock = Date.parse("2026-11-02T12:00:00Z");
+    const deadline = clock + 10 * 60_000;
+    const api = new FakeApi();
+    const upload = api.uploadFile.bind(api);
+    api.uploadFile = async () => {
+      clock += 7.5 * 60_000; // a slow upload eats most of the job's time
+      return upload();
+    };
+    let sessionId = "";
+    api.onSend = () => {
+      sessionId = [...api.sessions.keys()].at(-1)!;
+      const data = Buffer.from(JSON.stringify(VALID));
+      api.outputs.push({ id: "o", filename: REVIEW_OUTPUT_FILE, sizeBytes: data.length, createdAt: new Date(clock).toISOString(), data });
+    };
+    api.interrupt = async () => {
+      api.interrupted++;
+      api.finishTurn(sessionId, "end_turn", 40);
+    };
+    const r = await startReview(spec(join(dir, "out"), { timeoutMinutes: 5, deadlineEpochMs: deadline }), { ...deps(api), now: () => clock });
+    // Without the cap the turn would run until 12:12:30 (sent at 12:07:30 + 5 min); with it, it stops at 12:07.
+    expect(r.status).toBe("timeout");
+    expect(api.interrupted).toBe(1);
+    expect(clock).toBeLessThanOrEqual(deadline);
+    expect(Date.parse(r.finishedAt)).toBeLessThanOrEqual(deadline);
+  });
+
+  it("refuses to open a session with less than a minute left before the margin", async () => {
+    const now = Date.now();
+    const err = await startReview(spec(join(dir, "out"), { deadlineEpochMs: now + REVIEW_SETTLE_MARGIN_MINUTES * 60_000 + 30_000 }), deps(new FakeApi())).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ReviewNotStartedError);
+    expect((err as Error).message).toMatch(/too little time/);
   });
 
   it("is the only way to run the reviewer", async () => {

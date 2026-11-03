@@ -25,6 +25,7 @@ import { DEFAULT_MODEL, REVIEW_OUTPUT_FILE } from "@globalhost/roles";
 import {
   GitHubReader,
   REVIEW_SETTLE_MARGIN_MINUTES,
+  ReviewNotStartedError,
   ReviewRunError,
   anthropicClient,
   createReviewBundle,
@@ -37,13 +38,18 @@ import {
 } from "@globalhost/runner";
 import { loadConfig, type DispatchDeps, type Env } from "./dispatch.js";
 import { ControlPlane, ObjectStore, RUNS_BUCKET, accessSecret, gcloudAccessToken, reviewArchivePrefix, reviewRecordPath, type ReviewHead } from "./gcp.js";
-import { GitHubClient, GitHubError, REVIEW_PERMISSIONS, installationToken } from "./github.js";
+import { GitHubClient, GitHubError, reviewInstallationToken } from "./github.js";
 import { githubSnapshot, profileRunSettings, type RunSettings } from "./profile-settings.js";
 import { decideReview, REVIEW_LABEL, type ReviewTarget } from "./review-gate.js";
 import { readCiScreenshots, readCiSummary, readDiff, UNKNOWN_PATCH_ID, type CiSummary, type DiffInfo, type Screenshots } from "./review-inputs.js";
 import { postReview, renderReviewBody } from "./review-post.js";
 
 export interface ReviewDeps extends DispatchDeps {
+  /**
+   * Mints the review-scoped write token (REVIEW_PERMISSIONS). Its own seam: the review path never uses
+   * `appToken`, which mints the publisher's broader token.
+   */
+  reviewToken?: (repo: string) => Promise<string>;
   // Test seams.
   startReview?: typeof startReview;
   cloneReview?: typeof createReviewBundle;
@@ -123,7 +129,10 @@ export async function writeReviewGateOutputs(path: string, out: ReviewGateOutput
 
 // ---- review ----
 
-/** Minutes of the job spent before this step starts (checkout of the action, installing the factory). */
+/**
+ * Minutes assumed spent before this step started (checkout of the action, installing the factory), used only
+ * when the workflow doesn't pass GLOBALHOST_JOB_STARTED_AT.
+ */
 export const JOB_SETUP_MINUTES = 5;
 /** Minutes kept after startReview returns: archiving, settling, completing the claim, posting. */
 export const AFTER_REVIEW_MINUTES = 2;
@@ -152,9 +161,9 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
 
   // A fresh review-scoped token per write burst (installation tokens last an hour).
   const writer = async () => {
-    const token = deps.appToken
-      ? await deps.appToken(repo)
-      : await installationToken(need(env, "GLOBALHOST_APP_ID"), await accessSecret(gcpToken, "github-app-key", deps.fetchImpl), repo, deps.fetchImpl, REVIEW_PERMISSIONS);
+    const token = deps.reviewToken
+      ? await deps.reviewToken(repo)
+      : await reviewInstallationToken(need(env, "GLOBALHOST_APP_ID"), await accessSecret(gcpToken, "github-app-key", deps.fetchImpl), repo, deps.fetchImpl);
     return new GitHubClient(token, deps.fetchImpl);
   };
   const unlabel = async (pr: number) => {
@@ -198,7 +207,8 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       return { outcome: "not-claimed", reason: claim.reason };
     }
     log(`review: PR #${target.pr} at ${target.sha.slice(0, 12)}, attempt ${claim.claim.attempt} (${runId})`);
-    return await runClaimed({ deps, reader, writer, control, config, ownerIds, botLogin, target, head, runId, jobTimeout, stepStart, now });
+    const jobStartMs = jobStartedAt(env, stepStart, jobTimeout);
+    return await runClaimed({ deps, reader, writer, control, config, ownerIds, botLogin, target, head, runId, jobDeadlineMs: jobStartMs + jobTimeout * 60_000, now });
   } finally {
     if (target.viaLabel) await unlabel(target.pr);
   }
@@ -215,9 +225,22 @@ interface ClaimedContext {
   target: ReviewTarget;
   head: ReviewHead;
   runId: string;
-  jobTimeout: number;
-  stepStart: number;
+  /** When the Actions job will be killed (epoch ms). */
+  jobDeadlineMs: number;
   now: () => number;
+}
+
+/**
+ * When the job started, from GLOBALHOST_JOB_STARTED_AT (epoch seconds, written by the job's first step). Without
+ * it, JOB_SETUP_MINUTES before this step. A value in the future or older than the job's timeout is refused.
+ */
+export function jobStartedAt(env: Env, stepStart: number, jobTimeoutMinutes: number): number {
+  const raw = env.GLOBALHOST_JOB_STARTED_AT;
+  if (raw === undefined || raw === "") return stepStart - JOB_SETUP_MINUTES * 60_000;
+  if (!/^[1-9][0-9]{8,10}$/.test(raw)) throw new Error("GLOBALHOST_JOB_STARTED_AT is not epoch seconds");
+  const ms = Number(raw) * 1000;
+  if (ms > stepStart + 60_000 || ms < stepStart - jobTimeoutMinutes * 60_000) throw new Error("GLOBALHOST_JOB_STARTED_AT is outside this job's lifetime");
+  return ms;
 }
 
 /** What the archived inputs.json holds: what the reviewer and the scan saw, and what the harness changed. */
@@ -292,21 +315,30 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
         return { dir: null, files: [], problems: ["screenshot artifact unavailable"] };
       });
       for (const p of shots.problems) log(`review: ${p}`);
-      scanHits = scanDiff({
-        addedLines: diff.addedLines,
-        commitMessages: diff.commitMessages,
-        paths: diff.paths,
-        artifacts: ci ? [{ name: "ci-summary", text: ci.text }] : [],
-      });
+      // Everything the reviewer reads besides the repo is scanned too: CI output, the PR's title and body, and
+      // the screenshot labels (artifact entry names).
+      const artifacts = [
+        { name: "pr-title", text: target.pull.title },
+        { name: "pr-body", text: target.pull.body ?? "" },
+        ...(ci ? [{ name: "ci-summary", text: ci.text }] : []),
+        // Labels are file names: each is scanned as is and with separators read as spaces, like diff paths.
+        ...(shots.files.length
+          ? [{ name: "screenshot-labels", text: shots.files.map((f) => `${f.label}\n${f.label.replace(/[-_./]/g, " ")}`).join("\n\n") }]
+          : []),
+      ];
+      scanHits = scanDiff({ addedLines: diff.addedLines, commitMessages: diff.commitMessages, paths: diff.paths, artifacts });
 
-      const remaining = c.jobTimeout - JOB_SETUP_MINUTES - AFTER_REVIEW_MINUTES - Math.ceil((now() - c.stepStart) / 60_000);
+      // startReview must return by the job's deadline less the post-review work, however long its own setup takes.
+      const reviewDeadline = c.jobDeadlineMs - AFTER_REVIEW_MINUTES * 60_000;
+      const remaining = Math.floor((reviewDeadline - now()) / 60_000);
       timeoutMinutes = Math.min(limits.perRunMinutes, remaining - REVIEW_SETTLE_MARGIN_MINUTES);
       if (timeoutMinutes < 1) throw new Error("not enough of the job's time is left to run a review");
 
       const api =
         deps.api ?? sdkApi(anthropicClient(federationIdsFromEnv(env as NodeJS.ProcessEnv), githubActionsIdentity(env as NodeJS.ProcessEnv, deps.fetchImpl)));
       const prepared = bundle;
-      // From here a session may exist: an error with no cost to go on is charged the run's cap.
+      // From here a session may exist: an error with no cost to go on is charged the run's cap, unless startReview
+      // says it failed before opening one (ReviewNotStartedError).
       costUsd = limits.reviewPerRunUsd;
       try {
         run = await (deps.startReview ?? startReview)(
@@ -325,6 +357,7 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
             timeoutMinutes,
             // The time this step can still give the review, so startReview enforces the settle margin against it.
             hardTimeoutMinutes: remaining,
+            deadlineEpochMs: reviewDeadline,
             outDir,
             environment: settings.environment,
             guidance: settings.guidance,
@@ -344,6 +377,8 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
           },
         );
       } catch (err) {
+        // Failed before a session could exist: nothing ran, nothing to charge.
+        if (err instanceof ReviewNotStartedError) costUsd = 0;
         if (err instanceof ReviewRunError) {
           costUsd = safeCost(err.costUsd, limits.reviewPerRunUsd);
           sessionId = err.sessionId;
@@ -404,11 +439,14 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
 
   if (settle) {
     // Settle whatever happened. A record that wasn't archived is settled as a failed run instead, so the shadow
-    // index never points at a review that isn't there.
-    const entryRecord =
-      archived && record
-        ? record
-        : buildRecord(c, {
+    // index never points at a review that isn't there. Building that fallback is inside the try, so a problem
+    // there never hides the original error; a minimal entry is the last resort.
+    try {
+      let entryRecord: ReviewRecord;
+      if (archived && record) entryRecord = record;
+      else {
+        const failed = (p: Partial<RecordParts>) =>
+          buildRecord(c, {
             run: undefined,
             status: "failed",
             output: null,
@@ -421,8 +459,15 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
             patchId: diff?.patchId ?? UNKNOWN_PATCH_ID,
             taint,
             prSpendUsd: costUsd,
+            ...p,
           });
-    try {
+        try {
+          entryRecord = failed({});
+        } catch (err) {
+          log(`review: fallback record invalid (${(err as Error).message}); settling a minimal one`);
+          entryRecord = failed({ scanHits: [], sessionId: null, baseSha: target.sha, patchId: UNKNOWN_PATCH_ID, taint: { tainted: false, reasons: [] } });
+        }
+      }
       await control.recordReviewRun(head, shadowEntryFromRecord(entryRecord));
       log(`review: settled $${costUsd.toFixed(2)} (${entryRecord.status})`);
     } catch (err) {
