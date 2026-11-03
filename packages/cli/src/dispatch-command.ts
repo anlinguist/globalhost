@@ -23,7 +23,8 @@ export async function dispatchCommand(argv: readonly string[], env: NodeJS.Proce
     if (argv[1] === "observe" && argv.length === 2) {
       const out = await observeStep({ env, registry: deps.registry, log });
       log(`observe: ${out.outcome}`);
-      // Red when any part's prod build failed, was cancelled or wasn't seen in time.
+      // Red when any part's prod build failed, was cancelled or wasn't seen in time, or succeeded but its commit
+      // isn't confirmed live. "unverified" (no deploy target configured) is reported on the PR and stays green.
       return out.outcome === "failed" ? 1 : 0;
     }
     if (argv[1] === "review-gate" && argv.length === 2) {

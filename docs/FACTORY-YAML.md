@@ -115,12 +115,28 @@ preview:
 ```yaml
 release:
   - adapter: cloud-build-trigger
-    config: { project: numu-know, trigger: numu-know-main }   # trigger name or id; region defaults to global
+    config:
+      project: numu-know            # project that owns the trigger
+      trigger: numu-know-main       # trigger name or id
+      region: global                # trigger location; default global
+      cloudRun: { service: numu-know, region: us-central1 }   # what the trigger deploys, in environments.prod
 ```
 
 Each target is `{ adapter, config }`:
 - `adapter` must be a registered adapter and must be in the part's profile's `release.allowedAdapters`.
 - `config` defaults to `{}` and is validated by the adapter's `configSchema`.
+
+`cloud-build-trigger` config (strict; unknown keys are errors):
+
+| Key | Required | Rule |
+|---|---|---|
+| `project` | yes | GCP project ID |
+| `trigger` | yes | trigger name or id: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` |
+| `region` | no | `global` (default) or a region such as `us-central1` |
+| `cloudRun.service` | with `cloudRun` | Cloud Run service name: `^[a-z](?:[a-z0-9-]{0,47}[a-z0-9])?$` |
+| `cloudRun.region` | with `cloudRun` | a region such as `us-central1` (not `global`) |
+
+`cloudRun` is the deploy target the release observer checks: the service in `environments.prod.gcpProject` must serve the merged commit before a merge is reported as deployed (ADR-0019). Without `cloudRun` or `environments.prod`, a successful build is reported as "can't be verified" and the issue stays open. The trigger's build config must list its images under `images:`, so Cloud Build records what it pushed. The JSON Schema (`schemas/factory.schema.json`) leaves adapter config open: it is generated from core, which doesn't know adapters, so this table is the reference.
 
 ### 3.6 Repo paths and globs
 

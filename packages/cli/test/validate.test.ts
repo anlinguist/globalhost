@@ -55,13 +55,15 @@ describe("globalhost validate", () => {
     const bad = withInstall
       .replace("port: 8080", "port: 0")
       .replace('routes: ["/", "/stories"', 'routes: ["stories"')
-      .replace("trigger: numu-know-main", 'trigger: "<trigger-name>"');
+      .replace("trigger: numu-know-main", 'trigger: "<trigger-name>"')
+      .replace("service: numu-know", "service: Numu_Know");
     const result = run(["validate", file("onboarding-bad.yaml", bad), "--json"]);
     expect(result.code).toBe(1);
     const { errors } = JSON.parse(result.stdout) as { errors: Array<{ path: string; code: string }> };
     expect(errors.map((e) => [e.path, e.code])).toEqual([
       ["parts.web.config.port", "profile_config"],
       ["parts.web.config.routes[0]", "profile_config"],
+      ["parts.web.release[0].config.cloudRun.service", "adapter_config"],
       ["parts.web.release[0].config.trigger", "adapter_config"],
     ]);
   });

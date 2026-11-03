@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-11-02
 - Relates to: ADR-0006 (prod reached only by merging), ADR-0016 (identities pinned to the default branch's workflow)
+- Amended by: ADR-0019 (a successful build is not a deployment: ✅ and issue closing need the merged commit confirmed live; the role also gets `run.services.get` and `run.revisions.get`)
 
 ## Context
 

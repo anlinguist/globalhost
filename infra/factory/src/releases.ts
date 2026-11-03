@@ -1,13 +1,18 @@
 // Release observation (PLAN P1-12, ADR-0017): after a merge to a product's default branch, the product repo's
 // `globalhost-release.yml` reads the Cloud Build build for the merge commit and reports it on the PR and issue.
-// The only factory identity with any role on a prod project, and it can only read builds and triggers.
+// The only factory identity with any role on a prod project, and it can only read builds, triggers and the Cloud Run
+// service it checks the merged commit is live on (ADR-0019).
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { FactoryConfig, ReleaseObserver } from "./config.js";
 
 export const RELEASE_WORKFLOW = ".github/workflows/globalhost-release.yml";
-/** Read builds and triggers (trigger reads use cloudbuild.builds.get). Not logs, not projects, not anything else. */
-export const RELEASE_OBSERVER_PERMISSIONS = ["cloudbuild.builds.get", "cloudbuild.builds.list"] as const;
+/**
+ * Read builds and triggers (trigger reads use cloudbuild.builds.get), and get (not list) Cloud Run services and
+ * revisions to confirm a successful build is actually serving. Not logs, not IAM policies, not projects, not anything
+ * else; no `.list` on Cloud Run, since the observer only ever reads the one service named in factory.yaml.
+ */
+export const RELEASE_OBSERVER_PERMISSIONS = ["cloudbuild.builds.get", "cloudbuild.builds.list", "run.revisions.get", "run.services.get"] as const;
 
 export const releaseProviderId = (r: ReleaseObserver) => `${r.product}-release`;
 export const releaseObserverAccountId = (r: ReleaseObserver) => `${r.product}-release-observer`;
@@ -66,7 +71,7 @@ export function createReleaseObservers({ config, pool, afterApis }: ReleaseInput
         project,
         accountId: releaseObserverAccountId(r),
         displayName: `${r.product} release observer`,
-        description: `Reads Cloud Build builds and triggers in ${r.prodProject}. Nothing else.`,
+        description: `Reads Cloud Build builds and triggers and Cloud Run services in ${r.prodProject}. Nothing else.`,
       },
       afterApis,
     );
@@ -79,7 +84,8 @@ export function createReleaseObservers({ config, pool, afterApis }: ReleaseInput
       project: r.prodProject,
       roleId: "globalhostReleaseObserver",
       title: "globalhost release observer",
-      description: "Read Cloud Build builds and triggers, for globalhost's post-merge deploy report. Managed by globalhost infra/factory.",
+      description:
+        "Read Cloud Build builds and triggers and get Cloud Run services and revisions, for globalhost's post-merge deploy report. Managed by globalhost infra/factory.",
       permissions: [...RELEASE_OBSERVER_PERMISSIONS],
     });
     new gcp.projects.IAMMember(n("release-observer-grant"), {

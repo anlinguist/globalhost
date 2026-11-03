@@ -1,0 +1,62 @@
+{
+  "name": "projects/example-prod/locations/us-central1/services/example-app",
+  "uid": "5b7c3e0a-1d2f-4a6b-9c8d-7e6f5a4b3c2d",
+  "generation": "42",
+  "createTime": "2026-01-10T12:00:00.000000Z",
+  "updateTime": "2026-10-27T19:10:30.000000Z",
+  "launchStage": "GA",
+  "ingress": "INGRESS_TRAFFIC_ALL",
+  "template": {
+    "containers": [
+      {
+        "image": "us-central1-docker.pkg.dev/example-prod/app/example-app:3333333333333333333333333333333333333333",
+        "ports": [
+          {
+            "name": "http1",
+            "containerPort": 8080
+          }
+        ]
+      }
+    ]
+  },
+  "traffic": [
+    {
+      "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST",
+      "percent": 100
+    }
+  ],
+  "observedGeneration": "42",
+  "terminalCondition": {
+    "type": "Ready",
+    "state": "CONDITION_SUCCEEDED",
+    "lastTransitionTime": "2026-10-27T19:10:40.000000Z"
+  },
+  "conditions": [
+    {
+      "type": "RoutesReady",
+      "state": "CONDITION_SUCCEEDED"
+    },
+    {
+      "type": "ConfigurationsReady",
+      "state": "CONDITION_SUCCEEDED"
+    }
+  ],
+  "latestReadyRevision": "projects/example-prod/locations/us-central1/services/example-app/revisions/example-app-00042-xoz",
+  "latestCreatedRevision": "projects/example-prod/locations/us-central1/services/example-app/revisions/example-app-00042-xoz",
+  "trafficStatuses": [
+    {
+      "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+      "revision": "example-app-00042-xoz",
+      "percent": 90
+    },
+    {
+      "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+      "revision": "example-app-00041-bed",
+      "percent": 10,
+      "tag": "canary"
+    }
+  ],
+  "uri": "https://example-app-abcdefghij-uc.a.run.app",
+  "reconciling": false,
+  "etag": "\"CL6x0bkGEJCx5zg/cHJvamVjdHMvZXhhbXBsZS1wcm9kL2xvY2F0aW9ucy91cy1jZW50cmFsMS9zZXJ2aWNlcy9leGFtcGxlLWFwcA\""
+}

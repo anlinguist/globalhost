@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cloudBuildTrigger } from "@globalhost/adapter-cloud-build-trigger";
 import { createRegistry, z, type DeployAdapter, type ProfileDescriptor } from "@globalhost/core";
-import { ACTIONS_BOT, buildLink, consoleUrl, factoryIssue, observeStep, releaseMarker, type ObserveDeps } from "../src/observe.js";
+import { ACTIONS_BOT, NOT_LIVE_TEXT, buildLink, consoleUrl, factoryIssue, observeStep, releaseMarker, type ObserveDeps } from "../src/observe.js";
 import { pullRequestBody } from "../src/publish.js";
 
 const REPO = "anlinguist/demo";
@@ -19,11 +19,14 @@ const webApp: ProfileDescriptor = {
 };
 const registry = createRegistry([webApp], [cloudBuildTrigger]);
 
-const yaml = (parts: string) => `version: 1
+const PROD = `environments:
+  prod: { gcpProject: demo-prod, region: us-central1 }
+`;
+const yaml = (parts: string, envs = PROD) => `version: 1
 product: demo
 owners:
   - { login: anlinguist, id: 47403803 }
-parts:
+${envs}parts:
 ${parts}
 `;
 const ONE_PART = yaml(`  web:
@@ -32,21 +35,43 @@ const ONE_PART = yaml(`  web:
     preview: { enabled: false }
     release:
       - adapter: cloud-build-trigger
-        config: { project: demo-prod, trigger: deploy-web }`);
+        config: { project: demo-prod, trigger: deploy-web, cloudRun: { service: web, region: us-central1 } }`);
 const TWO_PARTS = yaml(`  web:
     path: web
     profile: web-app
     preview: { enabled: false }
     release:
       - adapter: cloud-build-trigger
-        config: { project: demo-prod, trigger: deploy-web }
+        config: { project: demo-prod, trigger: deploy-web, cloudRun: { service: web, region: us-central1 } }
   api:
     path: api
     profile: web-app
     preview: { enabled: false }
     release:
       - adapter: cloud-build-trigger
-        config: { project: demo-prod, trigger: deploy-api }`);
+        config: { project: demo-prod, trigger: deploy-api, cloudRun: { service: api, region: us-central1 } }`);
+const NO_TARGET = yaml(`  web:
+    path: .
+    profile: web-app
+    preview: { enabled: false }
+    release:
+      - adapter: cloud-build-trigger
+        config: { project: demo-prod, trigger: deploy-web }`);
+const NO_PROD_ENV = yaml(
+  `  web:
+    path: .
+    profile: web-app
+    preview: { enabled: false }
+    release:
+      - adapter: cloud-build-trigger
+        config: { project: demo-prod, trigger: deploy-web, cloudRun: { service: web, region: us-central1 } }`,
+  `environments:
+  dev: { gcpProject: demo-dev, region: us-central1 }
+`,
+);
+const DIGEST = `sha256:${"d".repeat(64)}`;
+const OTHER_DIGEST = `sha256:${"e".repeat(64)}`;
+const IMAGE = (svc: string) => `us-docker.pkg.dev/demo-prod/app/${svc}`;
 const NO_RELEASE = yaml(`  web: { path: ., profile: web-app, preview: { enabled: false } }`);
 
 interface Build {
@@ -56,6 +81,17 @@ interface Build {
   statuses: string[];
   statusDetail?: string;
   logUrl?: string;
+  /** results.images; default: one image for the trigger's service, at DIGEST. */
+  images?: Array<{ name: string; digest: string }>;
+}
+
+/** A Cloud Run service as the fake API serves it. Each read shifts `states` until one is left. */
+interface RunService {
+  states: Array<{ reconciling?: boolean; traffic: Array<{ revision: string; percent: number }> }>;
+}
+interface RunRevision {
+  image: string;
+  ready: boolean;
 }
 
 interface FakeComment {
@@ -91,6 +127,9 @@ class Fake {
   issues = new Map<number, { state: string; state_reason?: string; labels: Set<string>; pull_request?: object }>();
   builds: Build[] = [];
   pulls: Pull[] = [];
+  /** Cloud Run services by name; by default each serves 100% on a ready revision running DIGEST. */
+  services = new Map<string, RunService>();
+  revisions = new Map<string, RunRevision>();
   /** Commit the builds ran on. */
   buildSha = SHA;
   private nextId = 1000;
@@ -103,6 +142,7 @@ class Fake {
     const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
     this.calls.push(`${method} ${url.host}${url.pathname}`);
     if (url.host === "cloudbuild.googleapis.com") return this.cloudBuild(url);
+    if (url.host === "run.googleapis.com") return this.cloudRun(url);
     const p = url.pathname;
     let m: RegExpExecArray | null;
     if (p === `/repos/${REPO}`) return Response.json({ default_branch: "main" });
@@ -151,6 +191,7 @@ class Fake {
         substitutions: { COMMIT_SHA: this.buildSha, _SECRET: SECRET },
         createTime: "2026-11-01T00:00:00Z",
         logUrl: b.logUrl,
+        results: { images: b.images ?? [{ name: `${IMAGE(b.trigger.replace(/^deploy-/, ""))}:${this.buildSha}`, digest: DIGEST }] },
       };
     };
     if (p.endsWith("/builds")) {
@@ -162,6 +203,34 @@ class Fake {
       return b ? Response.json(toApi(b, true)) : new Response("{}", { status: 404 });
     }
     return new Response("{}", { status: 404 });
+  }
+
+  serve(svc: string, rev: RunRevision, revName = `${svc}-00002-new`) {
+    this.services.set(svc, { states: [{ traffic: [{ revision: revName, percent: 100 }] }] });
+    this.revisions.set(revName, rev);
+  }
+
+  private cloudRun(url: URL): Response {
+    const m = /^\/v2\/projects\/demo-prod\/locations\/us-central1\/services\/([a-z0-9-]+)(?:\/revisions\/([a-z0-9-]+))?$/.exec(url.pathname);
+    if (!m) return Response.json({ error: { code: 404, status: "NOT_FOUND" } }, { status: 404 });
+    const [, svc, rev] = m;
+    if (!this.services.has(svc!)) this.serve(svc!, { image: `${IMAGE(svc!)}@${DIGEST}`, ready: true });
+    if (rev) {
+      const r = this.revisions.get(rev);
+      if (!r) return Response.json({ error: { code: 404, status: "NOT_FOUND" } }, { status: 404 });
+      return Response.json({
+        name: `projects/demo-prod/locations/us-central1/services/${svc}/revisions/${rev}`,
+        containers: [{ image: r.image }],
+        conditions: [{ type: "Ready", state: r.ready ? "CONDITION_SUCCEEDED" : "CONDITION_RECONCILING" }],
+      });
+    }
+    const s = this.services.get(svc!)!;
+    const st = s.states.length > 1 ? s.states.shift()! : s.states[0]!;
+    return Response.json({
+      name: `projects/demo-prod/locations/us-central1/services/${svc}`,
+      reconciling: st.reconciling ?? false,
+      trafficStatuses: st.traffic.map((t) => ({ type: "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", revision: t.revision, percent: t.percent })),
+    });
   }
 
   issue(n: number, labels: string[] = ["factory:in-review"]) {
@@ -588,6 +657,271 @@ describe("observe step", () => {
     }) as typeof fetch;
     const out = await observeStep(deps(fake));
     expect(out.outcome).toBe("succeeded");
+  });
+});
+
+describe("observe step: a successful build is not a deploy", () => {
+  const success = (fake: Fake, over: Partial<Build> = {}) => {
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"], logUrl: LOG_URL, ...over });
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+  };
+  const runCalls = (fake: Fake) => fake.calls.filter((c) => c.includes("run.googleapis.com"));
+  const notLive = (text: string) =>
+    `❌ Cloud Build \`build-1\` succeeded, but the merged commit isn't live: ${text}.\n[Build details](${LOG_URL})\n${releaseMarker(SHA)}`;
+  const expectOpen = (fake: Fake) => {
+    expect(fake.issues.get(12)).toMatchObject({ state: "open" });
+    expect(fake.issues.get(12)!.labels.has("factory:in-review")).toBe(true);
+    expect(fake.commentsOn(12)[0]!.body).not.toContain("✅");
+  };
+
+  it("✅ only when the service serves 100% on a ready revision running the build's digest", async () => {
+    const fake = new Fake();
+    success(fake);
+    const out = await observeStep(deps(fake));
+    expect(out).toMatchObject({ outcome: "succeeded", closedIssues: [12] });
+    expect(runCalls(fake)).toEqual([
+      "GET run.googleapis.com/v2/projects/demo-prod/locations/us-central1/services/web",
+      "GET run.googleapis.com/v2/projects/demo-prod/locations/us-central1/services/web/revisions/web-00002-new",
+    ]);
+    expect(fake.calls.filter((c) => c.includes("run.googleapis.com")).every((c) => c.startsWith("GET "))).toBe(true);
+  });
+
+  it("a no-op build (no images pushed) is never ✅, and Cloud Run isn't even read", async () => {
+    // The numu-know case: the trigger's build was a single `echo` step.
+    const fake = new Fake();
+    success(fake, { images: [] });
+    const d = deps(fake);
+    const out = await observeStep(d);
+    expect(out).toMatchObject({ outcome: "failed", closedIssues: [] });
+    expect(out.parts[0]).toMatchObject({ outcome: "not-live", reason: "no-artifact" });
+    expect(fake.commentsOn(30)[0]!.body).toBe(notLive(NOT_LIVE_TEXT["no-artifact"]));
+    expect(runCalls(fake)).toEqual([]);
+    expectOpen(fake);
+  });
+
+  it("an image without a valid digest doesn't count as built", async () => {
+    const fake = new Fake();
+    success(fake, { images: [{ name: `${IMAGE("web")}:${SHA}`, digest: "sha256:abc" }] });
+    expect((await observeStep(deps(fake))).parts[0]).toMatchObject({ outcome: "not-live", reason: "no-artifact" });
+  });
+
+  it("the service still on an older revision is never ✅ (bounded wait, then ❌)", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}@${OTHER_DIGEST}`, ready: true }, "web-00001-old");
+    const out = await observeStep(deps(fake));
+    expect(out.outcome).toBe("failed");
+    expect(out.parts[0]).toMatchObject({ outcome: "not-live", reason: "not-updated" });
+    expect(fake.commentsOn(30)[0]!.body).toBe(notLive(NOT_LIVE_TEXT["not-updated"]));
+    expectOpen(fake);
+    // 5 min at 20 s: bounded.
+    expect(runCalls(fake).filter((c) => c.endsWith("/services/web")).length).toBeLessThanOrEqual(16);
+  });
+
+  it("an image tagged with another commit is not this deploy", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}:${OTHER_SHA}`, ready: true });
+    expect((await observeStep(deps(fake))).parts[0]).toMatchObject({ outcome: "not-live", reason: "not-updated" });
+  });
+
+  it("a pinned digest that doesn't match wins over a matching tag", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}:${SHA}@${OTHER_DIGEST}`, ready: true });
+    expect((await observeStep(deps(fake))).parts[0]).toMatchObject({ outcome: "not-live", reason: "not-updated" });
+  });
+
+  it("accepts a full or short SHA tag, but only in a repository the build pushed to", async () => {
+    for (const [image, ok] of [
+      [`${IMAGE("web")}:${SHA}`, true],
+      [`${IMAGE("web")}:${SHA.slice(0, 7)}`, true],
+      [`${IMAGE("web")}:${SHA.slice(0, 6)}`, false],
+      [`us-docker.pkg.dev/elsewhere/app/web:${SHA}`, false],
+      [`${IMAGE("web")}`, false],
+    ] as const) {
+      const fake = new Fake();
+      success(fake);
+      fake.serve("web", { image, ready: true });
+      const out = await observeStep(deps(fake));
+      expect([image, out.outcome]).toEqual([image, ok ? "succeeded" : "failed"]);
+    }
+  });
+
+  it("split traffic is never ✅", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}@${DIGEST}`, ready: true });
+    fake.services.set("web", { states: [{ traffic: [{ revision: "web-00002-new", percent: 90 }, { revision: "web-00001-old", percent: 10 }] }] });
+    const out = await observeStep(deps(fake));
+    expect(out.parts[0]).toMatchObject({ outcome: "not-live", reason: "split-traffic" });
+    expect(fake.commentsOn(30)[0]!.body).toBe(notLive(NOT_LIVE_TEXT["split-traffic"]));
+    expectOpen(fake);
+  });
+
+  it("a revision that never becomes ready is never ✅", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}@${DIGEST}`, ready: false });
+    const out = await observeStep(deps(fake));
+    expect(out.parts[0]).toMatchObject({ outcome: "not-live", reason: "not-ready" });
+    expectOpen(fake);
+  });
+
+  it("waits for a rollout in progress, then reports ✅", async () => {
+    const fake = new Fake();
+    success(fake);
+    fake.serve("web", { image: `${IMAGE("web")}@${DIGEST}`, ready: true });
+    fake.revisions.set("web-00001-old", { image: `${IMAGE("web")}@${OTHER_DIGEST}`, ready: true });
+    fake.services.set("web", {
+      states: [
+        { traffic: [{ revision: "web-00001-old", percent: 100 }] },
+        { reconciling: true, traffic: [{ revision: "web-00001-old", percent: 100 }] },
+        { traffic: [{ revision: "web-00002-new", percent: 100 }] },
+      ],
+    });
+    const out = await observeStep(deps(fake));
+    expect(out).toMatchObject({ outcome: "succeeded", closedIssues: [12] });
+  });
+
+  it("verifies a build that only appeared after release() first looked (the usual timing)", async () => {
+    const fake = new Fake();
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const build: Build = { id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"], logUrl: LOG_URL };
+    const real = fake.fetch;
+    let lists = 0;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      // The trigger fires after the observer's first lookup.
+      if (String(input).includes("/builds?") && ++lists === 2) fake.builds.push(build);
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out).toMatchObject({ outcome: "succeeded", closedIssues: [12] });
+  });
+
+  it("logs why a cloudRun target was ignored without environments.prod", async () => {
+    const fake = new Fake(NO_PROD_ENV);
+    success(fake);
+    const d = deps(fake);
+    await observeStep(d);
+    expect(d.logs.some((l) => l.includes("observe.deploy_target_ignored"))).toBe(true);
+  });
+
+  it("verification gets its own bounded window even when the build finishes at the build deadline", async () => {
+    const fake = new Fake();
+    fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["WORKING", "WORKING", "WORKING", "SUCCESS"] });
+    fake.pulls.push(factoryPull(30, 12));
+    fake.serve("web", { image: `${IMAGE("web")}@${DIGEST}`, ready: true });
+    fake.revisions.set("web-00001-old", { image: `${IMAGE("web")}@${OTHER_DIGEST}`, ready: true });
+    fake.services.set("web", { states: [{ traffic: [{ revision: "web-00001-old", percent: 100 }] }, { traffic: [{ revision: "web-00002-new", percent: 100 }] }] });
+    const out = await observeStep(deps(fake, { OBSERVE_TIMEOUT_MINUTES: "1" }));
+    expect(out.outcome).toBe("succeeded");
+  });
+
+  it("without a deploy target: a fixed 'can't be verified' status, no ✅, issue left open, job not failed", async () => {
+    for (const config of [NO_TARGET, NO_PROD_ENV]) {
+      const fake = new Fake(config);
+      success(fake);
+      const out = await observeStep(deps(fake));
+      expect(out).toMatchObject({ outcome: "unverified", closedIssues: [] });
+      expect(fake.commentsOn(30)[0]!.body).toBe(
+        `Cloud Build \`build-1\` succeeded, but deployment can't be verified (no deploy target configured).\n[Build details](${LOG_URL})\n${releaseMarker(SHA)}`,
+      );
+      expect(runCalls(fake)).toEqual([]);
+      expectOpen(fake);
+    }
+  });
+
+  it("an adapter without verifyLive can never report deployed", async () => {
+    const fake = new Fake();
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const adapter: DeployAdapter = {
+      id: "cloud-build-trigger",
+      configSchema: z.unknown(),
+      capabilities: { preview: false, canary: false, rollback: false, asyncGate: false },
+      release: async (ctx) => ({ adapter: "cloud-build-trigger", sha: ctx.sha, data: { project: "demo-prod", region: "global", buildId: "b-1" } }),
+      status: async () => ({ state: "succeeded", detail: "Cloud Build b-1: SUCCESS" }),
+    };
+    const out = await observeStep(deps(fake, {}, { adapterFactory: () => adapter }));
+    expect(out).toMatchObject({ outcome: "unverified", closedIssues: [] });
+    expect(fake.commentsOn(30)[0]!.body).not.toContain("✅");
+    expectOpen(fake);
+  });
+
+  it.each([401, 403, 404])("Cloud Run HTTP %i fails closed: ⚠️, issue open, job failed", async (code) => {
+    const fake = new Fake();
+    success(fake);
+    const real = fake.fetch;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("run.googleapis.com")) return Response.json({ error: { code, status: "PERMISSION_DENIED" } }, { status: code });
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out).toMatchObject({ outcome: "failed", closedIssues: [] });
+    expect(out.parts[0]).toMatchObject({ outcome: "verify-error", httpStatus: code });
+    expect(fake.commentsOn(30)[0]!.body).toBe(
+      `⚠️ Cloud Build \`build-1\` succeeded, but Cloud Run couldn't be read to confirm the deploy (HTTP ${code}).\n${releaseMarker(SHA)}`,
+    );
+    expectOpen(fake);
+  });
+
+  it("a Cloud Run 5xx that never clears fails closed after the verify window; one that clears doesn't", async () => {
+    for (const persistent of [true, false]) {
+      const fake = new Fake();
+      success(fake);
+      const real = fake.fetch;
+      let n = 0;
+      fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+        if (String(input).includes("run.googleapis.com") && (persistent || n++ === 0)) return Response.json({}, { status: 503 });
+        return real(input, init);
+      }) as typeof fetch;
+      const out = await observeStep(deps(fake));
+      expect(out.parts[0]!.outcome).toBe(persistent ? "verify-error" : "succeeded");
+      expect(out.closedIssues).toEqual(persistent ? [] : [12]);
+    }
+  });
+
+  it("a malformed Cloud Run response fails closed", async () => {
+    const fake = new Fake();
+    success(fake);
+    const real = fake.fetch;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("run.googleapis.com")) return Response.json({ trafficStatuses: [{ revision: "x", percent: 250 }] });
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out.parts[0]).toMatchObject({ outcome: "verify-error" });
+    expectOpen(fake);
+  });
+
+  it("comments never carry image, digest or revision names", async () => {
+    for (const image of [`${IMAGE("web")}@${OTHER_DIGEST}`, `${IMAGE("web")}@${DIGEST}`]) {
+      const fake = new Fake();
+      success(fake);
+      fake.serve("web", { image, ready: true }, "web-00002-secretname");
+      await observeStep(deps(fake));
+      for (const c of fake.comments) {
+        expect(c.body).not.toMatch(/sha256|pkg\.dev|secretname|eeee/);
+      }
+    }
+  });
+
+  it("one part live and one not: ❌ for that part, nothing closes", async () => {
+    const fake = new Fake(TWO_PARTS);
+    fake.builds.push(
+      { id: "build-web", trigger: "deploy-web", statuses: ["SUCCESS"] },
+      { id: "build-api", trigger: "deploy-api", statuses: ["SUCCESS"], images: [] },
+    );
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const out = await observeStep(deps(fake));
+    expect(out.outcome).toBe("failed");
+    expect(fake.commentsOn(30)[0]!.body).toContain("**web:** Deployed to prod via Cloud Build `build-web` ✅");
+    expect(fake.commentsOn(30)[0]!.body).toContain("**api:** ❌ Cloud Build `build-api` succeeded, but the merged commit isn't live");
+    expect(fake.issues.get(12)!.state).toBe("open");
   });
 });
 

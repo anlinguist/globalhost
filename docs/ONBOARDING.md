@@ -49,7 +49,7 @@ Prepared by the owner running `globalhost install` locally (the App deliberately
 
 ### Stage 4 — Infra
 
-Keep the existing deploy via a deploy adapter. Migrating to Pulumi (`pulumi import`) is a separate, optional issue proposed only when it pays for itself (e.g. needing canary/rollback, or review stacks).
+Keep the existing deploy via a deploy adapter. For `cloud-build-trigger`, check the trigger really deploys before relying on the release observer (ADR-0019): its build config lists the image under `images:` (so Cloud Build records the pushed digest), tags it with `$COMMIT_SHA` or deploys it by digest, and deploys to the Cloud Run service that actually serves the product's domain. Name that service in `cloudRun`. A build that only `docker push`es in a step, or uses `gcloud run deploy --source`, records no images and is reported ❌. Migrating to Pulumi (`pulumi import`) is a separate, optional issue proposed only when it pays for itself (e.g. needing canary/rollback, or review stacks).
 
 ### Secrets found in history
 
@@ -102,7 +102,7 @@ parts:
     preview: { enabled: true }
     release:
       - adapter: cloud-build-trigger
-        config: { project: numu-know, trigger: numu-know-main }   # trigger name or id; region defaults to global
+        config: { project: numu-know, trigger: numu-know-main, cloudRun: { service: numu-know, region: us-central1 } }   # trigger name or id (region defaults to global); cloudRun: what it deploys
     dependsOn: []
 
 limits:

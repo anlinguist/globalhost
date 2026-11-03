@@ -1,6 +1,7 @@
 // `cloud-build-trigger` deploy adapter (docs/PROFILES.md §3): observe-only. The product's existing Cloud Build
 // trigger deploys on push to the default branch; this adapter finds the build for a merge commit and reports its
 // status. It never starts, retries or cancels a build, so adopting it changes nothing about how the product deploys.
+// A successful build isn't a deploy (ADR-0019): `verifyLive()` checks the configured Cloud Run service serves it.
 import {
   GCP_PROJECT_PATTERN,
   REGION_PATTERN,
@@ -8,12 +9,19 @@ import {
   type DeployAdapter,
   type ReleaseCtx,
   type ReleaseHandle,
+  type ReleaseLiveness,
   type ReleaseState,
   type ReleaseStatus,
 } from "@globalhost/core";
+import { CLOUD_RUN_SERVICE_PATTERN, cloudRunRevisionSchema, cloudRunServiceSchema, liveness } from "./live.js";
+
+export * from "./live.js";
 
 export const ADAPTER_ID = "cloud-build-trigger";
 export const CLOUD_BUILD_API = "https://cloudbuild.googleapis.com/v1";
+export const CLOUD_RUN_API = "https://run.googleapis.com/v2";
+/** Per-request timeout for Cloud Build and Cloud Run calls. */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 const TRIGGER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
@@ -31,6 +39,18 @@ export const cloudBuildTriggerConfigSchema = z.strictObject({
   trigger: z.string().regex(TRIGGER_PATTERN, { error: "must be a Cloud Build trigger name or id: letters, digits, - and _, at most 64 characters" }),
   /** Trigger location; "global" for triggers created without a region. */
   region: region.default("global"),
+  /**
+   * The Cloud Run service the trigger deploys, in `environments.prod.gcpProject`. A successful build is reported as
+   * deployed only once this service serves the merged commit; without it the build is reported but never as deployed.
+   */
+  cloudRun: z
+    .strictObject({
+      service: z.string().regex(CLOUD_RUN_SERVICE_PATTERN, {
+        error: "must be a Cloud Run service name: lowercase letters, digits and hyphens, starting with a letter, at most 49 characters",
+      }),
+      region: z.string().regex(REGION_PATTERN, { error: "must be a GCP region such as us-central1" }),
+    })
+    .optional(),
 });
 export type CloudBuildTriggerConfig = z.output<typeof cloudBuildTriggerConfigSchema>;
 
@@ -49,6 +69,8 @@ const buildSchema = z.object({
     .optional(),
   createTime: z.string().optional(),
   logUrl: z.string().optional(),
+  /** Images listed under the build config's `images:`, pushed by Cloud Build once every step succeeded. */
+  results: z.object({ images: z.array(z.object({ name: z.string().optional(), digest: z.string().optional() })).optional() }).optional(),
 });
 export type CloudBuild = z.output<typeof buildSchema>;
 
@@ -57,12 +79,20 @@ const triggerSchema = z.object({ id: z.string().regex(ID_PATTERN), name: z.strin
 const errorSchema = z.object({ error: z.object({ code: z.number().optional(), status: z.string().optional() }) });
 
 /** What `release()` records and `status()` reads back. All values are identifiers; no credentials. */
-const handleDataSchema = z.strictObject({
-  project: z.string().regex(GCP_PROJECT_PATTERN),
-  region,
-  triggerId: z.string().regex(ID_PATTERN),
-  buildId: z.string().regex(ID_PATTERN).optional(),
-});
+const handleDataSchema = z
+  .strictObject({
+    project: z.string().regex(GCP_PROJECT_PATTERN),
+    region,
+    triggerId: z.string().regex(ID_PATTERN),
+    buildId: z.string().regex(ID_PATTERN).optional(),
+    /** The Cloud Run service to verify: all three or none. */
+    runProject: z.string().regex(GCP_PROJECT_PATTERN).optional(),
+    runRegion: z.string().regex(REGION_PATTERN).optional(),
+    runService: z.string().regex(CLOUD_RUN_SERVICE_PATTERN).optional(),
+  })
+  .refine((d) => new Set([d.runProject, d.runRegion, d.runService].map((v) => v === undefined)).size === 1, {
+    error: "runProject, runRegion and runService go together",
+  });
 type HandleData = z.output<typeof handleDataSchema>;
 
 /** Cloud Build `Build.Status` → release state. Anything unlisted (incl. STATUS_UNKNOWN) is "unknown". */
@@ -78,6 +108,18 @@ export const STATUS_MAP: Readonly<Record<string, ReleaseState>> = {
   CANCELLED: "cancelled",
 };
 
+/** A Cloud Run API error (HTTP status and API status only, never the body). */
+export class CloudRunApiError extends Error {
+  constructor(
+    readonly httpStatus: number,
+    readonly apiStatus: string | undefined,
+    what: string,
+  ) {
+    super(`Cloud Run API ${what}: HTTP ${httpStatus}${apiStatus ? ` ${apiStatus}` : ""}`);
+    this.name = "CloudRunApiError";
+  }
+}
+
 export class CloudBuildApiError extends Error {
   constructor(
     readonly httpStatus: number,
@@ -90,11 +132,15 @@ export class CloudBuildApiError extends Error {
 }
 
 export interface CloudBuildTriggerDeps {
-  /** Returns an OAuth access token for a principal with cloudbuild.builds.list/get on the project. */
+  /**
+   * Returns an OAuth access token for a principal with cloudbuild.builds.list/get on the project and, for
+   * `verifyLive()`, run.services.get and run.revisions.get on the prod project.
+   */
   accessToken(): Promise<string>;
   fetch?: typeof globalThis.fetch;
-  /** Override for tests. */
+  /** Overrides for tests. */
   baseUrl?: string;
+  runBaseUrl?: string;
 }
 
 /** The commit a build ran on, from the trigger's substitutions or the resolved source. */
@@ -118,21 +164,29 @@ export function buildStatus(build: CloudBuild): ReleaseStatus {
 export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): DeployAdapter<CloudBuildTriggerConfig> {
   const doFetch = deps.fetch ?? globalThis.fetch;
   const base = deps.baseUrl ?? CLOUD_BUILD_API;
+  const runBase = deps.runBaseUrl ?? CLOUD_RUN_API;
 
-  async function get<T>(path: string, schema: z.ZodType<T>, what: string, query?: Record<string, string>): Promise<T> {
-    const url = new URL(`${base}/${path}`);
+  async function request<T>(api: "build" | "run", path: string, schema: z.ZodType<T>, what: string, query?: Record<string, string>): Promise<T> {
+    const url = new URL(`${api === "build" ? base : runBase}/${path}`);
     for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
     const token = await deps.accessToken();
-    const res = await doFetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
-    const body: unknown = await res.json().catch(() => undefined);
+    // A hung connection must not eat the job's timeout; the abort is retried like a network error.
+    const res = await doFetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const body: unknown = await res.json().catch((e: unknown) => {
+      // A timeout while reading the body is retryable like any other; only an unparseable body is swallowed.
+      if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) throw e;
+      return undefined;
+    });
     if (!res.ok) {
       const parsed = errorSchema.safeParse(body);
-      throw new CloudBuildApiError(res.status, parsed.success ? parsed.data.error.status : undefined, what);
+      const apiStatus = parsed.success ? parsed.data.error.status : undefined;
+      throw api === "build" ? new CloudBuildApiError(res.status, apiStatus, what) : new CloudRunApiError(res.status, apiStatus, what);
     }
     const parsed = schema.safeParse(body);
-    if (!parsed.success) throw new Error(`Cloud Build API ${what}: unexpected response shape`);
+    if (!parsed.success) throw new Error(`Cloud ${api === "build" ? "Build" : "Run"} API ${what}: unexpected response shape`);
     return parsed.data;
   }
+  const get = <T>(path: string, schema: z.ZodType<T>, what: string, query?: Record<string, string>) => request("build", path, schema, what, query);
 
   const location = (d: { project: string; region: string }) =>
     `projects/${encodeURIComponent(d.project)}/locations/${encodeURIComponent(d.region)}`;
@@ -170,6 +224,10 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
         "get trigger",
       );
       const data: HandleData = { project: config.project, region: config.region, triggerId: trigger.id };
+      // The service is checked in the prod environment's project; without a valid one there's nothing to verify.
+      if (config.cloudRun && GCP_PROJECT_PATTERN.test(ctx.environment.gcpProject)) {
+        Object.assign(data, { runProject: ctx.environment.gcpProject, runRegion: config.cloudRun.region, runService: config.cloudRun.service });
+      }
       const build = await findBuild(data, ctx.sha);
       if (build) data.buildId = build.id;
       return { adapter: ADAPTER_ID, sha: ctx.sha, data };
@@ -185,6 +243,25 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
       }
       const build = await findBuild(data, handle.sha);
       return build ? buildStatus(build) : notFound(handle.sha);
+    },
+
+    async verifyLive(handle: ReleaseHandle): Promise<ReleaseLiveness> {
+      if (handle.adapter !== ADAPTER_ID) throw new Error(`handle belongs to adapter ${JSON.stringify(handle.adapter)}`);
+      if (!SHA_PATTERN.test(handle.sha)) throw new Error("handle sha must be 40 lowercase hex characters");
+      const data = handleDataSchema.parse(handle.data);
+      if (!data.runProject || !data.runRegion || !data.runService) return { state: "unverifiable", reason: "no-target" };
+      // release() records the build id only when the build already existed; otherwise look it up as status() does.
+      const build = data.buildId
+        ? await get(`${location(data)}/builds/${encodeURIComponent(data.buildId)}`, buildSchema, "get build")
+        : await findBuild(data, handle.sha);
+      if (!build || build.status !== "SUCCESS" || buildCommit(build) !== handle.sha) throw new Error("verifyLive: not a successful build of this commit");
+      const service = `projects/${encodeURIComponent(data.runProject)}/locations/${encodeURIComponent(data.runRegion)}/services/${encodeURIComponent(data.runService)}`;
+      return liveness(
+        handle.sha,
+        build.results?.images,
+        () => request("run", service, cloudRunServiceSchema, "get service"),
+        (rev) => request("run", `${service}/revisions/${encodeURIComponent(rev)}`, cloudRunRevisionSchema, "get revision"),
+      );
     },
   };
 }
