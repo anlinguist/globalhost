@@ -8,7 +8,7 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 |---|---|---|
 | APIs | see `REQUIRED_APIS` in `src/factory.ts` | never disabled on destroy |
 | Bucket | `globalhost-runs` | run artifacts (bundle, `run.json`, session exports); deleted after 30 days; uniform access, public access prevention |
-| Bucket | `globalhost-control` | `state.json` (kill switch, spend), lock objects; versioned; noncurrent versions deleted after 30 days or beyond 100 newer |
+| Bucket | `globalhost-control` | `state.json` (kill switch, spend), lock objects, review claims and per-PR review ledgers (`reviews/`); versioned; noncurrent versions deleted after 30 days or beyond 100 newer |
 | WIF pool | `github` | **imported**, not created: it already exists from `infra/bootstrap/security-audit.sh`. `protect: true`. That script still owns the audit provider `github-actions` |
 | WIF provider | `github/globalhost-dispatch` | GitHub OIDC; condition pins `repository_owner_id` 47403803, the environment `globalhost`, and each configured repo ID on its default branch |
 | Service account | `globalhost-gh-dispatch` | the dispatcher (`sa:gh-dispatch`). Bucket- and secret-level roles only; impersonable only via `principalSet://…/attribute.dispatch/<repo id>@globalhost` |
@@ -47,7 +47,7 @@ After `pulumi up`, set the product repo's variables `GLOBALHOST_RELEASE_WIF_PROV
 
 | Scope | Role | Why |
 |---|---|---|
-| `globalhost-control` | `roles/storage.objectUser` | read/write/delete `state.json`, spend records and lock objects (compare-and-swap via generation match) |
+| `globalhost-control` | `roles/storage.objectUser` | read/write/delete `state.json`, spend records, lock objects, review claims and ledgers (compare-and-swap via generation match) |
 | `globalhost-runs` | `roles/storage.objectCreator` | archive run artifacts (no overwrite or delete) |
 | `globalhost-runs` | `roles/storage.objectViewer` | read run artifacts |
 | secret `github-app-key` | `roles/secretmanager.secretAccessor` | mint App installation tokens |

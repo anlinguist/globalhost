@@ -1,4 +1,4 @@
-# Limits at their extremes; perRunUsd equal to dailyUsd is fine, and 0.07 has two decimals despite float error.
+# Limits at their extremes; perRunUsd equal to dailyUsd (and reviewPerRunUsd equal to reviewPerPrUsd) is fine, and 0.07 has two decimals despite float error.
 version: 1
 product: bounded
 owners:
@@ -12,3 +12,5 @@ limits:
   perRunUsd: 0.07
   perRunMinutes: 180
   dailyUsd: 0.07
+  reviewPerPrUsd: 0.01
+  reviewPerRunUsd: 0.01

@@ -1,0 +1,11 @@
+# Review runs count toward dailyUsd too, so a review run cap above it could never start.
+# expect: limits.reviewPerRunUsd limits_inconsistent
+version: 1
+product: sample
+owners:
+  - { login: octo-owner, id: 1001 }
+parts:
+  app:
+    path: .
+    profile: fake-ext
+limits: { perRunUsd: 1, dailyUsd: 1, reviewPerRunUsd: 1.5 }
