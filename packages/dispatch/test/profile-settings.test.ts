@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseFactoryYaml, validateFactoryConfig, z, type FactoryConfig, type PartCtx, type Profile, type RepoSnapshot } from "@globalhost/core";
 import { GitHubClient } from "../src/github.js";
-import { MAX_SNAPSHOT_FILE_BYTES, githubSnapshot, profileRunSettings } from "../src/profile-settings.js";
+import { MAX_SNAPSHOT_FILE_BYTES, githubSnapshot, profileRunSettings, profileToolchain } from "../src/profile-settings.js";
 import { FACTORY_YAML, FakeCloud, REPO, registry } from "./fakes.js";
 
 function stubProfile(id: string, allowedHosts: string[]): Profile {
@@ -93,5 +93,38 @@ describe("profileRunSettings", () => {
 
   it("fails rather than run without a part's profile", async () => {
     await expect(profileRunSettings([], config(), snapshot)).rejects.toThrow(/web-app is not registered/);
+  });
+});
+
+describe("profileToolchain", () => {
+  const withToolchain = (id: string, range: string): Profile => ({
+    ...stubProfile(id, []),
+    toolchain: async (repo: RepoSnapshot, part: { name: string; path: string }) => ({
+      tools: [{ tool: "node", range, source: part.path === "." ? ".nvmrc" : `${part.path}/.nvmrc`, check: "node --version", install: "x" }],
+      notes: (await repo.readFile("package.json")) === "manifest" ? [] : ["unexpected snapshot"],
+    }),
+  });
+
+  it("is absent when no part's profile reads versions", async () => {
+    expect(profileToolchain([stubProfile("web-app", [])], config())).toBeUndefined();
+    expect((await profileRunSettings([stubProfile("web-app", [])], config(), { files: [], readFile: async () => undefined })).toolchain).toBeUndefined();
+  });
+
+  it("merges parts in factory.yaml order over the snapshot it's given", async () => {
+    const web = config();
+    const twoParts = { ...web, parts: { ...web.parts, api: { ...web.parts.web!, path: "api", profile: "service" } } };
+    const resolve = profileToolchain([withToolchain("web-app", "20"), withToolchain("service", "22")], twoParts)!;
+    const tc = await resolve({ files: ["package.json"], readFile: async (p) => (p === "package.json" ? "manifest" : undefined) });
+    expect(tc.tools).toEqual([expect.objectContaining({ tool: "node", range: "20", source: ".nvmrc" })]);
+    expect(tc.notes).toEqual(["node: .nvmrc asks for 20 and api/.nvmrc for 22; using 20"]);
+  });
+
+  it("keeps the other parts' versions when one part's detection throws", async () => {
+    const web = config();
+    const twoParts = { ...web, parts: { ...web.parts, api: { ...web.parts.web!, path: "api", profile: "service" } } };
+    const broken: Profile = { ...stubProfile("service", []), toolchain: async () => Promise.reject(new Error("bad")) };
+    const tc = await profileToolchain([withToolchain("web-app", "20"), broken], twoParts)!({ files: ["package.json"], readFile: async () => "manifest" });
+    expect(tc.tools.map((t) => t.range)).toEqual(["20"]);
+    expect(tc.notes).toEqual(["parts.api: its tool versions couldn't be read; none required for it"]);
   });
 });

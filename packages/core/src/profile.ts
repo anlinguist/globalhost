@@ -3,6 +3,7 @@
 // framework, manifest or API format.
 import type { z } from "zod";
 import type { AdapterDescriptor, PreviewKind, ProfileDescriptor } from "./factory-yaml/registry.js";
+import type { Toolchain } from "./toolchain.js";
 
 /** A read-only view of a repo at one commit. Detection reads only through this, so it never touches a disk. */
 export interface RepoSnapshot {
@@ -137,6 +138,13 @@ export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg
    * It must be built from the config (owner-authored) and fixed strings only, never from repo content.
    */
   guidance(part: PartCtx<Cfg, D>): string;
+
+  /**
+   * Tool versions the part asks for, read through `repo`, which callers give at the run's base commit (never a PR
+   * head). Repo files are untrusted: parse strictly into the canonical range grammar (toolchain.ts) and put only
+   * fixed text in notes. Optional: a profile without it imposes no versions.
+   */
+  toolchain?(repo: RepoSnapshot, part: { name: string; path: string }): Promise<Toolchain>;
 
   /** Verification contributed to CI and run locally before publishing; fails closed. */
   verify: {

@@ -5,9 +5,20 @@ import { constants as fsConstants } from "node:fs";
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, resolve } from "node:path";
-import { parseReviewOutput, type ReviewOutput, type ReviewOutputIssue, type ReviewStatus } from "@globalhost/core";
+import {
+  checkToolchain,
+  parseReviewOutput,
+  ToolchainSchema,
+  toolchainProblems,
+  type RepoSnapshot,
+  type ReviewOutput,
+  type ReviewOutputIssue,
+  type ReviewStatus,
+  type Toolchain,
+  type ToolchainRecord,
+} from "@globalhost/core";
 import { REVIEW_OUTPUT_FILE, definitionHash, roleDefinition, type RoleId } from "@globalhost/roles";
-import { createRepoBundle, createReviewBundle, inspectResultBundle, type RepoBundle, type ReviewBundle } from "./git.js";
+import { createRepoBundle, createReviewBundle, gitSnapshot, inspectResultBundle, type RepoBundle, type ReviewBundle } from "./git.js";
 import { ensureSkill } from "./skills.js";
 import type { GitHubReader } from "./github.js";
 import {
@@ -80,6 +91,43 @@ export interface RunDeps {
   cloneReview?: typeof createReviewBundle;
 }
 
+/**
+ * Resolves the tool versions a run must use from a snapshot of its base commit. The caller builds it from the
+ * parts' profiles (they do the reading); the runner decides which commit it sees: the bundle's base, never a head.
+ */
+export type ToolchainResolver = (base: RepoSnapshot) => Promise<Toolchain>;
+
+/**
+ * The toolchain at `commit` of the bare repo, validated. A resolver error doesn't stop the run: it is logged, a
+ * fixed-text problem is recorded, and no versions are required.
+ */
+export async function resolveToolchain(
+  resolver: ToolchainResolver | undefined,
+  repoDir: string,
+  commit: string,
+  log: (line: string) => void,
+  problems: string[],
+): Promise<Toolchain | undefined> {
+  if (!resolver) return undefined;
+  try {
+    const toolchain = ToolchainSchema.parse(await resolver(await gitSnapshot(repoDir, commit)));
+    log(`toolchain at ${commit.slice(0, 12)}: ${toolchain.tools.map((t) => `${t.tool} ${t.range}`).join(", ") || "nothing pinned"}`);
+    return toolchain;
+  } catch (err) {
+    log(`toolchain: couldn't resolve it (${(err instanceof Error ? err.message : String(err)).slice(0, 300)})`);
+    problems.push("toolchain: the base commit's tool versions couldn't be resolved, so none were required");
+    return undefined;
+  }
+}
+
+/** Compares the agent's reported versions with the requirement and adds a problem line per mismatch. */
+function toolchainOutcome(required: Toolchain | undefined, reportedRaw: unknown, problems: string[]): ToolchainRecord | undefined {
+  if (!required) return undefined;
+  const record = checkToolchain(required, reportedRaw);
+  problems.push(...toolchainProblems(record));
+  return record;
+}
+
 export interface StartSpec {
   runId: string;
   role: RoleId;
@@ -96,6 +144,8 @@ export interface StartSpec {
   /** Absolute skill directories (skills/<name>) from the parts' profiles; attached to the agent, pinned. */
   skillDirs?: string[];
   approvedPlan?: string;
+  /** Resolves required tool versions from the base commit the run starts from. */
+  toolchain?: ToolchainResolver;
 }
 
 export interface ResumeSpec {
@@ -105,6 +155,8 @@ export interface ResumeSpec {
   addBudgetUsd: number;
   timeoutMinutes: number;
   outDir: string;
+  /** Re-checks the resumed turn's reported versions against the run's stored base commit. */
+  toolchain?: ToolchainResolver;
 }
 
 export const branchFor = (issue: number) => `factory/issue-${issue}`;
@@ -189,6 +241,8 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
   const bundle = await (deps.cloneRepo ?? createRepoBundle)(repo.clone_url, repo.default_branch, deps.githubToken);
   try {
     deps.log(`base ${repo.default_branch}@${bundle.baseSha.slice(0, 12)}`);
+    const preProblems: string[] = [];
+    const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.baseSha, deps.log, preProblems);
     const { sessionId, model } = await openSession(deps, spec, bundle);
     const message = buildTaskMessage({
       role: spec.role,
@@ -200,6 +254,7 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
       branch: spec.role === "builder" ? branchFor(spec.issue) : undefined,
       guidance: spec.guidance,
       approvedPlan: spec.approvedPlan,
+      toolchain,
     });
     return await driveTurn(deps, {
       runId: spec.runId,
@@ -215,6 +270,8 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
       timeoutMinutes: spec.timeoutMinutes,
       outDir: spec.outDir,
       startedAt,
+      toolchain,
+      preProblems,
     });
   } finally {
     await rm(join(bundle.bareDir, ".."), { recursive: true, force: true });
@@ -384,6 +441,8 @@ export interface ReviewSpec {
   skillDirs?: string[];
   ownerIds?: number[];
   guidance?: string;
+  /** Resolves required tool versions at the base branch tip (bundle baseSha); the PR head is never read. */
+  toolchain?: ToolchainResolver;
 }
 
 /** Fail-closed status for a review: how the session stopped first, then whether the output passed the schema. */
@@ -548,6 +607,10 @@ async function reviewWithMounts(
     );
     try {
       if (bundle.headSha !== spec.headSha) throw new Error(`bundled head ${bundle.headSha} is not the requested ${spec.headSha}`);
+      const preProblems: string[] = [];
+      // The base branch tip: the PR's pull_request CI runs on the merge ref (base tip + head), so this is the config CI
+      // used, and the head can't steer it by choosing an old branch point. Never the head, whatever it changes.
+      const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.baseSha, deps.log, preProblems);
       if (spec.deadlineEpochMs !== undefined && now() + MIN_REVIEW_TURN_MS > spec.deadlineEpochMs - marginMs) {
         throw new Error("too little time is left before the review's deadline to open a session");
       }
@@ -615,6 +678,7 @@ async function reviewWithMounts(
           ciSummary: spec.ciSummary,
           screenshots: shots.mounts.map((s) => ({ name: s.name, label: s.label })),
           guidance: spec.guidance,
+          toolchain,
         });
         const turn = await runTurn(deps, {
           sessionId: session.sessionId,
@@ -629,7 +693,9 @@ async function reviewWithMounts(
 
         const raw = turn.files.get(REVIEW_OUTPUT_FILE);
         const check = checkReviewOutput(raw, turn.oversized.has(REVIEW_OUTPUT_FILE));
-        const problems = [...turn.problems];
+        const problems = [...preProblems, ...turn.problems];
+        // A version mismatch is a note on the run, not a reason to escalate: CI on the head is the judge of record.
+        const toolchainRecord = toolchainOutcome(turn.files.has("report.json") ? toolchain : undefined, turn.reportedToolchain, problems);
         if (check.kind === "missing") problems.push(`no ${REVIEW_OUTPUT_FILE}`);
         if (check.kind === "invalid") problems.push(`${REVIEW_OUTPUT_FILE} rejected: it doesn't match the review schema`);
         return await write({
@@ -642,6 +708,7 @@ async function reviewWithMounts(
           outputIssues: check.kind === "invalid" ? check.issues : [],
           outputBytes: raw?.length ?? null,
           report: turn.report,
+          ...(toolchainRecord ? { toolchain: toolchainRecord } : {}),
           ...timing(),
           activeSeconds: turn.session.activeSeconds,
           costUsd: turn.session.costCents / 100,
@@ -676,7 +743,7 @@ async function reviewWithMounts(
             ...timing(),
             activeSeconds: info?.activeSeconds ?? null,
             costUsd,
-            problems: [`harness error: ${reason}`, ...(info ? [] : ["cost unknown; recorded at budget"])],
+            problems: [...preProblems, `harness error: ${reason}`, ...(info ? [] : ["cost unknown; recorded at budget"])],
           });
         } catch (writeErr) {
           const why = (writeErr instanceof Error ? writeErr.message : String(writeErr)).slice(0, MAX_PROBLEM_CHARS);
@@ -712,6 +779,9 @@ export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRec
     const priorMessages = await countMessages(deps.api, spec.sessionId);
     const branch = role === "builder" ? branchFor(issueNumber) : undefined;
     deps.log(`resuming ${spec.sessionId} (turn ${priorMessages + 1}, budget now $${budgetUsd.toFixed(2)})`);
+    // The same versions as the first turn: resolved at the stored base (in the fresh clone unless history was rewritten).
+    const preProblems: string[] = [];
+    const toolchain = await resolveToolchain(spec.toolchain, fresh.bareDir, baseSha, deps.log, preProblems);
     return await driveTurn(deps, {
       runId: meta[META.run] ?? spec.sessionId,
       role,
@@ -726,6 +796,8 @@ export async function resumeRun(spec: ResumeSpec, deps: RunDeps): Promise<RunRec
       timeoutMinutes: spec.timeoutMinutes,
       outDir: spec.outDir,
       startedAt,
+      toolchain,
+      preProblems,
     });
   } finally {
     await rm(join(fresh.bareDir, ".."), { recursive: true, force: true });
@@ -746,6 +818,10 @@ interface Turn {
   timeoutMinutes: number;
   outDir: string;
   startedAt: number;
+  /** Required tool versions (from the base commit), when the caller resolved them. */
+  toolchain?: Toolchain;
+  /** Problems found before the session ran (e.g. the toolchain couldn't be resolved). */
+  preProblems?: string[];
 }
 
 interface TurnResult {
@@ -755,6 +831,8 @@ interface TurnResult {
   /** Accepted outputs the session wrote over their size cap (not downloaded). */
   oversized: Set<string>;
   report: AgentReport | undefined;
+  /** report.json's raw `toolchain` value (untrusted), for checkToolchain; undefined when absent. */
+  reportedToolchain: unknown;
   problems: string[];
 }
 
@@ -812,9 +890,13 @@ async function runTurn(
   );
 
   let report: AgentReport | undefined;
+  let reportedToolchain: unknown;
   if (files.has("report.json")) {
     try {
-      report = AgentReportSchema.parse(JSON.parse(files.get("report.json")!.toString("utf8")));
+      const raw: unknown = JSON.parse(files.get("report.json")!.toString("utf8"));
+      // Read before the schema check, so the versions are compared even when another field fails it.
+      if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, "toolchain")) reportedToolchain = (raw as { toolchain: unknown }).toolchain;
+      report = AgentReportSchema.parse(raw);
     } catch {
       problems.push("report.json is not valid JSON in the expected shape");
     }
@@ -822,12 +904,15 @@ async function runTurn(
   // The cost can still rise while outputs are collected (an interrupt landing late): keep the larger reading.
   const later = await deps.api.retrieveSession(t.sessionId).catch(() => undefined);
   if (later && later.costCents > session.costCents) session = { ...session, costCents: later.costCents };
-  return { stopReason: wait.stopReason, session, files, oversized, report, problems };
+  return { stopReason: wait.stopReason, session, files, oversized, report, reportedToolchain, problems };
 }
 
 async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
   const now = deps.now ?? Date.now;
-  const { stopReason, session, files, report, problems } = await runTurn(deps, turn);
+  const { stopReason, session, files, report, reportedToolchain, problems: turnProblems } = await runTurn(deps, turn);
+  const problems = [...(turn.preProblems ?? []), ...turnProblems];
+  // Checked only when the turn wrote a report; a missing report is already a problem of its own.
+  const toolchain = toolchainOutcome(files.has("report.json") ? turn.toolchain : undefined, reportedToolchain, problems);
 
   const outputs: RunRecord["outputs"] = {};
   if (turn.role === "builder" && files.has("result.bundle")) {
@@ -875,6 +960,7 @@ async function driveTurn(deps: RunDeps, turn: Turn): Promise<RunRecord> {
     budgetUsd: turn.budgetUsd,
     outputs,
     report,
+    ...(toolchain ? { toolchain } : {}),
     problems,
   };
   RunRecordSchema.parse(record);

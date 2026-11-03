@@ -64,7 +64,7 @@ pnpm + Turborepo monorepo:
 | `packages/dispatch` | Dispatcher + publisher behind the installed `globalhost.yml` workflow |
 | `packages/assess` | Onboarding assessment: deterministic checks (GitHub, git, gitleaks, gcloud), readiness score, proposed `factory.yaml`, onboarding issue body |
 | `packages/roles` | Role prompts + tool policies (planner, builder, reviewer, triager, …) |
-| `packages/profiles/*` | `web-app`, `chrome-extension`, `service` (see PROFILES.md) |
+| `packages/profiles/*` | `web-app`, `chrome-extension`, `service` (see PROFILES.md); `toolchains` is shared tool-version detection for profiles, not a profile |
 | `packages/adapters/*` | Deploy adapters (`cloud-run`, `cloud-build-trigger`, `chrome-web-store`, …) |
 | `packages/sanitize` | Untrusted-input sanitizer (vendored from gp-foundry, MIT; ADR-0001) |
 | `skills/` | Shared Claude skills mounted into runs |
@@ -95,6 +95,8 @@ Phase 2+ may move steps 4–5 into a Cloud Run "publisher" job to save Actions m
 ### 2.4 Runner
 
 > **Primary host: Claude Managed Agents** (ADR-0011, accepted after spike P1-00): hosted sandbox with Node/pnpm/Chromium, server-side per-session budget, `limited` egress, vault secrets substituted at egress, resumable sessions, funded by the Max credit. Same contract as below: read-only inputs in, bundle + `run.json` out, trusted publisher pushes. The Cloud Run Job described below is the fallback host behind the same `RunnerHost` interface.
+
+> **Toolchain (P2-01).** The sandbox's own tool versions (ADR-0011: Node 22) can differ from the product's. Trusted code resolves the versions the product's CI runs from the run's base commit (for reviews, the base branch tip, which the PR's merge-ref CI runs on; never a PR head) through the parts' profiles (PROFILES.md §1), and the task message tells the builder or reviewer to check them and install a matching version from the package registry if needed. The agent reports what it used in `report.json` `toolchain`; the harness records `run.json` `toolchain` and flags a mismatch as a problem (no escalation). The environment itself isn't pinned per product: Managed Agents environments take package lists, not runtime versions, and are shared per profile. **Accepted supply-chain dependency:** the Node install hint uses the third-party `node` npm package (one maintainer; a preinstall script fetches the platform binary package via `node-bin-setup`, pinned exactly in the hint). It runs only in the sandbox, which holds no credentials; longer term, pin versions through environment packages instead.
 
 #### Fallback: Cloud Run Job
 

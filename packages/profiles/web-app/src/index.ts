@@ -1,6 +1,7 @@
 // The `web-app` profile (docs/PROFILES.md §4.1), v0: detect, skill, verify, guidance and the preview contract.
 // Previews are built in P1-11; evaluated guardrails arrive in Phase 2.
-import type { EnvironmentSpec, Profile } from "@globalhost/core";
+import type { EnvironmentSpec, Profile, RepoSnapshot, Toolchain } from "@globalhost/core";
+import { detectBun, detectNode, joinToolchains } from "@globalhost/profile-toolchains";
 import { webAppConfigSchema, type WebAppConfig } from "./config.js";
 import { detectWebApp, type WebAppDetection } from "./detect.js";
 import { webAppGuidance } from "./guidance.js";
@@ -23,6 +24,16 @@ export { installCommand, SCREENSHOT_DIR, smokeEnv, VERIFY_STEP_IDS, verifySteps 
 /** Agent runs on web-app parts reach package registries only (ADR-0011 `limited` networking). */
 export const webAppEnvironment: EnvironmentSpec = { name: "globalhost-web-app", allowedHosts: [] };
 
+/**
+ * Node's version for the part (and Bun's, when the part uses Bun), from the snapshot the caller gives: the run's
+ * base commit. Precedence and parsing live in @globalhost/profile-toolchains.
+ */
+export async function webAppToolchain(repo: RepoSnapshot, part: { name: string; path: string }): Promise<Toolchain> {
+  const node = await detectNode(repo, part.path);
+  const { packageManager } = await detectWebApp(repo, part.path);
+  return packageManager === "bun" ? joinToolchains(node, await detectBun(repo, part.path)) : joinToolchains(node);
+}
+
 const previewNotYet = (): Promise<never> => Promise.reject(new Error("web-app previews are not implemented yet (P1-11)"));
 
 export const webApp: Profile<WebAppConfig, WebAppDetection> = {
@@ -34,6 +45,7 @@ export const webApp: Profile<WebAppConfig, WebAppDetection> = {
   skills: [{ name: "web-app", path: "skills/web-app" }],
   environment: webAppEnvironment,
   guidance: webAppGuidance,
+  toolchain: webAppToolchain,
   verify: {
     steps: verifySteps,
     localSubset: ["install", "typecheck", "lint", "test", "build", "smoke"],

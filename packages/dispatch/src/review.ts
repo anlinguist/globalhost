@@ -366,6 +366,7 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
             outDir,
             environment: settings.environment,
             guidance: settings.guidance,
+            toolchain: settings.toolchain,
             skillDirs: deps.skillDirs ? [...deps.skillDirs] : undefined,
             ownerIds: c.ownerIds,
           },

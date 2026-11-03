@@ -275,7 +275,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
       cloneRepo: deps.cloneRepo,
     };
     const record = resumeFrom
-      ? await resumeRun({ sessionId: resumeFrom.session, feedback: feedback!, addBudgetUsd: config.limits.perRunUsd, timeoutMinutes: config.limits.perRunMinutes, outDir }, runDeps)
+      ? await resumeRun({ sessionId: resumeFrom.session, feedback: feedback!, addBudgetUsd: config.limits.perRunUsd, timeoutMinutes: config.limits.perRunMinutes, outDir, toolchain: settings.toolchain }, runDeps)
       : await startRun(
           {
             runId,
@@ -289,6 +289,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
             approvedPlan,
             guidance: settings.guidance,
             environment: settings.environment,
+            toolchain: settings.toolchain,
             skillDirs: deps.skillDirs ? [...deps.skillDirs] : undefined,
           },
           runDeps,

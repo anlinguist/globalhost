@@ -1,6 +1,6 @@
 // run.json and the agent's report.json. run.json is written by the harness (trusted). report.json is
 // written by the agent, so it's untrusted: it's parsed strictly, capped, and only ever shown as data.
-import { REVIEW_STATUSES, ReviewOutputSchema } from "@globalhost/core";
+import { REVIEW_STATUSES, ReportedToolchainSchema, ReviewOutputSchema, ToolchainRecordSchema } from "@globalhost/core";
 import { z } from "zod";
 
 // Agent-written text is clipped, not rejected: one over-long check name shouldn't fail a run that did the work.
@@ -27,6 +27,11 @@ export const AgentReportSchema = z
       .default([]),
     questions: z.array(text(1000)).max(20).default([]),
     notes: text(4000).optional(),
+    /**
+     * Tool versions the agent says it used (tool id → version). An invalid value is dropped rather than failing the
+     * report; the harness compares the raw value separately (checkToolchain) and records that it was ignored.
+     */
+    toolchain: ReportedToolchainSchema.optional().catch(undefined),
   })
   .strip();
 export type AgentReport = z.infer<typeof AgentReportSchema>;
@@ -76,6 +81,8 @@ export const RunRecordSchema = z.object({
     factoryYamlBytes: z.number().int().optional(),
   }),
   report: AgentReportSchema.optional(),
+  /** Tool versions the base commit requires and how the agent's report compares; absent when none were resolved. */
+  toolchain: ToolchainRecordSchema.optional(),
   /** Harness-side problems with the outputs (missing, oversized, invalid). */
   problems: z.array(z.string()),
 });
@@ -112,6 +119,8 @@ export const ReviewRunSchema = z.strictObject({
   /** Screenshot names mounted for the reviewer. */
   screenshots: z.array(z.string()),
   report: AgentReportSchema.optional(),
+  /** Tool versions the base branch requires (never the PR head's) and how the reviewer's report compares. */
+  toolchain: ToolchainRecordSchema.optional(),
   startedAt: z.string(),
   finishedAt: z.string(),
   wallSeconds: z.number(),
