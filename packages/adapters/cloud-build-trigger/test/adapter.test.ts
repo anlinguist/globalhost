@@ -6,6 +6,7 @@ import {
   cloudBuildTriggerConfigSchema,
   CloudBuildApiError,
   CloudRunApiError,
+  imageMatch,
   parseImageRef,
   servingRevision,
   createCloudBuildTriggerAdapter,
@@ -376,6 +377,23 @@ describe("liveness helpers", () => {
     expect(parseImageRef("localhost:5000/app")).toEqual({ repo: "localhost:5000/app" });
     expect(parseImageRef("localhost:5000/app:abc")).toEqual({ repo: "localhost:5000/app", tag: "abc" });
     expect(parseImageRef("gcr.io/p/app:abc@sha256:00")).toEqual({ repo: "gcr.io/p/app", tag: "abc", digest: "sha256:00" });
+  });
+
+  it("requires the serving container to match; a matching sidecar proves nothing", () => {
+    const sha = "3".repeat(40);
+    const d = (c: string) => `sha256:${c.repeat(64)}`;
+    const pushed = { digests: new Set([d("a"), d("b")]), repos: new Set(["r/app", "r/sidecar"]) };
+    const rev = (...containers: Array<{ image: string; ports?: unknown[] }>) => ({ containers });
+    // Old app, unchanged (reproducible) sidecar: not live.
+    expect(imageMatch(rev({ image: `r/app@${d("0")}`, ports: [{}] }, { image: `r/sidecar@${d("b")}` }), sha, pushed)).toBeUndefined();
+    // New app, sidecar from a pushed repo but an old digest: not live.
+    expect(imageMatch(rev({ image: `r/app@${d("a")}`, ports: [{}] }, { image: `r/sidecar@${d("0")}` }), sha, pushed)).toBeUndefined();
+    // New app, sidecar from a repo the build doesn't push: live.
+    expect(imageMatch(rev({ image: `r/app@${d("a")}`, ports: [{}] }, { image: "otel/collector:1" }), sha, pushed)).toBe("digest");
+    // Several containers, none with ports: ambiguous, not live.
+    expect(imageMatch(rev({ image: `r/app@${d("a")}` }, { image: `r/sidecar@${d("b")}` }), sha, pushed)).toBeUndefined();
+    // One container without ports is the serving one.
+    expect(imageMatch(rev({ image: `r/app:${sha.slice(0, 7)}` }), sha, pushed)).toBe("tag");
   });
 
   it("finds the serving revision only at 100%", () => {

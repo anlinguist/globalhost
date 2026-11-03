@@ -785,6 +785,30 @@ describe("observe step: a successful build is not a deploy", () => {
     expect(out).toMatchObject({ outcome: "succeeded", closedIssues: [12] });
   });
 
+  it("verifies a build that only appeared after release() first looked (the usual timing)", async () => {
+    const fake = new Fake();
+    fake.pulls.push(factoryPull(30, 12));
+    fake.issue(12);
+    const build: Build = { id: "build-1", trigger: "deploy-web", statuses: ["SUCCESS"], logUrl: LOG_URL };
+    const real = fake.fetch;
+    let lists = 0;
+    fake.fetch = (async (input: string | URL, init?: RequestInit) => {
+      // The trigger fires after the observer's first lookup.
+      if (String(input).includes("/builds?") && ++lists === 2) fake.builds.push(build);
+      return real(input, init);
+    }) as typeof fetch;
+    const out = await observeStep(deps(fake));
+    expect(out).toMatchObject({ outcome: "succeeded", closedIssues: [12] });
+  });
+
+  it("logs why a cloudRun target was ignored without environments.prod", async () => {
+    const fake = new Fake(NO_PROD_ENV);
+    success(fake);
+    const d = deps(fake);
+    await observeStep(d);
+    expect(d.logs.some((l) => l.includes("observe.deploy_target_ignored"))).toBe(true);
+  });
+
   it("verification gets its own bounded window even when the build finishes at the build deadline", async () => {
     const fake = new Fake();
     fake.builds.push({ id: "build-1", trigger: "deploy-web", statuses: ["WORKING", "WORKING", "WORKING", "SUCCESS"] });

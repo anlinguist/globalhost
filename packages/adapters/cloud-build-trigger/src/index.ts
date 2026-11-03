@@ -20,6 +20,8 @@ export * from "./live.js";
 export const ADAPTER_ID = "cloud-build-trigger";
 export const CLOUD_BUILD_API = "https://cloudbuild.googleapis.com/v1";
 export const CLOUD_RUN_API = "https://run.googleapis.com/v2";
+/** Per-request timeout for Cloud Build and Cloud Run calls. */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 const TRIGGER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
@@ -168,7 +170,8 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
     const url = new URL(`${api === "build" ? base : runBase}/${path}`);
     for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
     const token = await deps.accessToken();
-    const res = await doFetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+    // A hung connection must not eat the job's timeout; the abort is retried like a network error.
+    const res = await doFetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     const body: unknown = await res.json().catch(() => undefined);
     if (!res.ok) {
       const parsed = errorSchema.safeParse(body);
@@ -243,9 +246,11 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
       if (!SHA_PATTERN.test(handle.sha)) throw new Error("handle sha must be 40 lowercase hex characters");
       const data = handleDataSchema.parse(handle.data);
       if (!data.runProject || !data.runRegion || !data.runService) return { state: "unverifiable", reason: "no-target" };
-      if (!data.buildId) throw new Error("verifyLive needs the build id that status() found");
-      const build = await get(`${location(data)}/builds/${encodeURIComponent(data.buildId)}`, buildSchema, "get build");
-      if (build.status !== "SUCCESS" || buildCommit(build) !== handle.sha) throw new Error("verifyLive: not a successful build of this commit");
+      // release() records the build id only when the build already existed; otherwise look it up as status() does.
+      const build = data.buildId
+        ? await get(`${location(data)}/builds/${encodeURIComponent(data.buildId)}`, buildSchema, "get build")
+        : await findBuild(data, handle.sha);
+      if (!build || build.status !== "SUCCESS" || buildCommit(build) !== handle.sha) throw new Error("verifyLive: not a successful build of this commit");
       const service = `projects/${encodeURIComponent(data.runProject)}/locations/${encodeURIComponent(data.runRegion)}/services/${encodeURIComponent(data.runService)}`;
       return liveness(
         handle.sha,

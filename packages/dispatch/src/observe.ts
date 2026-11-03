@@ -252,6 +252,7 @@ async function upsertComment(gh: GitHubClient, repo: string, issue: number, sha:
 function classify(err: unknown): { permanent: boolean; httpStatus?: number } {
   if (err instanceof CloudBuildApiError || err instanceof CloudRunApiError) return { permanent: PERMANENT_HTTP.has(err.httpStatus), httpStatus: err.httpStatus };
   if (err instanceof TypeError) return { permanent: false }; // fetch: network failure
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) return { permanent: false }; // request timeout
   return { permanent: true };
 }
 
@@ -288,6 +289,10 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
     for (const [i, t] of cbt.entries()) {
       const label = cbt.length > 1 ? `${part}[${i}]` : part;
       targets.push({ label, part, config: t.config, adapter: makeAdapter(gcpToken), result: { label, outcome: "no-build" } });
+      // A deploy target without a prod environment can't be checked; say why in the log (the comment says "no target").
+      if (!config.environments.prod && (t.config as { cloudRun?: unknown } | undefined)?.cloudRun !== undefined) {
+        ev("deploy_target_ignored", { part: label, reason: "cloudRun is set but environments.prod is missing" });
+      }
     }
   }
   if (targets.length === 0) {

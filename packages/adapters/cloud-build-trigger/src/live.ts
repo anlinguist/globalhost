@@ -32,7 +32,7 @@ export type CloudRunService = z.output<typeof cloudRunServiceSchema>;
 /** The parts of a v2 `Revision` this reads. */
 export const cloudRunRevisionSchema = z.object({
   reconciling: z.boolean().optional(),
-  containers: z.array(z.object({ image: z.string().optional() })).optional(),
+  containers: z.array(z.object({ image: z.string().optional(), ports: z.array(z.unknown()).optional() })).optional(),
   conditions: z.array(conditionSchema).optional(),
 });
 export type CloudRunRevision = z.output<typeof cloudRunRevisionSchema>;
@@ -100,20 +100,28 @@ export const revisionReady = (rev: CloudRunRevision): boolean =>
   rev.reconciling !== true && (rev.conditions ?? []).some((c) => c.type === "Ready" && c.state === "CONDITION_SUCCEEDED");
 
 /**
- * Whether any of the revision's containers runs this build's image for `sha`. A pinned digest must equal one the build
+ * Whether the revision's serving container runs this build's image for `sha`. A pinned digest must equal one the build
  * pushed (a digest that doesn't match is a different image, whatever its tag). Without a digest, the tag must be the
  * full or short (7+) SHA and the repository one the build pushed to.
  */
 export function imageMatch(rev: CloudRunRevision, sha: string, pushed: { digests: Set<string>; repos: Set<string> }): "digest" | "tag" | undefined {
-  let via: "digest" | "tag" | undefined;
-  for (const c of rev.containers ?? []) {
-    if (!c.image) continue;
-    const ref = parseImageRef(c.image);
-    if (ref.digest !== undefined) {
-      if (pushed.digests.has(ref.digest)) return "digest";
-      continue;
-    }
-    if (ref.tag && SHORT_SHA_PATTERN.test(ref.tag) && sha.startsWith(ref.tag) && pushed.repos.has(ref.repo)) via = "tag";
+  const one = (image: string | undefined): "digest" | "tag" | undefined => {
+    if (!image) return undefined;
+    const ref = parseImageRef(image);
+    if (ref.digest !== undefined) return pushed.digests.has(ref.digest) ? "digest" : undefined;
+    return ref.tag && SHORT_SHA_PATTERN.test(ref.tag) && sha.startsWith(ref.tag) && pushed.repos.has(ref.repo) ? "tag" : undefined;
+  };
+  const containers = rev.containers ?? [];
+  // The container serving requests must be this build's: the one with ports, or the only one. A matching sidecar
+  // (whose image may be byte-identical across commits) proves nothing about the app.
+  const withPorts = containers.filter((c) => (c.ports?.length ?? 0) > 0);
+  const ingress = withPorts.length === 1 ? withPorts[0] : containers.length === 1 ? containers[0] : undefined;
+  const via = one(ingress?.image);
+  if (!via) return undefined;
+  // And no other container may run an older image from a repository this build pushed to.
+  for (const c of containers) {
+    if (c === ingress || !c.image) continue;
+    if (pushed.repos.has(parseImageRef(c.image).repo) && !one(c.image)) return undefined;
   }
   return via;
 }

@@ -42,7 +42,7 @@ A successful build is not a deploy (ADR-0019). Once a build succeeds, the adapte
 |---|---|
 | the build pushed at least one image (`results.images`, i.e. the build config lists `images:`) | ❌ "the build pushed no images", at once |
 | the service isn't reconciling, and 100% of `trafficStatuses` is on one revision | ❌ "traffic isn't 100% on one revision" or "revision … isn't ready" |
-| that revision is Ready and runs this build's image: a pinned digest equal to a pushed digest (preferred), else a tag equal to the full or 7+ char short SHA in a pushed repository | ❌ "isn't serving an image built from this commit" |
+| that revision is Ready and its serving container (the one with ports, or the only one) runs this build's image, and no other container runs an older image from a pushed repository: a pinned digest equal to a pushed digest (preferred), else a tag equal to the full or 7+ char short SHA in a pushed repository | ❌ "isn't serving an image built from this commit" |
 | Cloud Run answers: 401/403/404 at once; 429/5xx/network until the window ends; malformed responses at once | ⚠️ "Cloud Run couldn't be read" |
 
 Only when all checks pass does the comment say "Deployed to prod via Cloud Build `<id>` ✅" and the issue close. Each ❌/⚠️ fails the job and leaves the issue open. Without `cloudRun` (or without `environments.prod`) the comment says "succeeded, but deployment can't be verified (no deploy target configured)", with no ✅; the issue stays open and the job stays green. Comments never carry image names, digests or revision names.
