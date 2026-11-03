@@ -41,6 +41,8 @@ const config = parseFactoryConfig({
   factoryRepoId: cfg.require("factoryRepoId"),
   previews: cfg.getObject("previews") ?? [],
   releaseObservers: cfg.getObject("releaseObservers") ?? [],
+  reviewRepos: cfg.getObject("reviewRepos") ?? [],
+  ...(cfg.get("reviewEnvironment") ? { reviewEnvironment: cfg.get("reviewEnvironment") } : {}),
   previewActorIds: cfg.getObject("previewActorIds") ?? [],
   ...(cfg.get("accessGuardImage") ? { accessGuardImage: cfg.get("accessGuardImage") } : {}),
 });
@@ -70,3 +72,5 @@ export const imagePublisherServiceAccount = out.imagePublisherServiceAccount;
 export const imagesWorkloadIdentityProvider = out.imagesWorkloadIdentityProvider;
 export const previews = out.previews;
 export const releaseObservers = out.releaseObservers;
+export const reviewServiceAccount = out.reviewServiceAccount;
+export const reviewWorkloadIdentityProvider = out.reviewWorkloadIdentityProvider;

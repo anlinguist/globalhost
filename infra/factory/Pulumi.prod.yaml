@@ -28,6 +28,12 @@ config:
     - product: numu-know
       prodProject: numu-know
       repo: {name: anlinguist/numu-know, id: "338675328", defaultBranch: main}
+  # Product repos whose default-branch globalhost-review.yml, in environment `globalhost-review`, may act as
+  # sa:globalhost-gh-review (PLAN P2-01, ADR-0018). Each must match a dispatchRepos entry.
+  globalhost-factory:reviewRepos:
+    - name: anlinguist/numu-know
+      id: "338675328"
+      defaultBranch: main
   # Whose pull_request events get preview credentials: the owner (anlinguist) and the factory App's bot user.
   globalhost-factory:previewActorIds: ["47403803", "350478808"]
   # Published by access-guard-image.yml on main (2b285c9); change only by PR.

@@ -36,6 +36,7 @@ Prepared by the owner running `globalhost install` locally (the App deliberately
 - `CLAUDE.md` (repo conventions, commands, do/don't)
 - labels (§3 of ARCHITECTURE.md)
 - `.github/workflows/globalhost.yml` (dispatcher) and `globalhost-ci.yml` (core + profile verify) — **added alongside** existing workflows, never replacing them
+- `.github/workflows/globalhost-review.yml` (shadow reviewer, P2-01, ADR-0018), with its GitHub environment `globalhost-review` (default branch only), its own Anthropic federation rule, the repo's entry in `infra/factory` `reviewRepos`, and the `factory:review` label. `globalhost-ci.yml` uploads a `smoke` artifact with PNG screenshots under `screenshots/`, from a parent directory alongside another path, so the prefix survives (contract and setup steps: `packages/dispatch/README.md`)
 - `CODEOWNERS` (`* @anlinguist`)
 - rulesets/branch protection (public repos; ADR-0006), secret scanning + push protection, CodeQL, Dependabot alerts, Renovate config
 - `docs/product/SPEC.md`, `DESIGN.md`, `DECISIONS.md` reverse-engineered from code — **these become the taste baseline**; the owner edits them in review

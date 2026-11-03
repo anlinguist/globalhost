@@ -1,0 +1,93 @@
+# globalhost reviewer, shadow mode (rendered into product repos by `globalhost install`; PLAN P2-01, ADR-0018).
+# When `globalhost-ci` succeeds on a factory PR the App opened, or an owner applies `factory:review` to one, a fresh
+# read-only reviewer run returns function/security/performance verdicts for the PR's head SHA. Trusted code validates,
+# archives and posts them as a COMMENT review; an escalation adds `needs:owner-approval`. It merges and deploys nothing.
+# Runs from the default branch only: no job checks out or runs PR code (the reviewer runs in the Managed Agents sandbox).
+# Repo variables (identifiers, not secrets): GLOBALHOST_REVIEW_WIF_PROVIDER, GLOBALHOST_REVIEW_SA (the review identity,
+# bound to this workflow on the default branch in the `globalhost-review` environment), GLOBALHOST_APP_ID,
+# GLOBALHOST_APP_SLUG, ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_WORKSPACE_ID, and the review's own Anthropic federation
+# rule: ANTHROPIC_REVIEW_FEDERATION_RULE_ID, ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID.
+name: globalhost-review
+
+on:
+  # Safe here: the workflow file and the action come from the default branch, no job checks out PR code, and the
+  # step re-checks that the run is `globalhost-ci` for a same-repo factory PR by the App or an owner (packages/dispatch).
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [globalhost-ci]
+    types: [completed]
+  # An owner's `factory:review` (re-review the current head). Same reasoning; the step matches the labeler's user ID.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  gate:
+    # Cheap pre-filter only; the real gate is in the step.
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+       && github.event.workflow_run.event == 'pull_request'
+       && startsWith(github.event.workflow_run.head_branch, 'factory/issue-'))
+      || (github.event_name == 'pull_request_target' && github.event.label.name == 'factory:review'
+          && github.event.sender.type == 'User')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # factory.yaml on the default branch
+      pull-requests: read
+      actions: read # the CI run for the head SHA
+    outputs:
+      action: ${{ steps.gate.outputs.action }}
+      pr: ${{ steps.gate.outputs.pr }}
+      timeout: ${{ steps.gate.outputs.timeout }}
+    steps:
+      - id: gate
+        uses: anlinguist/globalhost/packages/action@0000000000000000000000000000000000000000 # globalhost-action-sha (set by `globalhost install`)
+        with:
+          step: review-gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GLOBALHOST_APP_SLUG: ${{ vars.GLOBALHOST_APP_SLUG }}
+
+  review:
+    needs: gate
+    # `unlabel` runs only to remove an owner's factory:review that won't be acted on, so it can be re-applied.
+    if: needs.gate.outputs.action == 'review' || needs.gate.outputs.action == 'unlabel'
+    runs-on: ubuntu-24.04
+    # limits.perRunMinutes (≤ 180), so a live review is never taken over as stale (takeover is perRunMinutes + 30).
+    timeout-minutes: ${{ fromJSON(needs.gate.outputs.timeout) }}
+    environment: globalhost-review
+    # One review per PR (= its factory/issue-<n> head branch) at a time. Never cancel a running review: every exit
+    # after its claim must settle its spend. A newer trigger waits; GitHub keeps only the newest waiting one.
+    concurrency:
+      group: globalhost-review-pr-${{ needs.gate.outputs.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read # factory.yaml; fetch the base and the PR head into a bundle (never checked out)
+      issues: read # the factory issue (the PR's spec)
+      pull-requests: read
+      actions: read # CI jobs, log tails and the `smoke` artifact
+      id-token: write # WIF: GCP as the review identity, Anthropic via the review's own federation rule
+    steps:
+      # The review's deadline is this job's start plus its timeout (packages/dispatch README, "Timeouts"). A step
+      # output rather than the job environment file, so nothing later in the job can be changed through it.
+      - id: started
+        name: Record the job's start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GLOBALHOST_REVIEW_WIF_PROVIDER }}
+          service_account: ${{ vars.GLOBALHOST_REVIEW_SA }}
+      - uses: anlinguist/globalhost/packages/action@0000000000000000000000000000000000000000 # globalhost-action-sha (set by `globalhost install`)
+        with:
+          step: review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GLOBALHOST_JOB_STARTED_AT: ${{ steps.started.outputs.at }}
+          GLOBALHOST_JOB_TIMEOUT_MINUTES: ${{ needs.gate.outputs.timeout }}
+          GLOBALHOST_APP_ID: ${{ vars.GLOBALHOST_APP_ID }}
+          GLOBALHOST_APP_SLUG: ${{ vars.GLOBALHOST_APP_SLUG }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_REVIEW_FEDERATION_RULE_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_REVIEW_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}

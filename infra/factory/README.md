@@ -12,7 +12,7 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 | WIF pool | `github` | **imported**, not created: it already exists from `infra/bootstrap/security-audit.sh`. `protect: true`. That script still owns the audit provider `github-actions` |
 | WIF provider | `github/globalhost-dispatch` | GitHub OIDC; condition pins `repository_owner_id` 47403803, the environment `globalhost`, and each configured repo ID on its default branch |
 | Service account | `globalhost-gh-dispatch` | the dispatcher (`sa:gh-dispatch`). Bucket- and secret-level roles only; impersonable only via `principalSet://…/attribute.dispatch/<repo id>@globalhost` |
-| Secret | `github-app-key` | no version: the owner adds it with `infra/github-app`. Authoritative IAM policy: only `sa:gh-dispatch` can access it |
+| Secret | `github-app-key` | no version: the owner adds it with `infra/github-app`. Authoritative IAM policy: only `sa:gh-dispatch` and the reviewer `sa:globalhost-gh-review` can access it |
 | Budget | `globalhost-factory-monthly` | $25/month on this project, 40/80/100% → Pub/Sub `globalhost-budget-alerts` |
 | Function | `globalhost-budget-pause` | 2nd gen, Node 24, Pub/Sub trigger. At ≥100% sets `paused: true` in `gs://globalhost-control/state.json` with a generation-match write. Never un-pauses |
 | Service accounts | `globalhost-budget-pause`, `globalhost-fn-build` | function runtime/trigger identity (can write only `state.json`), and its build identity (instead of the default compute SA) |
@@ -42,6 +42,26 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 Custom roles are soft-deleted: a destroyed `globalhostReleaseObserver` can be undeleted for 7 days, and its ID can't be reused for about 37 days, so a destroy and re-apply in that window fails. Before the first apply, check the product's Cloud Build trigger holds no plaintext secrets in substitutions or step env/args (ADR-0017).
 
 After `pulumi up`, set the product repo's variables `GLOBALHOST_RELEASE_WIF_PROVIDER` and `GLOBALHOST_RELEASE_SA` from `pulumi stack output releaseObservers`.
+
+### Reviewer (PLAN P2-01, ADR-0018, `src/reviews.ts`)
+
+Created only once `reviewRepos` lists a repo (each must match a `dispatchRepos` entry).
+
+| Resource | Notes |
+|---|---|
+| WIF provider `github/globalhost-review` | only `globalhost-review.yml` on a listed repo's default branch (`job_workflow_ref` and `workflow_ref`), event `workflow_run` or `pull_request_target`, environment `globalhost-review`, GitHub-hosted runner |
+| SA `globalhost-gh-review` | impersonable only via `principalSet://…/attribute.review/<repo id>@globalhost-review` |
+
+| Scope | Role | Condition (object names) | Why |
+|---|---|---|---|
+| `globalhost-control` | `roles/storage.objectUser` | `reviews/<owner>/<name>/` (lowercased) and `spend/*/<owner>__<name>.json`, per listed repo | review claims and the PR ledger, and the day's spend shared with builders (compare-and-swap) |
+| `globalhost-control` | `roles/storage.objectViewer` | `state.json` | the kill switch, read-only |
+| `globalhost-runs` | `roles/storage.objectCreator` | `<owner>/<name>/reviews/` (lowercased), per listed repo | create-only review archive; no read, overwrite or delete |
+| secret `github-app-key` | `roles/secretmanager.secretAccessor` | — | mint the review-scoped installation token (`REVIEW_PERMISSIONS`). The key can mint any of the App's permissions, so that scoping is self-restraint (ADR-0018) |
+
+Nothing at project level, no lock objects, no other repo's review state. Renaming a product repo means updating its `reviewRepos` (and `dispatchRepos`) name, or the name conditions stop matching and reviews fail closed. It talks to Anthropic with its own GitHub OIDC token through its own federation rule (Console; environment `globalhost-review`).
+
+After `pulumi up`, set the product repo's variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` from `pulumi stack output reviewWorkloadIdentityProvider` and `reviewServiceAccount`.
 
 ### Permissions of `sa:globalhost-gh-dispatch`
 
@@ -107,7 +127,7 @@ In each product repo, create the GitHub environment `globalhost` and restrict it
 # gh-dispatch holds no project-level role (expect no output)
 gcloud projects get-iam-policy globalhost-factory --format=json \
   | jq -r '.bindings[] | select(.members[] | contains("globalhost-gh-dispatch")) | .role'
-# Only gh-dispatch on the App key secret
+# Only gh-dispatch and gh-review on the App key secret
 gcloud secrets get-iam-policy github-app-key --project=globalhost-factory
 # Simulated 100% budget message flips paused (then resume by hand)
 gcloud pubsub topics publish globalhost-budget-alerts --project=globalhost-factory \
