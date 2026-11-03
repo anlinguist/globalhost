@@ -3,6 +3,8 @@
 # expect: limits.maxConcurrentBuilders invalid_value
 # expect: limits.perRunMinutes invalid_value
 # expect: limits.perRunUsd invalid_value
+# expect: limits.reviewPerPrUsd invalid_value
+# expect: limits.reviewPerRunUsd invalid_value
 version: 1
 product: sample
 owners:
@@ -11,4 +13,4 @@ parts:
   app:
     path: .
     profile: fake-ext
-limits: { maxConcurrentBuilders: 0, perRunUsd: 400, perRunMinutes: 4.5, dailyUsd: 1.005 }
+limits: { maxConcurrentBuilders: 0, perRunUsd: 400, perRunMinutes: 4.5, dailyUsd: 1.005, reviewPerPrUsd: 50.01, reviewPerRunUsd: 0 }
