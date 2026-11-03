@@ -491,9 +491,9 @@ describe("release observer (P1-12, ADR-0017)", () => {
     expect(releaseProviderCondition(config, config.releaseObservers[0]!)).toBe(provider.inputs.attributeCondition);
   });
 
-  it("can only read builds in the prod project", () => {
+  it("can only read builds and Cloud Run services/revisions in the prod project", () => {
     const role = one("gcp:projects/iAMCustomRole:IAMCustomRole", "numu-know-release-observer-role");
-    expect(role.inputs).toMatchObject({ project: PROD_PROJECT, permissions: ["cloudbuild.builds.get", "cloudbuild.builds.list"] });
+    expect(role.inputs).toMatchObject({ project: PROD_PROJECT, permissions: ["cloudbuild.builds.get", "cloudbuild.builds.list", "run.revisions.get", "run.services.get"] });
     const grant = one("gcp:projects/iAMMember:IAMMember", "numu-know-release-observer-grant");
     expect(grant.inputs).toMatchObject({
       project: PROD_PROJECT,

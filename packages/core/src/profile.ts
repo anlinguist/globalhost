@@ -199,6 +199,24 @@ export interface ReleaseStatus {
   url?: string;
 }
 
+/**
+ * Why a finished release isn't confirmed live. `no-artifact`: the release produced nothing deployable. `not-updated`:
+ * what serves isn't this commit. `split-traffic`: serving is shared with something else. `not-ready`: the new
+ * version exists but isn't ready to serve.
+ */
+export const RELEASE_NOT_LIVE_REASONS = ["no-artifact", "not-updated", "split-traffic", "not-ready"] as const;
+export type ReleaseNotLiveReason = (typeof RELEASE_NOT_LIVE_REASONS)[number];
+
+/**
+ * Whether the release's commit is what prod serves now. A succeeded build is not a deploy: only `live` lets a caller
+ * say "deployed". `unverifiable`: the adapter wasn't told what to check. `not-live` with `final: false` may change by
+ * waiting (a rollout in progress); with `final: true` it won't.
+ */
+export type ReleaseLiveness =
+  | { state: "live"; via: "digest" | "tag" }
+  | { state: "not-live"; reason: ReleaseNotLiveReason; final: boolean }
+  | { state: "unverifiable"; reason: "no-target" };
+
 export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
   id: string;
   configSchema: z.ZodType<Cfg>;
@@ -208,4 +226,9 @@ export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
   /** Polled by the watcher. */
   status(handle: ReleaseHandle): Promise<ReleaseStatus>;
   rollback?(handle: ReleaseHandle): Promise<void>;
+  /**
+   * After `status()` says succeeded: whether the release's commit is what prod actually serves. Read-only. A caller
+   * never calls a release deployed without `live` from here. Throws on provider errors, so callers fail closed.
+   */
+  verifyLive?(handle: ReleaseHandle): Promise<ReleaseLiveness>;
 }

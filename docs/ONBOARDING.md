@@ -102,7 +102,7 @@ parts:
     preview: { enabled: true }
     release:
       - adapter: cloud-build-trigger
-        config: { project: numu-know, trigger: numu-know-main }   # trigger name or id; region defaults to global
+        config: { project: numu-know, trigger: numu-know-main, cloudRun: { service: numu-know, region: us-central1 } }   # trigger name or id (region defaults to global); cloudRun: what it deploys
     dependsOn: []
 
 limits:

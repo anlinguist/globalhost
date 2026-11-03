@@ -37,9 +37,9 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 | Where | Resource | Notes |
 |---|---|---|
 | factory | WIF provider `<product>-release`, SA `<product>-release-observer` | only `globalhost-release.yml` on the product repo's default branch, on `push` |
-| prod project | custom role `globalhostReleaseObserver` (`cloudbuild.builds.get`, `cloudbuild.builds.list`) and its one grant to the observer | the only factory resources in any prod project; read-only |
+| prod project | custom role `globalhostReleaseObserver` (`cloudbuild.builds.get`, `cloudbuild.builds.list`, `run.services.get`, `run.revisions.get`; ADR-0019) and its one grant to the observer | the only factory resources in any prod project; read-only |
 
-Custom roles are soft-deleted: a destroyed `globalhostReleaseObserver` can be undeleted for 7 days, and its ID can't be reused for about 37 days, so a destroy and re-apply in that window fails. Before the first apply, check the product's Cloud Build trigger holds no plaintext secrets in substitutions or step env/args (ADR-0017).
+Custom roles are soft-deleted: a destroyed `globalhostReleaseObserver` can be undeleted for 7 days, and its ID can't be reused for about 37 days, so a destroy and re-apply in that window fails. Before the first apply, check the product's Cloud Build trigger holds no plaintext secrets in substitutions or step env/args (ADR-0017). Plain env vars on the prod Cloud Run services are readable by the observer too (ADR-0019): keep secrets in Secret Manager.
 
 After `pulumi up`, set the product repo's variables `GLOBALHOST_RELEASE_WIF_PROVIDER` and `GLOBALHOST_RELEASE_SA` from `pulumi stack output releaseObservers`.
 

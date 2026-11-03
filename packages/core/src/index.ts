@@ -46,6 +46,7 @@ export {
   type ValidateFactoryConfigResult,
 } from "./factory-yaml/validate.js";
 export {
+  RELEASE_NOT_LIVE_REASONS,
   RELEASE_STATES,
   type DeployAdapter,
   type Detection,
@@ -61,6 +62,8 @@ export {
   type Profile,
   type ReleaseCtx,
   type ReleaseHandle,
+  type ReleaseLiveness,
+  type ReleaseNotLiveReason,
   type ReleaseState,
   type ReleaseStatus,
   type RepoSnapshot,

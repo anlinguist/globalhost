@@ -1,20 +1,35 @@
 // `globalhost dispatch observe` (PLAN P1-12): runs after a merge to the default branch. It watches each
 // part's `cloud-build-trigger` release for the merge commit, reports the outcome on the merged PR(s) and,
-// for factory PRs, on the issue, and closes the issue once the deploy succeeded.
+// for factory PRs, on the issue, and closes the issue once the merged commit is confirmed live.
+//
+// A successful build is not a deploy (ADR-0019): after the build succeeds the adapter's verifyLive() must say the
+// commit is what prod serves before anything says "Deployed" or closes an issue. Without a configured deploy target
+// the build is reported as unverified, never as deployed.
 //
 // Runs in the product repo's globalhost-release.yml on the default branch with a GITHUB_TOKEN that can
-// write issues and PRs and a GCP identity that can only read Cloud Build. The repo may be public, so
-// comments carry only the build id, its state and the console URL: never statusDetail, logs or substitutions.
+// write issues and PRs and a GCP identity that can only read Cloud Build and Cloud Run services. The repo may be
+// public, so comments carry only the build id, its state, fixed text and the console URL: never statusDetail, logs,
+// substitutions, image names or revision names.
 //
 // Only the pushed head commit is observed: when one push lands several merges, only the PR(s) merged as
 // the head commit are reported (GitHub runs one push workflow per push).
 import {
   ADAPTER_ID as CLOUD_BUILD_TRIGGER,
   CloudBuildApiError,
+  CloudRunApiError,
   STATUS_MAP,
   createCloudBuildTriggerAdapter,
 } from "@globalhost/adapter-cloud-build-trigger";
-import { GCP_PROJECT_PATTERN, REGION_PATTERN, type DeployAdapter, type FactoryConfig, type ReleaseHandle, type ReleaseStatus, type Registry } from "@globalhost/core";
+import {
+  GCP_PROJECT_PATTERN,
+  REGION_PATTERN,
+  type DeployAdapter,
+  type FactoryConfig,
+  type ReleaseHandle,
+  type ReleaseNotLiveReason,
+  type ReleaseStatus,
+  type Registry,
+} from "@globalhost/core";
 import { z } from "zod";
 import { loadConfig, type Env } from "./dispatch.js";
 import { gcloudAccessToken, type AccessToken } from "./gcp.js";
@@ -26,6 +41,8 @@ export const ACTIONS_BOT = "github-actions[bot]";
 export const DEFAULT_TIMEOUT_MINUTES = 30;
 export const MAX_TIMEOUT_MINUTES = 60;
 export const DEFAULT_POLL_SECONDS = 20;
+/** How long after a build succeeds the observer waits for prod to serve it (a rollout finishing). */
+export const VERIFY_MINUTES = 5;
 const CONSOLE_PREFIX = "https://console.cloud.google.com/";
 const SHA = /^[0-9a-f]{40}$/;
 const RepoSlug = z.string().regex(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/);
@@ -52,10 +69,22 @@ export interface ObserveDeps {
 }
 
 /**
- * succeeded / failed / cancelled: the build finished. still-running: found but not finished by the deadline.
- * no-build: no build for the commit by the deadline. error: Cloud Build couldn't be read.
+ * succeeded: the build succeeded and the merged commit is confirmed live. unverified: the build succeeded but no
+ * deploy target is configured, so nothing says it deployed. not-live: the build succeeded but prod doesn't serve the
+ * commit (`reason`). verify-error: the deploy target couldn't be read. failed / cancelled: the build finished
+ * that way. still-running: found but not finished by the deadline. no-build: no build for the commit by the
+ * deadline. error: Cloud Build couldn't be read.
  */
-export type PartOutcome = "succeeded" | "failed" | "cancelled" | "still-running" | "no-build" | "error";
+export type PartOutcome =
+  | "succeeded"
+  | "unverified"
+  | "not-live"
+  | "verify-error"
+  | "failed"
+  | "cancelled"
+  | "still-running"
+  | "no-build"
+  | "error";
 
 export interface PartResult {
   /** Part name, with the target index when a part has several cloud-build-trigger targets. */
@@ -65,13 +94,18 @@ export interface PartResult {
   /** The provider's raw state (e.g. FAILURE, WORKING); only one of the adapter's known states. */
   providerState?: string;
   url?: string;
-  /** For "error": the Cloud Build HTTP status, when there was one. */
+  /** For "error" / "verify-error": the Cloud Build / Cloud Run HTTP status, when there was one. */
   httpStatus?: number;
+  /** For "not-live": which check failed. */
+  reason?: ReleaseNotLiveReason;
 }
 
 export interface ObserveResult {
-  /** "pending": nothing failed, but some build was still running at the deadline. */
-  outcome: "no-release" | "succeeded" | "pending" | "failed";
+  /**
+   * "pending": nothing failed, but some build was still running at the deadline. "unverified": every build
+   * succeeded, but some part has no deploy target to confirm it's live (issues stay open).
+   */
+  outcome: "no-release" | "succeeded" | "unverified" | "pending" | "failed";
   parts: PartResult[];
   pulls: number[];
   closedIssues: number[];
@@ -127,8 +161,17 @@ function buildInfo(handle: ReleaseHandle, status: ReleaseStatus): { buildId?: st
   return { buildId, providerState };
 }
 
-const FINISHED = new Set<PartOutcome>(["succeeded", "failed", "cancelled", "error"]);
-const TERMINAL_STATE = new Set(["succeeded", "failed", "cancelled"]);
+const FINISHED = new Set<PartOutcome>(["succeeded", "unverified", "not-live", "verify-error", "failed", "cancelled", "error"]);
+const FAILED = new Set<PartOutcome>(["not-live", "verify-error", "failed", "cancelled", "no-build", "error"]);
+const TERMINAL_STATE = new Set(["failed", "cancelled"]);
+
+/** Fixed text per failed check; nothing from the API reaches a comment. */
+export const NOT_LIVE_TEXT: Readonly<Record<ReleaseNotLiveReason, string>> = {
+  "no-artifact": "the build pushed no images (nothing under `images:` in its build config), so it deployed nothing this check can see",
+  "not-updated": "the Cloud Run service isn't serving an image built from this commit",
+  "split-traffic": "the Cloud Run service's traffic isn't 100% on one revision",
+  "not-ready": "the Cloud Run revision serving traffic isn't ready",
+};
 
 interface Target {
   label: string;
@@ -137,6 +180,10 @@ interface Target {
   adapter: DeployAdapter;
   handle?: ReleaseHandle;
   result: PartResult;
+  /** Set once the build succeeded: until when to wait for prod to serve it. */
+  verifyUntil?: number;
+  /** The last verify attempt's failure, reported if the wait runs out. */
+  lastVerify?: { reason: ReleaseNotLiveReason } | { httpStatus?: number };
 }
 
 export function statusLine(r: PartResult, sha: string, minutes: number, prefix: boolean): string[] {
@@ -147,6 +194,12 @@ export function statusLine(r: PartResult, sha: string, minutes: number, prefix: 
   switch (r.outcome) {
     case "succeeded":
       return [`${p}Deployed to prod via Cloud Build ${id} ✅`, ...link("Build details")];
+    case "unverified":
+      return [`${p}Cloud Build ${id} succeeded, but deployment can't be verified (no deploy target configured).`, ...link("Build details")];
+    case "not-live":
+      return [`${p}❌ Cloud Build ${id} succeeded, but the merged commit isn't live: ${NOT_LIVE_TEXT[r.reason ?? "not-updated"]}.`, ...link("Build details")];
+    case "verify-error":
+      return [`${p}⚠️ Cloud Build ${id} succeeded, but Cloud Run couldn't be read to confirm the deploy${r.httpStatus ? ` (HTTP ${r.httpStatus})` : ""}.`];
     case "failed":
       return [`${p}❌ Cloud Build ${id} failed (${r.providerState ?? "FAILURE"})`, ...link("Build log")];
     case "cancelled":
@@ -195,9 +248,9 @@ async function upsertComment(gh: GitHubClient, repo: string, issue: number, sha:
   else await gh.request("POST", `/repos/${repo}/issues/${issue}/comments`, { body });
 }
 
-/** Permanent Cloud Build errors end a target; anything else (429, 5xx, network) is retried until the deadline. */
+/** Permanent Cloud Build / Cloud Run errors end a target; anything else (429, 5xx, network) is retried until the deadline. */
 function classify(err: unknown): { permanent: boolean; httpStatus?: number } {
-  if (err instanceof CloudBuildApiError) return { permanent: PERMANENT_HTTP.has(err.httpStatus), httpStatus: err.httpStatus };
+  if (err instanceof CloudBuildApiError || err instanceof CloudRunApiError) return { permanent: PERMANENT_HTTP.has(err.httpStatus), httpStatus: err.httpStatus };
   if (err instanceof TypeError) return { permanent: false }; // fetch: network failure
   return { permanent: true };
 }
@@ -226,7 +279,8 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
 
   const gcpToken = deps.gcpToken ?? gcloudAccessToken;
   const makeAdapter = deps.adapterFactory ?? ((accessToken: AccessToken) => createCloudBuildTriggerAdapter({ accessToken, fetch: deps.fetchImpl }));
-  const env0 = config.environments.prod ?? Object.values(config.environments)[0] ?? { gcpProject: "", region: "" };
+  // Only prod: the deploy target is verified in the prod project, never another environment's.
+  const env0 = config.environments.prod ?? { gcpProject: "", region: "" };
 
   const targets: Target[] = [];
   for (const [part, p] of Object.entries(config.parts)) {
@@ -241,18 +295,61 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
     return { outcome: "no-release", parts: [], pulls: [], closedIssues: [] };
   }
 
+  const finish = (t: Target, over: Partial<PartResult> & { outcome: PartOutcome }) => {
+    const { label, buildId, providerState, url } = t.result;
+    t.result = { label, buildId, providerState, url, ...over };
+    ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState, reason: t.result.reason });
+  };
+
+  // After the build succeeded: is the commit live? Fails closed: only `live` is success, an adapter without
+  // verifyLive can't be, and an error reading the target ends as verify-error (permanent) or is retried until
+  // the verify deadline.
+  const verify = async (t: Target) => {
+    if (!t.adapter.verifyLive) return finish(t, { outcome: "unverified" });
+    try {
+      const live = await t.adapter.verifyLive(t.handle!);
+      if (live.state === "live") return finish(t, { outcome: "succeeded" });
+      if (live.state === "unverifiable") return finish(t, { outcome: "unverified" });
+      t.lastVerify = { reason: live.reason };
+      ev("not_live", { part: t.label, reason: live.reason, final: live.final });
+      if (live.final) return finish(t, { outcome: "not-live", reason: live.reason });
+    } catch (err) {
+      const { permanent, httpStatus } = classify(err);
+      ev("verify_error", { part: t.label, permanent, error: (err as Error).message.slice(0, 200) });
+      t.lastVerify = { httpStatus };
+      if (permanent) return finish(t, { outcome: "verify-error", httpStatus });
+    }
+    // Out of time before another attempt: a build that never showed up live is not deployed.
+    if (now() + pollMs > t.verifyUntil!) {
+      const last = t.lastVerify;
+      if (last && "reason" in last) finish(t, { outcome: "not-live", reason: last.reason });
+      else finish(t, { outcome: "verify-error", httpStatus: last?.httpStatus });
+    }
+  };
+
   // Poll every target until each finishes or the deadline passes. release() only looks the build up (the
-  // adapter is observe-only), so it's retried like status() until it works.
+  // adapter is observe-only), so it's retried like status() until it works. A succeeded build then gets up to
+  // VERIFY_MINUTES of its own for prod to serve it, even past the build deadline; builds aren't polled past it.
   const deadline = now() + minutes * 60_000;
   for (;;) {
     for (const t of targets) {
       if (FINISHED.has(t.result.outcome)) continue;
+      if (t.verifyUntil !== undefined) {
+        await verify(t);
+        continue;
+      }
+      if (now() > deadline) continue;
       try {
         t.handle ??= await t.adapter.release({ product: config.product, part: t.part, sha, environment: env0 }, t.config);
         const status = await t.adapter.status(t.handle);
         const { buildId, providerState } = buildInfo(t.handle, status);
         const url = buildLink(t.handle, buildId);
-        if (TERMINAL_STATE.has(status.state)) {
+        if (status.state === "succeeded") {
+          t.result = { label: t.label, outcome: "still-running", buildId, providerState, url };
+          ev("built", { part: t.label, build: buildId });
+          t.verifyUntil = now() + VERIFY_MINUTES * 60_000;
+          await verify(t);
+        } else if (TERMINAL_STATE.has(status.state)) {
           t.result = { label: t.label, outcome: status.state as PartOutcome, buildId, providerState, url };
           ev("part", { part: t.label, outcome: t.result.outcome, build: buildId, state: providerState });
         } else if (buildId) {
@@ -265,14 +362,18 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
         if (permanent) t.result = { label: t.label, outcome: "error", httpStatus };
       }
     }
-    if (targets.every((t) => FINISHED.has(t.result.outcome))) break;
-    if (now() + pollMs > deadline) break;
+    const open = targets.filter((t) => !FINISHED.has(t.result.outcome));
+    if (open.length === 0) break;
+    // Keep going while any open target still has time: a build until the build deadline, a verification until its
+    // own deadline (verify() finishes a target whose time is up, so an open verification always has time left).
+    if (open.every((t) => t.verifyUntil === undefined) && now() + pollMs > deadline) break;
     await sleep(pollMs);
   }
   const parts = targets.map((t) => t.result);
   for (const r of parts) if (!FINISHED.has(r.outcome)) ev("part", { part: r.label, outcome: r.outcome, build: r.buildId, state: r.providerState });
   const succeeded = parts.every((r) => r.outcome === "succeeded");
-  const failed = parts.some((r) => r.outcome !== "succeeded" && r.outcome !== "still-running");
+  const failed = parts.some((r) => FAILED.has(r.outcome));
+  const pending = parts.some((r) => r.outcome === "still-running");
 
   // The PRs this merge commit landed.
   const pulls = (await gh.request("GET", `/repos/${repo}/commits/${sha}/pulls?per_page=100`, undefined, z.array(PullForCommit))).filter(
@@ -311,12 +412,12 @@ export async function observeStep(deps: ObserveDeps): Promise<ObserveResult> {
         await gh.request("PATCH", `/repos/${repo}/issues/${issue}`, { state: "closed", state_reason: "completed" });
         closedIssues.push(issue);
       }
-      // The PR is merged and deployed, so the issue is no longer in review.
+      // The PR is merged and its commit confirmed live, so the issue is no longer in review.
       await removeLabel(gh, repo, issue, LABELS.inReview);
       ev("closed", { issue });
     }
   }
 
-  const outcome = succeeded ? "succeeded" : failed ? "failed" : "pending";
+  const outcome = succeeded ? "succeeded" : failed ? "failed" : pending ? "pending" : "unverified";
   return { outcome, parts, pulls: pulls.map((p) => p.number), closedIssues };
 }
