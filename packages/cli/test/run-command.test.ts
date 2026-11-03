@@ -81,7 +81,7 @@ describe("globalhost roles sync", () => {
     expect(skills).toHaveLength(1);
     expect(skills[0]!.displayName).toMatch(/^globalhost-web-app [0-9a-f]{12}$/);
     expect(skills[0]!.files).toContain("web-app/SKILL.md");
-    expect(agents.map((a) => a.name)).toEqual(["globalhost-planner", "globalhost-builder", "globalhost-assessor"]);
+    expect(agents.map((a) => a.name)).toEqual(["globalhost-planner", "globalhost-builder", "globalhost-assessor", "globalhost-reviewer"]);
     for (const a of agents) expect(a.skills).toEqual([{ skillId: "skill_1", version: "v1" }]);
   });
 });

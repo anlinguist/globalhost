@@ -157,13 +157,20 @@ importers:
         specifier: workspace:*
         version: link:../../core
 
-  packages/roles: {}
+  packages/roles:
+    devDependencies:
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/runner:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: 0.134.0
         version: 0.134.0(zod@4.6.7)
+      '@globalhost/core':
+        specifier: workspace:*
+        version: link:../core
       '@globalhost/roles':
         specifier: workspace:*
         version: link:../roles

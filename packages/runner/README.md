@@ -13,6 +13,11 @@ The runner harness (PLAN P1-06): it drives one factory role through a Claude Man
    - The result bundle is fetched into a bare repo, with no checkout and no hooks. It must carry exactly `refs/heads/factory/issue-<n>`, descending from the base.
 6. **Write `run.json`** with the status (`succeeded`, `blocked`, `failed`, `cap_exceeded` or `timeout`), cost, outputs and problems.
 
+A **review** (`startReview`, P2-01, ADR-0015) runs the read-only `reviewer` role on one PR head:
+- `createReviewBundle` fetches the base branch and `refs/pull/<n>/head`, refuses the review if the head isn't the SHA the caller asked for, and bundles both with HEAD on the head (branch `globalhost-review/pr-<n>`), so the reviewer can diff against the merge base and revert the fix offline. The read-only token is used only for that fetch.
+- The issue (the spec, fenced even when the owner wrote it), the PR description and the caller's CI summary go into the task message as `<untrusted>` data. Preview screenshots are local PNGs, checked (plain `.png` name, regular file, size cap, PNG header) and mounted at `/mnt/session/uploads/screenshots/<name>`.
+- The reviewer writes `review-output.json`. It must match core's `ReviewOutputSchema` exactly; anything else (unknown keys, a category outside its area, over a limit, not one JSON value, over 1 MiB) is rejected whole, never clipped, and the status is `invalid_output`. `run.json` follows `ReviewRunSchema`. Scanning, budgets, the overall verdict and posting are the caller's.
+
 A **resume** sends owner feedback to the same session, which keeps its full context. It tops up the budget by `--budget` on top of what's already spent.
 
 ## Local runs (`globalhost run`)

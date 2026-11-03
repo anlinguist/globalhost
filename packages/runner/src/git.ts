@@ -79,6 +79,79 @@ export async function createRepoBundle(cloneUrl: string, branch: string, token?:
   return { bareDir, bundlePath, baseSha };
 }
 
+export interface ReviewBundle extends RepoBundle {
+  /** Tip of the base branch when the bundle was made. */
+  baseSha: string;
+  /** The PR head, checked against the SHA the caller asked to review. */
+  headSha: string;
+  /** `git merge-base` of base and head: the reviewer diffs merge-base..head, as GitHub shows the PR. */
+  mergeBaseSha: string;
+  baseBranch: string;
+  /** The branch in the bundle that holds the head; the bundle's HEAD points at it. */
+  headBranch: string;
+}
+
+export interface ReviewBundleRequest {
+  baseBranch: string;
+  pr: number;
+  /** The head SHA the caller decided to review (e.g. the CI run's head). A PR that moved since is refused. */
+  headSha: string;
+}
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}$/;
+export const reviewHeadBranch = (pr: number) => `globalhost-review/pr-${pr}`;
+
+/**
+ * Bundles a PR for review: the base branch and the PR head (`refs/pull/<n>/head`), full history, no tags, with
+ * HEAD on the head so `git clone` of the bundle checks it out and the reviewer can diff and revert against the
+ * base. The token, if any, is a read-only one used only for this fetch; nothing in the bundle or the bare repo's
+ * config carries it, and it never reaches the session.
+ */
+export async function createReviewBundle(cloneUrl: string, req: ReviewBundleRequest, token?: string): Promise<ReviewBundle> {
+  if (!CLONE_URL.test(cloneUrl)) throw new Error(`unexpected clone URL: ${cloneUrl}`);
+  return bundleReviewFrom(cloneUrl, req, token);
+}
+
+/**
+ * createReviewBundle without the GitHub URL check, so tests can bundle from a local repository. Trusted callers
+ * only: `source` is passed to git as a remote.
+ */
+export async function bundleReviewFrom(source: string, req: ReviewBundleRequest, token?: string): Promise<ReviewBundle> {
+  const { baseBranch, pr, headSha } = req;
+  if (!Number.isSafeInteger(pr) || pr < 1) throw new Error(`bad PR number: ${pr}`);
+  if (!FULL_SHA.test(headSha)) throw new Error("head SHA must be a full lowercase hex commit ID");
+  if (!BRANCH.test(baseBranch)) throw new Error(`unexpected base branch name: ${baseBranch}`);
+  const headBranch = reviewHeadBranch(pr);
+  if (baseBranch === headBranch) throw new Error(`base branch collides with ${headBranch}`);
+  await git(["check-ref-format", `refs/heads/${baseBranch}`]);
+
+  const dir = await mkdtemp(join(tmpdir(), "globalhost-review-"));
+  const bareDir = join(dir, "repo.git");
+  await git(["clone", "--quiet", "--bare", "--single-branch", "--no-tags", "--branch", baseBranch, "--", source, bareDir], {
+    token,
+  });
+  await git(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", source, `+refs/pull/${pr}/head:refs/heads/${headBranch}`], {
+    cwd: bareDir,
+    token,
+  });
+  const fetchedHead = (await git(["rev-parse", "--verify", `refs/heads/${headBranch}^{commit}`], { cwd: bareDir })).trim();
+  if (fetchedHead !== headSha) {
+    throw new Error(`PR #${pr} head is ${fetchedHead.slice(0, 12)}, not ${headSha.slice(0, 12)}: it moved since the review was requested`);
+  }
+  const baseSha = (await git(["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`], { cwd: bareDir })).trim();
+  let mergeBaseSha: string;
+  try {
+    mergeBaseSha = (await git(["merge-base", baseSha, headSha], { cwd: bareDir })).trim();
+  } catch {
+    throw new Error(`PR #${pr} head shares no history with ${baseBranch}`);
+  }
+  await git(["symbolic-ref", "HEAD", `refs/heads/${headBranch}`], { cwd: bareDir });
+  const bundlePath = join(dir, "repo.bundle");
+  await git(["bundle", "create", "--quiet", bundlePath, "HEAD", `refs/heads/${headBranch}`, `refs/heads/${baseBranch}`], { cwd: bareDir });
+  return { bareDir, bundlePath, baseSha, headSha, mergeBaseSha, baseBranch, headBranch };
+}
+
 /**
  * Checks the agent's result bundle: it must carry exactly `refs/heads/<branch>`, its prerequisites
  * must be in the base repo, and the branch must descend from the base commit. Returns what changed.

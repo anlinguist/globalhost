@@ -3,12 +3,18 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-export type RoleId = "planner" | "builder" | "assessor";
-export const ROLE_IDS: readonly RoleId[] = ["planner", "builder", "assessor"];
-/** Roles that work on an issue (`globalhost run`, the dispatcher). The assessor works on a whole repo. */
+export type RoleId = "planner" | "builder" | "assessor" | "reviewer";
+export const ROLE_IDS: readonly RoleId[] = ["planner", "builder", "assessor", "reviewer"];
+/**
+ * Roles that work on an issue (`globalhost run`, the dispatcher). The assessor works on a whole repo and the
+ * reviewer on a pull request.
+ */
 export const ISSUE_ROLE_IDS: readonly RoleId[] = ["planner", "builder"];
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
+
+/** The reviewer's verdict file in /mnt/session/outputs/: one JSON object matching core's ReviewOutputSchema. */
+export const REVIEW_OUTPUT_FILE = "review-output.json";
 
 export interface ToolConfig {
   name: string;
@@ -79,6 +85,18 @@ export function roleDefinition(id: RoleId, model: string = DEFAULT_MODEL, skills
         // Read-only like the planner: it may build and test in its sandbox, but it never edits or bundles.
         toolConfigs: [...NO_WEB, { name: "edit", enabled: false }],
         requiredOutputs: ["assessment.md", "report.json"],
+        skills: [...skills],
+      };
+    case "reviewer":
+      return {
+        id,
+        agentName: "globalhost-reviewer",
+        model,
+        system,
+        // Judges, never changes (ADR-0015): it may install, build, test and temporarily revert files in its
+        // sandbox checkout, but it has no edit tool and hands back no bundle. Same egress as every role.
+        toolConfigs: [...NO_WEB, { name: "edit", enabled: false }],
+        requiredOutputs: [REVIEW_OUTPUT_FILE, "report.json"],
         skills: [...skills],
       };
   }
