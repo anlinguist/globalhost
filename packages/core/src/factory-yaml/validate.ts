@@ -379,11 +379,14 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
   if (s.limits.perRunUsd > s.limits.dailyUsd) {
     push(["limits", "perRunUsd"], "limits_inconsistent", `perRunUsd ${s.limits.perRunUsd} exceeds dailyUsd ${s.limits.dailyUsd}`);
   }
-  if (s.limits.reviewPerRunUsd > s.limits.reviewPerPrUsd) {
+  // Review runs count toward both the PR's review budget and the repo's daily budget.
+  const reviewCap = Math.min(s.limits.reviewPerPrUsd, s.limits.dailyUsd);
+  if (s.limits.reviewPerRunUsd > reviewCap) {
+    const over = s.limits.reviewPerPrUsd <= s.limits.dailyUsd ? "reviewPerPrUsd" : "dailyUsd";
     push(
       ["limits", "reviewPerRunUsd"],
       "limits_inconsistent",
-      `reviewPerRunUsd ${s.limits.reviewPerRunUsd} exceeds reviewPerPrUsd ${s.limits.reviewPerPrUsd}`,
+      `reviewPerRunUsd ${s.limits.reviewPerRunUsd} exceeds ${over} ${reviewCap}`,
     );
   }
 

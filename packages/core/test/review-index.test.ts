@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addUsd,
   canStartReview,
+  committedReviewUsd,
   MAX_LEDGER_RUNS,
   ReviewClaimSchema,
   ReviewLedgerSchema,
@@ -92,19 +93,51 @@ describe("shadow index entry", () => {
 
 describe("review ledger schema", () => {
   const entry: ShadowEntry = shadowEntryFromRecord(record);
+  const ledger = (over: Record<string, unknown> = {}) => ({
+    version: 1,
+    reviewSpendUsd: 1.25,
+    truncatedSpendUsd: 0,
+    runs: [entry],
+    reservations: [],
+    ...over,
+  });
+  const reservation = { runId: "r-2", sha, reservedUsd: 2, reservedAt: "2026-11-02T12:00:00.000Z", day: "2026-11-02" };
 
-  it("accepts a ledger and rejects duplicate run IDs, unknown keys and corrupt totals", () => {
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: 1.25, runs: [entry] }).success).toBe(true);
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: 2.5, runs: [entry, entry] }).success).toBe(false);
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: 0, runs: [], extra: 1 }).success).toBe(false);
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: -1, runs: [] }).success).toBe(false);
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: "8", runs: [] }).success).toBe(false);
-    expect(ReviewLedgerSchema.safeParse({ version: 2, reviewSpendUsd: 0, runs: [] }).success).toBe(false);
+  it("accepts a consistent ledger", () => {
+    expect(ReviewLedgerSchema.safeParse(ledger()).success).toBe(true);
+    expect(ReviewLedgerSchema.safeParse(ledger({ reviewSpendUsd: 1.75, truncatedSpendUsd: 0.5, reservations: [reservation] })).success).toBe(true);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["duplicate run IDs", { reviewSpendUsd: 2.5, runs: [entry, entry] }],
+    ["unknown key", { extra: 1 }],
+    ["negative total", { reviewSpendUsd: -1, runs: [] }],
+    ["string total", { reviewSpendUsd: "8", runs: [] }],
+    ["wrong version", { version: 2 }],
+    ["total below the runs' costs", { reviewSpendUsd: 1 }],
+    ["total above the runs' costs", { reviewSpendUsd: 1.5 }],
+    ["missing truncatedSpendUsd", { truncatedSpendUsd: undefined }],
+    ["a settled run still holding a reservation", { reservations: [{ ...reservation, runId: "r-1" }] }],
+    ["two reservations for one run", { reservations: [reservation, reservation] }],
+    ["reservation over the ceiling", { reservations: [{ ...reservation, reservedUsd: 1001 }] }],
+    ["zero reservation", { reservations: [{ ...reservation, reservedUsd: 0 }] }],
+    ["reservation with a path in its run ID", { reservations: [{ ...reservation, runId: "../x" }] }],
+  ])("rejects %s", (_name, over) => {
+    expect(ReviewLedgerSchema.safeParse(ledger(over)).success).toBe(false);
   });
 
   it("caps the run list", () => {
     const runs = Array.from({ length: MAX_LEDGER_RUNS + 1 }, (_, i) => ({ ...entry, runId: `r-${i}` }));
-    expect(ReviewLedgerSchema.safeParse({ version: 1, reviewSpendUsd: 0, runs }).success).toBe(false);
+    expect(ReviewLedgerSchema.safeParse(ledger({ reviewSpendUsd: 1.25 * runs.length, runs })).success).toBe(false);
+  });
+
+  it("counts open reservations as committed", () => {
+    expect(committedReviewUsd(ReviewLedgerSchema.parse(ledger({ reservations: [reservation] })))).toBe(3.25);
+  });
+
+  it("caps any one amount at MAX_REVIEW_USD", () => {
+    expect(ShadowEntrySchema.safeParse({ ...entry, costUsd: 1000.01 }).success).toBe(false);
+    expect(ReviewRecordSchema.safeParse({ ...record, prSpendUsd: 1000.01 }).success).toBe(false);
   });
 });
 
@@ -112,21 +145,24 @@ describe("review claim schema", () => {
   const claim = {
     version: 1,
     sha,
+    attempt: 1,
     runId: "r-1",
     claimedAt: "2026-11-02T12:00:00.000Z",
     previousRunId: null,
     completedAt: null,
     recordPath: null,
   };
-  it("accepts a claim and rejects a 64-hex or uppercase sha", () => {
+  it("accepts a claim and rejects a 64-hex or uppercase sha, attempt 0, or a path in the run ID", () => {
     expect(ReviewClaimSchema.safeParse(claim).success).toBe(true);
     expect(ReviewClaimSchema.safeParse({ ...claim, sha: "a".repeat(64) }).success).toBe(false);
     expect(ReviewClaimSchema.safeParse({ ...claim, sha: "A".repeat(40) }).success).toBe(false);
+    expect(ReviewClaimSchema.safeParse({ ...claim, attempt: 0 }).success).toBe(false);
+    expect(ReviewClaimSchema.safeParse({ ...claim, runId: "a/b" }).success).toBe(false);
   });
 });
 
 describe("canStartReview", () => {
-  it.each<[string, { spent: number; perRun: number; perPr: number }, boolean]>([
+  it.each<[string, { spent: number; reserved?: number; perRun: number; perPr: number }, boolean]>([
     ["nothing spent", { spent: 0, perRun: 2, perPr: 8 }, true],
     ["exactly at the cap", { spent: 6, perRun: 2, perPr: 8 }, true],
     ["a cent over", { spent: 6.01, perRun: 2, perPr: 8 }, false],
@@ -137,6 +173,9 @@ describe("canStartReview", () => {
     ["corrupt spend (NaN)", { spent: Number.NaN, perRun: 2, perPr: 8 }, false],
     ["negative spend", { spent: -5, perRun: 2, perPr: 8 }, false],
     ["zero per-run", { spent: 0, perRun: 0, perPr: 8 }, false],
+    ["reservations fill the rest", { spent: 2, reserved: 4, perRun: 2, perPr: 8 }, true],
+    ["reservations leave too little", { spent: 2, reserved: 4.01, perRun: 2, perPr: 8 }, false],
+    ["corrupt reservations", { spent: 0, reserved: Number.NaN, perRun: 2, perPr: 8 }, false],
   ])("%s", (_name, input, expected) => {
     expect(canStartReview(input)).toBe(expected);
   });

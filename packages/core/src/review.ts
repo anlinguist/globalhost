@@ -246,6 +246,9 @@ export function overallVerdict(output: ReviewOutput | null, ctx: OverallVerdictC
   return { overall, verdicts, escalations };
 }
 
+/** Ceiling on any one dollar amount in a review record: far above any budget, so it only catches corrupt values. */
+export const MAX_REVIEW_USD = 1000;
+
 /** A full SHA-1 or SHA-256 object name, lowercase hex. */
 export const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -272,9 +275,9 @@ export const ReviewRecordFields = z.strictObject({
   taint: z.strictObject({ tainted: z.boolean(), reasons: z.array(z.string().max(200)).max(20) }),
   scanHits: z.array(ScanHitSchema).max(MAX_SCAN_HITS),
   findings: z.array(FindingSchema).max(MAX_FINDINGS),
-  costUsd: z.number().min(0),
+  costUsd: z.number().min(0).max(MAX_REVIEW_USD),
   /** Review spend on this PR including this run. */
-  prSpendUsd: z.number().min(0),
+  prSpendUsd: z.number().min(0).max(MAX_REVIEW_USD),
   /** Where this record lives in GCS. */
   reviewPath: z.string().min(1).max(500),
   /** The GitHub review this was posted as; null in shadow before posting, or if posting failed. */

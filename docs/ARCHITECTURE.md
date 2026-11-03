@@ -246,8 +246,8 @@ See ADR-0006. Public repos get rulesets on free (require PR, require checks, blo
 |---|---|---|
 | Per-run cap | harness aborts at `$X` (default $4) or `maxTurns` / job timeout (default 45m) | 1 |
 | Hard monthly cap | Anthropic Console workspace spend limit = monthly credit | 1 |
-| Daily budget | dispatcher sums `run.json` costs in control bucket; default $20/day | 1 (simple) / 2 |
-| Per-PR review budget | a review starts only if the PR's review spend plus `limits.reviewPerRunUsd` (default $2) fits under `limits.reviewPerPrUsd` (default $8); spend and a shadow index of review runs live in the control bucket's per-PR ledger, updated by compare-and-swap (ADR-0015 §13) | 2 |
+| Daily budget | dispatcher sums `run.json` costs in control bucket; default $20/day, shared by builder and review runs (reviews reserve their cap up front) | 1 (simple) / 2 |
+| Per-PR review budget | before a review starts, the dispatcher reserves `limits.reviewPerRunUsd` (default $2) in the PR's review ledger in the control bucket (compare-and-swap); refused if settled + reserved + per-run > `limits.reviewPerPrUsd` (default $8). Settled with the actual cost; a crashed run's hold stays counted until the owner clears it (ADR-0015 §13) | 2 |
 | Kill switch | `globalhost pause` sets `paused=true`; dispatcher refuses; running jobs cancelled | 1 (minimal) / 2 |
 | GCP | budget alerts + auto-pause; lifecycle rules on every bucket; AR cleanup policy on the function image repo; scale-to-zero everywhere | 1 |
 | Orphans | nightly cleanup of preview tags/images/review stacks whose PR is closed | 1 (tags) / 2 (stacks) |

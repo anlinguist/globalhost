@@ -46,11 +46,21 @@ The session ID travels in a hidden marker on the bot's run-report comment. Only 
 
 ## Review control state (P2-01, not wired to a workflow yet)
 
-`ControlPlane` also holds the reviewer's state in `gs://globalhost-control/reviews/<owner>/<name>/` (repo lowercased; repo, PR number and SHA are validated before they go into an object name):
+`ControlPlane` also holds the reviewer's state in `gs://globalhost-control/reviews/<owner>/<name>/` (repo lowercased; repo, PR number, SHA and run ID are validated before they go into an object name; the SHA must be 40-hex, so a SHA-256 repository fails closed):
 
-- **`pr-<n>/<sha>.claim.json`:** `reviewClaim` creates it (create-only), so one review runs per head SHA. A claim that never completed and is older than the caller's staleness window (for example `perRunMinutes` + 30) is taken over by compare-and-swap. `completeReviewClaim` points it at the archived review record. A corrupt claim is never taken over.
-- **`pr-<n>.json`:** the PR's review ledger and shadow index (`ReviewLedgerSchema` in core): total review spend plus one `ShadowEntry` per run. `recordReviewRun` adds the run's cost and appends its entry by compare-and-swap, once per runId. `prReviewSpend` reads the total, and a corrupt ledger counts as over budget.
-- **Budget gate:** `canStartReview({ spent, perRun, perPr })` from core is true only if `spent + limits.reviewPerRunUsd ≤ limits.reviewPerPrUsd`.
+- **`pr-<n>/<sha>.claim.json`:** one live review attempt per head SHA. `reviewClaim(head, runId, { perRunMinutes, rereview })` creates it (create-only). An uncompleted claim older than `minReviewStaleMinutes(perRunMinutes)` (= `perRunMinutes` + 30) is a crashed run and is taken over by compare-and-swap. A completed claim is replaced only with `rereview` (an owner's `factory:review`), as the next `attempt`; a re-review never displaces an in-flight one. A corrupt claim is never taken over (`reason: "corrupt"`).
+- **`pr-<n>.json`:** the PR's review ledger and shadow index (`ReviewLedgerSchema` in core): settled spend, open reservations, and one `ShadowEntry` per run (runs past 200 drop off, their cost kept in `truncatedSpendUsd`). A corrupt ledger counts as over budget and is never overwritten.
+- **Daily spend:** reviews share `spend/<day>/<repo>.json` with builders. Open review reservations sit there too, and `spentTodayUsd` counts them.
+
+**Contract for the review step** (also at the top of the review section in `src/gcp.ts`):
+
+1. `reserveReview(head, runId, { perRun, perPr, dailyUsd })` before anything runs. It holds `reviewPerRunUsd` on the PR ledger and then on the day's spend record. If either is refused, don't run; the PR escalates.
+2. `reviewClaim`. If it isn't claimed, don't run.
+3. Archive under `reviewArchivePrefix(head, runId)` in `globalhost-runs` (`<repo>/reviews/pr-<n>/<sha>/<runId>/`), per attempt.
+4. `completeReviewClaim(head, runId)`. Post the GitHub review only if it returned true.
+5. `recordReviewRun` **always**, with the actual cost (0 if nothing ran). It settles the reservation on the reservation's day, then the ledger, and it is idempotent per run ID.
+
+A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, but only for the owner or a cleanup job; nothing calls it automatically. The P1-13 orphans job should also delete `reviews/<repo>/pr-<n>*` once the PR is closed, after any shadow-index export the metrics need.
 
 ## Product-repo setup
 
