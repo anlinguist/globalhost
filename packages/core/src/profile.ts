@@ -103,15 +103,32 @@ export interface DiffCtx {
   readHead(path: string): Promise<string | undefined>;
 }
 
-export type GuardrailResult = { kind: "pass" } | { kind: "needsApproval"; reason: string } | { kind: "fail"; reason: string };
+/**
+ * `reason` should be fixed prose; the engine strips it to plain characters regardless. Put anything quoted from the
+ * repo (a package name) in `subjects`, which the engine encodes as untrusted.
+ */
+export type GuardrailResult =
+  | { kind: "pass" }
+  | { kind: "needsApproval"; reason: string; subjects?: string[] }
+  | { kind: "fail"; reason: string; subjects?: string[] };
 
 export interface Guardrail {
+  /** Lowercase letters, digits and hyphens; not one of the engine's trigger IDs. */
   id: string;
-  /** Globs (FACTORY-YAML glob syntax) that trigger evaluation. */
+  /** Repo-relative globs (FACTORY-YAML glob syntax) that trigger evaluation. */
   paths: string[];
+  /** Must treat `diff` as untrusted, keep its parsing bounded, and let the engine handle a throw: that fails closed. */
   evaluate(diff: DiffCtx): Promise<GuardrailResult>;
-  /** e.g. "approved:visual". */
+  /** e.g. "approved:visual". Unique to this guardrail: a label clears only its own guardrail. */
   approvalLabel: string;
+}
+
+/**
+ * What a deploy runs with prod credentials: its deploy configs, scripts and IaC (ADR-0015 §9). A change to any of them
+ * always escalates, and no `approved:*` label clears that. `globs` are repo-relative, FACTORY-YAML glob syntax.
+ */
+export interface ReleaseExecutionSet {
+  globs: string[];
 }
 
 export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg>> extends ProfileDescriptor {
@@ -165,7 +182,7 @@ export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg
      * and the baseline. The only guardrail enforced in Phase 1.
      */
     immutable: string[];
-    /** Evaluated checks; deferred to Phase 2, so Phase-1 profiles leave this empty. */
+    /** Evaluated checks (core's guardrails engine, P2-03). */
     checks: Guardrail[];
   };
 }
@@ -231,4 +248,9 @@ export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
    * never calls a release deployed without `live` from here. Throws on provider errors, so callers fail closed.
    */
   verifyLive?(handle: ReleaseHandle): Promise<ReleaseLiveness>;
+  /**
+   * The release execution set for this part. A prod part whose adapter leaves this out, throws or returns no globs
+   * trips a trigger on every PR, so a new adapter can't quietly skip it. Pure: no I/O, config only.
+   */
+  releaseExecutionSet?(part: { name: string; path: string }, cfg: Cfg): ReleaseExecutionSet;
 }

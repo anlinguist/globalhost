@@ -83,7 +83,7 @@ export interface PreviewContract<Cfg> {
 export interface Guardrail {
   id: string;                          // "manifest-permissions", "openapi-breaking", ...
   paths: string[];                     // globs that trigger evaluation
-  evaluate(diff: DiffCtx): Promise<GuardrailResult>; // pass | needsApproval(reason) | fail(reason)
+  evaluate(diff: DiffCtx): Promise<GuardrailResult>; // pass | needsApproval(reason, subjects?) | fail(reason, subjects?)
   approvalLabel: string;               // e.g. "approved:permissions"
 }
 ```
@@ -96,6 +96,7 @@ Rules:
 - **Core never imports a profile.** Enforced by a lint rule (`no-restricted-imports`) in `packages/core`.
 - Verify steps are rendered into a profile-specific reusable CI job; the core CI job (`typecheck`, `lint`, `test`, `guardrails`) is identical for all repos.
 - Guardrails run as a single `globalhost/guardrails` check. `needsApproval` adds `needs:owner-approval` and fails the check until the owner applies the guardrail's `approved:*` label on the current head SHA (approval is invalidated by new pushes).
+- The engine (`packages/core/src/guardrails.ts`) fails closed: a guardrail that throws, hangs, returns something invalid or has a bad definition is `fail`, and no label clears a `fail`. Each guardrail needs its own approval label, since a label clears only its own guardrail. Keep `reason` fixed prose and put anything quoted from the repo in `subjects`; the engine strips one and encodes the other, so results are safe to post.
 - Adding a profile = adding a package + registering its id. No core change. Example future profiles: `npm-package` (release: `npm` adapter with provenance), `cli`, `mobile-expo` (Bibliacra RN), `static-site`.
 
 ## 2. Preview contract & composite repos
@@ -137,6 +138,10 @@ export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
   release(ctx: ReleaseCtx, cfg: Cfg): Promise<ReleaseHandle>;
   status(handle: ReleaseHandle): Promise<ReleaseStatus>;   // polled by watcher for async gates
   rollback?(handle: ReleaseHandle): Promise<void>;
+  // What the deploy runs with prod credentials (ADR-0015 §9), as repo-relative globs. A prod part whose adapter leaves
+  // this out, throws or returns no globs trips a trigger on every PR. The set covers what runs with those credentials;
+  // an adapter whose build and deploy aren't split (ADR-0015 §9) can't vouch for code that runs during its build.
+  releaseExecutionSet?(part: { name: string; path: string }, cfg: Cfg): { globs: string[] };
 }
 // ReleaseHandle = { adapter, sha, data: Record<string, string> }: plain JSON recorded on GitHub, no credentials.
 // ReleaseStatus = { state: pending | running | succeeded | failed | cancelled | unknown, detail, url? }.
@@ -171,11 +176,11 @@ A part may list several release targets (e.g. an extension shipping to Chrome, E
 | Verify | `typecheck`, `lint`, unit tests; Playwright e2e against the preview URL (or local `next start` in CI); `toHaveScreenshot` visual regression with baselines in repo, generated in the pinned Playwright container for determinism |
 | Preview | `url` + `screenshots` (key routes from config, desktop + mobile viewport) |
 | Release | default `cloud-run` (canary: 10% tagged revision → watch error rate 10 min → 100%, else roll back); adopted repos: `cloud-build-trigger` / `cloud-run-existing` |
-| Guardrails | `visual-baseline` (baseline image changes need `approved:visual`), `new-dependency`, `env-surface` (new `NEXT_PUBLIC_*`/public env vars need approval), `auth-config` (changes to auth/middleware paths) |
+| Guardrails | `visual-baseline` (baseline image changes need `approved:visual`), `dependency-change` (`approved:deps`; shared in `packages/profiles/toolchains`), `env-surface` (new `NEXT_PUBLIC_*`/public env vars need approval), `auth-config` (changes to auth/middleware paths) |
 | Data | previews use the dev project's DB/Firestore with seed data |
 | Config | `routes` to screenshot, `port`, `previewEnv` (non-secret build/runtime env), `seed` command, `install` (overrides the lockfile-derived install, e.g. `npm ci --legacy-peer-deps` for numu-know); `buildArgs` later |
 
-**v0 (P1-03)** implements detect, the skill, verify (install, typecheck, lint, test, build, Playwright smoke with screenshots), guidance and the preview contract's shape. `preview.build`/`teardown` throw until P1-11. Release allows only `cloud-build-trigger` until `cloud-run` exists. Guardrails: only `immutable` (`.env`, `.env.*`, `.envrc` and `.env.d/`, at any depth in the part, `.env.example` included); the checks above arrive in Phase 2.
+**v0 (P1-03)** implements detect, the skill, verify (install, typecheck, lint, test, build, Playwright smoke with screenshots), guidance and the preview contract's shape. `preview.build`/`teardown` throw until P1-11. Release allows only `cloud-build-trigger` until `cloud-run` exists. Guardrails: `immutable` (`.env`, `.env.*`, `.envrc` and `.env.d/`, at any depth in the part, `.env.example` included); `visual-baseline` and `dependency-change` are in `checks` since P2-03, and the others above arrive in Phase 2.
 
 ### 4.2 `chrome-extension` (MV3; multi-store capable)
 
@@ -198,7 +203,7 @@ A part may list several release targets (e.g. an extension shipping to Chrome, E
 | Verify | unit; contract tests against the OpenAPI spec (spec generated or hand-written; responses validated); integration tests against an **ephemeral database** (Neon branch per CI run, or Firestore emulator for Firestore services — ADR-0002) |
 | Preview | `url` behind Access + `api-docs` (rendered reference from the PR's spec, e.g. Scalar/Redoc static page served by the preview) |
 | Release | `cloud-run` canary; jobs via `cloud-run-job` + Cloud Scheduler; adopted: `cloud-build-trigger`/`cloud-run-existing` |
-| Guardrails | **`openapi-breaking`:** `oasdiff breaking` on every PR; breaking → `needs:owner-approval` and the PR must include a "Versioning plan" section (new version path or expand/contract schedule). **`migration-safety`:** destructive DDL (drop/rename/type narrowing) requires approval and a contract phase. **`new-dependency`** |
+| Guardrails | **`openapi-breaking`:** `oasdiff breaking` on every PR; breaking → `needs:owner-approval` and the PR must include a "Versioning plan" section (new version path or expand/contract schedule). **`migration-safety`:** destructive DDL (drop/rename/type narrowing) requires approval and a contract phase. **`dependency-change`** |
 | Config | `openapi` path, `db` (neon/firestore/none), `jobs[]` with schedules, `healthPath` |
 
 ## 5. Profile-agnostic pieces (core)

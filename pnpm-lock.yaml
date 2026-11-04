@@ -126,6 +126,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@globalhost/sanitize':
+        specifier: workspace:*
+        version: link:../sanitize
       yaml:
         specifier: 2.9.1
         version: 2.9.1

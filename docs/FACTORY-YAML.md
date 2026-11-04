@@ -135,6 +135,12 @@ Each target is `{ adapter, config }`:
 | `region` | no | `global` (default) or a region such as `us-central1` |
 | `cloudRun.service` | with `cloudRun` | Cloud Run service name: `^[a-z](?:[a-z0-9-]{0,47}[a-z0-9])?$` |
 | `cloudRun.region` | with `cloudRun` | a region such as `us-central1` (not `global`) |
+| `buildConfig` | no | the trigger's build config file, repo-relative; defaults to `cloudbuild.yaml` |
+| `releaseInputs` | no | globs of anything else the build config's steps run, such as a deploy script |
+
+`buildConfig`, `releaseInputs`, and any `cloudbuild*` config, `Dockerfile*`, `Containerfile*`, `.dockerignore`, `.containerignore` or `.gcloudignore` in the repo form this adapter's release execution set: changing one always escalates, and no `approved:*` label clears it (ADR-0015 §8, §9).
+
+The set leaves out the rest of the Docker build context, or it would be every file. **So a `release-set` pass means nothing about build-time code until P2-01d**: a build tool's config or a script the build runs can change without tripping it. Those paths belong in `loadBearing` until the build and deploy are split.
 
 `cloudRun` is the deploy target the release observer checks: the service in `environments.prod.gcpProject` must serve the merged commit before a merge is reported as deployed (ADR-0019). Without `cloudRun` or `environments.prod`, a successful build is reported as "can't be verified" and the issue stays open. The trigger's build config must list its images under `images:`, so Cloud Build records what it pushed. The JSON Schema (`schemas/factory.schema.json`) leaves adapter config open: it is generated from core, which doesn't know adapters, so this table is the reference.
 
@@ -191,6 +197,13 @@ Each target is `{ adapter, config }`:
 The validator's normalized output contains the union, which is the list the publisher applies. A product can add protection but can't remove the baseline or a profile's globs. web-app's cover `.env.example` too, with no carve-out: agents can't add one, so the owner does. There's no negation syntax, and listing a baseline pattern is allowed but redundant.
 
 Separately from `immutable`, the publisher always refuses a bundle containing a file whose basename is `review.json`, `run.json`, `output.raw.json` or `inputs.json` (any case, any depth, trailing dots or spaces ignored). Those names belong to harness records, which are read only from GCS (ADR-0015 §3).
+
+**On the PR,** the guardrails engine (`packages/core/src/guardrails.ts`, ADR-0015 §8) uses the same matcher for any author's changes, agent or not, and also tries each path's resolved and folded spellings (`./`, `..`, `\`, trailing dots, lookalike characters), which can only add a match:
+- `loadBearing` adds a trigger, cleared by an owner's `approved:load-bearing` on the current head.
+- `immutable` also trips on the PR, for a change the publisher never saw (an owner's own push). No label clears it.
+- Neither list can remove anything from the engine's own triggers: the instruction surfaces, `factory.yaml`, `.github/**` and the deploy adapter's release execution set. There's no negation syntax, and `!x` matches nothing.
+- `factory.yaml` and `.github/` mean the repo root's: nothing reads a copy in a subdirectory, so one there is an ordinary file.
+- The engine reads this file from the base branch, so a PR can't loosen its own check.
 
 Listing the same pattern in both `loadBearing` and `immutable` is an error, since the two lists mean contradictory things. The check uses the merged `immutable` list (so a baseline or profile pattern in `loadBearing` is an error too) and ignores case, like guardrail matching. Exact repeats within one list are dropped from the normalized output.
 

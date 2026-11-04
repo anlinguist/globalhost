@@ -6,6 +6,7 @@
 // A factory PR is a same-repo PR from `factory/issue-<n>` into the default branch, opened by the App's bot.
 // Everything is read fresh from the API; the event only says where to look. The review job runs this again
 // with its own reads instead of trusting the gate job's outputs.
+import { isOwnerActor } from "@globalhost/core";
 import { z } from "zod";
 import type { GitHubClient } from "./github.js";
 
@@ -89,7 +90,6 @@ export interface ReviewGateContext {
 
 const sameRepo = (a: string | undefined, b: string) => a !== undefined && a.toLowerCase() === b.toLowerCase();
 const isBot = (a: Actor, botLogin: string) => a.type === "Bot" && a.login === botLogin;
-const isOwner = (a: Actor, ownerIds: readonly number[]) => a.type === "User" && ownerIds.includes(a.id);
 
 /** Why a run can't stand for "CI passed on this head", or null when it can. */
 function ciRunProblem(run: WorkflowRun, ctx: ReviewGateContext): string | null {
@@ -99,7 +99,7 @@ function ciRunProblem(run: WorkflowRun, ctx: ReviewGateContext): string | null {
   if (!sameRepo(run.head_repository?.full_name, ctx.repo)) return "CI ran on a fork";
   if (!SHA40.test(run.head_sha)) return "CI head is not a 40-hex SHA";
   const actors = [run.actor, ...(run.triggering_actor ? [run.triggering_actor] : [])];
-  if (!actors.every((a) => isBot(a, ctx.botLogin) || isOwner(a, ctx.ownerIds))) return "CI was triggered by someone other than the factory bot or an owner";
+  if (!actors.every((a) => isBot(a, ctx.botLogin) || isOwnerActor(a, ctx.ownerIds))) return "CI was triggered by someone other than the factory bot or an owner";
   return null;
 }
 
@@ -146,7 +146,7 @@ export async function decideReview(ctx: ReviewGateContext): Promise<ReviewDecisi
     const e = parsed.data;
     if (e.action !== "labeled" || e.label?.name !== REVIEW_LABEL) return { action: "ignore", reason: `not a ${REVIEW_LABEL} label event` };
     // A non-owner's label is left alone: removing it would let anyone with triage make the bot act.
-    if (!isOwner(e.sender, ctx.ownerIds)) return { action: "ignore", reason: `${REVIEW_LABEL} applied by a non-owner` };
+    if (!isOwnerActor(e.sender, ctx.ownerIds)) return { action: "ignore", reason: `${REVIEW_LABEL} applied by a non-owner` };
     const pr = e.pull_request.number;
     const refuse = (reason: string): ReviewDecision => ({ action: "ignore", reason, unlabel: pr });
     const pull = await gh.request("GET", `/repos/${repo}/pulls/${pr}`, undefined, ReviewPullSchema);

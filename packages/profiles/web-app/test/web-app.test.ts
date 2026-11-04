@@ -276,9 +276,10 @@ describe("profile object", () => {
     });
   });
 
-  it("declares immutable globs in factory.yaml glob syntax and no Phase-2 checks", () => {
+  it("declares immutable globs in factory.yaml glob syntax and its evaluated checks", () => {
     for (const g of webApp.guardrails.immutable) expect(g).toMatch(GLOB_PATTERN);
-    expect(webApp.guardrails.checks).toEqual([]);
+    expect(webApp.guardrails.checks.map((c) => c.id)).toEqual(["dependency-change", "visual-baseline"]);
+    for (const c of webApp.guardrails.checks) for (const g of c.paths) expect(g).toMatch(GLOB_PATTERN);
   });
 
   it("previews are not built until P1-11", async () => {

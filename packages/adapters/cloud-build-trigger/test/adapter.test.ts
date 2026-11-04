@@ -1,7 +1,10 @@
 import * as fs from "node:fs";
+import { globMatch, GLOB_PATTERN, guardrailInputsFor } from "@globalhost/core";
 import { describe, expect, it } from "vitest";
 import {
+  BUILD_DEFINITION_GLOBS,
   buildStatus,
+  cloudBuildReleaseSet,
   cloudBuildTrigger,
   cloudBuildTriggerConfigSchema,
   CloudBuildApiError,
@@ -402,5 +405,96 @@ describe("liveness helpers", () => {
     expect(servingRevision({ trafficStatuses: [{ revision: "a-1", percent: 50 }] })).toEqual({ reason: "split-traffic" });
     expect(servingRevision({ trafficStatuses: [{ revision: "../a", percent: 100 }] })).toEqual({ reason: "not-updated" });
     expect(servingRevision({ trafficStatuses: [{ type: "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", percent: 100 }] })).toEqual({ reason: "not-updated" });
+  });
+});
+
+describe("release execution set", () => {
+  // numu-know's release config, as in its factory.yaml. Its trigger's `filename` is cloudbuild.yaml (read from GCP, 2026-11-04).
+  const numuKnow = { project: "numu-know", trigger: "rmgpgab-numu-know-us-central1-anlinguist-Numu-Know--mafyn", region: "global", cloudRun: { service: "numu-know", region: "us-central1" } };
+  const declare = (cfg: unknown) => cloudBuildTrigger.releaseExecutionSet!({ name: "web", path: "." }, cloudBuildTriggerConfigSchema.parse(cfg));
+
+  it("existing config stays valid and unchanged", () => {
+    expect(cloudBuildTriggerConfigSchema.parse(numuKnow)).toEqual(numuKnow);
+  });
+
+  it("declares the build config and everything that defines the image", () => {
+    const { globs } = declare(numuKnow);
+    expect(globs).toContain("cloudbuild.yaml");
+    expect(globs).toEqual(expect.arrayContaining([...BUILD_DEFINITION_GLOBS]));
+  });
+
+  it.each([
+    "cloudbuild.yaml",
+    "cloudbuild.yml",
+    "cloudbuild.json",
+    "cloudbuild-prod.yaml",
+    "cloudbuild.prod.yaml",
+    "ci/cloudbuild-staging.yml",
+    "deploy/cloudbuild.prod.json",
+    "Dockerfile",
+    "Dockerfile-prod",
+    "Dockerfile.prod",
+    "apps/web/Dockerfile",
+    "web.Dockerfile",
+    "dockerfile",
+    "Containerfile",
+    "Containerfile.prod",
+    "apps/web/web.containerfile",
+    ".dockerignore",
+    "apps/web/.dockerignore",
+    ".containerignore",
+    ".gcloudignore",
+  ])("the set covers %s", (path) => {
+    const { globs } = declare(numuKnow);
+    expect(globs.some((g) => globMatch(g, path))).toBe(true);
+  });
+
+  it.each(["src/cloudbuild.ts", "docs/dockerfile-notes/x.md", "cloudbuild.md"])("the set leaves %s alone", (path) => {
+    const { globs } = declare(numuKnow);
+    expect(globs.some((g) => globMatch(g, path))).toBe(false);
+  });
+
+  it("every glob is in the factory.yaml dialect, so the engine won't reject the declaration", () => {
+    for (const g of declare({ ...numuKnow, buildConfig: "deploy/build.yaml", releaseInputs: ["scripts/deploy/**"] }).globs) expect(g).toMatch(GLOB_PATTERN);
+  });
+
+  it("adds a configured build config and extra inputs", () => {
+    const { globs } = declare({ ...numuKnow, buildConfig: "deploy/build.yaml", releaseInputs: ["scripts/deploy/**"] });
+    expect(globs).toEqual(expect.arrayContaining(["deploy/build.yaml", "scripts/deploy/**"]));
+  });
+
+  it("releaseInputs can only add: the definitions stay whatever it says", () => {
+    expect(declare({ ...numuKnow, releaseInputs: [] }).globs).toEqual(expect.arrayContaining([...BUILD_DEFINITION_GLOBS]));
+  });
+
+  it.each([
+    ["a glob for the build config", { buildConfig: "*.yaml" }],
+    ["a build config outside the repo", { buildConfig: "../x.yaml" }],
+    ["a bad release input", { releaseInputs: ["{a,b}"] }],
+  ])("refuses %s", (_name, over) => {
+    expect(cloudBuildTriggerConfigSchema.safeParse({ ...numuKnow, ...over }).success).toBe(false);
+  });
+
+  it("throws on config it can't read, which the engine treats as none declared", () => {
+    expect(() => cloudBuildReleaseSet({} as CloudBuildTriggerConfig)).toThrow();
+  });
+
+  describe("through the engine's input builder", () => {
+    const inputs = (config: unknown) =>
+      guardrailInputsFor(
+        {
+          parts: { web: { path: ".", profile: "web-app", config: {}, preview: { enabled: false, bindings: {} }, release: [{ adapter: "cloud-build-trigger", config }], dependsOn: [] } },
+          guardrails: { loadBearing: [], immutable: [] },
+        },
+        { profile: () => ({ guardrails: { immutable: [], checks: [] } }), adapter: () => cloudBuildTrigger },
+      );
+
+    it("declares a set for a validated config", () => {
+      expect(inputs(cloudBuildTriggerConfigSchema.parse(numuKnow)).releaseSets[0]?.set?.globs).toContain("cloudbuild.yaml");
+    });
+
+    it("declares none for config that doesn't validate", () => {
+      expect(inputs({ nonsense: true }).releaseSets).toEqual([{ part: "web", adapter: "cloud-build-trigger", set: undefined }]);
+    });
   });
 });

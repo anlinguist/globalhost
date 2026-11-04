@@ -177,11 +177,11 @@ owner files issue ──▶ label factory:plan ──▶ planner run ──▶ p
 | `factory:failed` | run failed or hit a cap | publisher |
 | `factory:review` | re-review the factory PR's current head (P2-01, shadow); removed once acted on | owner (removed by the review job) |
 | `needs:owner-approval` | a guardrail tripped (permissions, breaking API, immutable path), or the merge policy escalated (ADR-0015) | CI guardrail check; merge policy |
-| `approved:<guardrail>` | owner acknowledges a specific guardrail | owner |
+| `approved:<guardrail>` | owner acknowledges one guardrail on the current head (`approved:deps`, `approved:visual`, `approved:load-bearing`); never clears an instruction surface, the prod-credential paths, the release execution set, an immutable path, provenance or taint | owner |
 | `factory:autofix` | (P4) eligible for auto-fix run | triager |
 | `factory:paused` | per-repo pause | owner |
 
-Only `factory:plan`, `factory:build`, and `approved:*` start or unblock work, and only when applied by an owner. The branch claim (`factory/issue-<n>` first non-force push wins) prevents duplicate builders.
+Only `factory:plan`, `factory:build`, and `approved:*` start or unblock work, and only when applied by an owner. An `approved:*` label counts only if an owner's ID (never an App or bot) applied it after the PR's last push and it's still on the PR; a later push or removing it voids it (`packages/core/src/guardrail-approval.ts`). The branch claim (`factory/issue-<n>` first non-force push wins) prevents duplicate builders.
 
 ## 4. Trust boundaries & prompt-injection defense
 
@@ -195,7 +195,7 @@ Rules:
 2. **Framing:** untrusted text passes through `packages/sanitize` (strip control/bidi/zero-width chars, cap length, mask secrets) and is fenced in a `<untrusted source="…">` block with a standing instruction that it is data.
 3. **Capability limits beat prompt hygiene:** even a fully hijacked agent can only (a) spend up to the run cap and (b) produce a bundle that the publisher pushes to a `factory/*` branch as a draft PR, subject to path policy. It cannot merge, deploy to prod, touch workflows, read prod data, or change `factory.yaml`. At L3 its PR can be merged by the merge policy only if every verdict passes on the reviewed SHA, it trips no escalation trigger (instruction files and the release execution set always do), all its text came from an owner, no run in its chain was tainted, and the release builds without prod credentials and can roll back. The check that allows the merge can only come from a separate merge App (ADR-0015).
 4. **Network:** agent egress limited to an allowlist (Anthropic API, npm/pnpm registry, GitHub read for clone) using Claude Code sandbox network rules. Arbitrary `WebFetch` disabled for builders; planners may fetch from an allowlisted docs list.
-5. **Dependencies:** lockfiles required; new direct dependencies trip `needs:owner-approval` (`approved:deps`). Runner image and Actions pinned by digest/SHA.
+5. **Dependencies:** lockfiles required; any dependency change, transitive lockfile entries included, trips `needs:owner-approval` (`approved:deps`). Runner image and Actions pinned by digest/SHA.
 6. **Workflow hardening:** zizmor + actionlint + gitleaks (full history) in CI, tools pinned by SHA-256; no `pull_request_target` with checkout of PR head; minimal `permissions:` per job; no caches saved from PR runs; GitHub secret scanning + push protection on public repos.
 
 ## 5. Credential & permission model

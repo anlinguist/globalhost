@@ -62,6 +62,7 @@ export {
   type PreviewResult,
   type Profile,
   type ReleaseCtx,
+  type ReleaseExecutionSet,
   type ReleaseHandle,
   type ReleaseLiveness,
   type ReleaseNotLiveReason,
@@ -84,7 +85,41 @@ export {
   type PathPolicyInput,
   type PathPolicyResult,
 } from "./path-policy.js";
-export { gate, REPLAN_LABELS, START_LABELS, type GateDecision, type GateEvent, type StartLabel } from "./trust-gate.js";
+export {
+  evaluateGuardrails,
+  GUARDRAIL_TIMEOUT_MS,
+  guardrailInputsFor,
+  INSTRUCTION_SURFACE_GLOBS,
+  LOAD_BEARING_LABEL,
+  MAX_RESULT_PATHS,
+  MAX_RESULT_SUBJECTS,
+  pathForms,
+  PROD_CREDENTIAL_GLOBS,
+  safePath,
+  safeText,
+  type ChangedFile,
+  type EntryVerdict,
+  type GuardrailEngineInput,
+  type GuardrailEntry,
+  type GuardrailInputs,
+  type GuardrailRegistry,
+  type GuardrailReport,
+  type ReleaseSetDeclaration,
+} from "./guardrails.js";
+export {
+  APPROVAL_CODES,
+  APPROVAL_LABEL_PATTERN,
+  CLEARABLE_CLASSES,
+  evaluateApproval,
+  GUARDRAIL_CLASSES,
+  type ApprovalCode,
+  type ApprovalDecision,
+  type ApprovalEvidence,
+  type GuardrailClass,
+  type LabelActor,
+  type LabelEvent,
+} from "./guardrail-approval.js";
+export { gate, isOwnerActor, REPLAN_LABELS, START_LABELS, type GateDecision, type GateEvent, type StartLabel } from "./trust-gate.js";
 export {
   ESCALATING_SECURITY_CATEGORIES,
   ESCALATION_REASONS,
