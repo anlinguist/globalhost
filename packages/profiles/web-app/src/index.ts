@@ -65,8 +65,10 @@ export const webApp: Profile<WebAppConfig, WebAppDetection> = {
   },
   guardrails: {
     // Env files hold real values; agents never write them, at any depth in the part (skills/web-app). That includes
-    // `.env.example`, which the owner adds: there's deliberately no carve-out. `.env.d/` is a directory of the same files.
-    immutable: ["**/.env", "**/.env.*", "**/.envrc", "**/.env.d/**"],
+    // `.env.example`, which the owner adds. Globs have no negation, so `.env.ts` is refused too: a name that odd can
+    // wait for the owner. `?` catches editor backups (`.env~`); globs can't spell `~`. A trailing `/**` also matches the
+    // name itself, so each covers a file or a directory.
+    immutable: ["**/.env/**", "**/.env.*/**", "**/.env-*/**", "**/.env_*/**", "**/.env?/**", "**/.envrc/**", "**/.envrc.*/**", "**/.envrc?/**"],
     checks: [dependencyChange, visualBaseline],
   },
 };

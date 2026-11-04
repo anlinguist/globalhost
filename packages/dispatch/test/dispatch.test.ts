@@ -373,6 +373,45 @@ describe("publish", () => {
     },
   );
 
+  it.each([
+    ["adds a protected file and deletes it later", ".env", (work: string) => {
+      writeFileSync(join(work, ".env"), "DUMMY=1\n");
+      git(work, "add", ".env");
+      git(work, "commit", "-q", "-m", "add");
+      git(work, "rm", "-q", ".env");
+    }],
+    ["moves a protected file away", "app.ts", (work: string) => {
+      git(work, "mv", "app.ts", "moved.ts");
+    }],
+  ])("rejects a bundle that %s and pushes nothing", async (_, path, change) => {
+    const fx = gitFixture();
+    const cloud = new FakeCloud();
+    const outDir = mkdtempSync(join(tmpdir(), "out-"));
+    git(fx.work, "checkout", "-q", "-B", "factory/issue-12", fx.baseSha);
+    change(fx.work);
+    writeFileSync(join(fx.work, "ok.ts"), "1\n");
+    git(fx.work, "add", ".");
+    git(fx.work, "commit", "-q", "-m", "change");
+    git(fx.work, "bundle", "create", "-q", join(outDir, "result.bundle"), "factory/issue-12", `^${fx.baseSha}`);
+    const result = await publish({
+      gh: new GitHubClient("app-token", cloud.fetch),
+      pushToken: "app-token",
+      repo: REPO,
+      issue: 12,
+      issueTitle: "t",
+      config: { ...config, guardrails: { ...config.guardrails, immutable: [...config.guardrails.immutable, "app.ts"] } },
+      record: record(fx),
+      outDir,
+      base: fx.baseClone(),
+      log: () => undefined,
+      remoteUrl: fx.remote,
+    });
+    expect(result.outcome).toBe("rejected");
+    expect(() => git(fx.remote, "rev-parse", "--verify", "refs/heads/factory/issue-12")).toThrow();
+    expect(cloud.comments[0]?.body).toContain(`\`${path}\` (protected by`);
+    expect(cloud.pulls).toEqual([]);
+  });
+
   it("rewrites closing keywords in commit messages and the PR title before pushing", async () => {
     const fx = gitFixture();
     const cloud = new FakeCloud();

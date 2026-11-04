@@ -30,7 +30,7 @@ parts:
     if (!parsed.ok) throw new Error("expected YAML to parse");
     const result = validateFactoryConfig(parsed.value, createRegistry([webApp], [cloudBuildTrigger]));
     if (!result.ok) throw new Error(JSON.stringify(result.errors));
-    expect(result.config.guardrails.immutable).toEqual(expect.arrayContaining(["apps/web/**/.env", "apps/web/**/.env.*", "apps/web/**/.envrc", "apps/web/**/.env.d/**"]));
+    expect(result.config.guardrails.immutable).toEqual(expect.arrayContaining(["apps/web/**/.env/**", "apps/web/**/.env.*/**", "apps/web/**/.envrc/**"]));
   });
 });
 

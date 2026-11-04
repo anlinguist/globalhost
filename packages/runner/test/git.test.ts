@@ -48,6 +48,52 @@ describe("inspectResultBundle", () => {
     expect(summary.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("lists a file a later commit deleted", async () => {
+    git(work, "checkout", "-q", "-b", BRANCH);
+    commit(".env", "DUMMY=1\n");
+    git(work, "rm", "-q", ".env");
+    commit("app.ts", "export const x = 2;\n");
+    const summary = await inspectResultBundle(bare, bundle("ok.bundle", BRANCH, `^${base}`), base, BRANCH);
+    expect(summary.filesChanged).toEqual([".env", "app.ts"]);
+  });
+
+  it("lists the path a move left", async () => {
+    git(work, "checkout", "-q", "-b", BRANCH);
+    git(work, "mv", "app.ts", "moved.ts");
+    git(work, "commit", "-q", "-m", "move");
+    const summary = await inspectResultBundle(bare, bundle("ok.bundle", BRANCH, `^${base}`), base, BRANCH);
+    expect(summary.filesChanged).toEqual(["app.ts", "moved.ts"]);
+  });
+
+  it("lists a file only a merge commit or a merged side branch touched", async () => {
+    git(work, "checkout", "-q", "-b", BRANCH);
+    commit("left.ts", "1\n");
+    git(work, "checkout", "-q", "-b", "side", base);
+    commit(".env", "DUMMY=1\n");
+    git(work, "rm", "-q", ".env");
+    commit("right.ts", "1\n");
+    git(work, "checkout", "-q", BRANCH);
+    git(work, "merge", "-q", "--no-commit", "--no-ff", "side");
+    writeFileSync(join(work, "evil.ts"), "only in the merge\n");
+    git(work, "add", "evil.ts");
+    git(work, "commit", "-q", "-m", "merge");
+    const summary = await inspectResultBundle(bare, bundle("ok.bundle", BRANCH, `^${base}`), base, BRANCH);
+    expect(summary.filesChanged).toEqual([".env", "evil.ts", "left.ts", "right.ts"]);
+  });
+
+  it("lists a file from a merged commit with no shared history", async () => {
+    git(work, "checkout", "-q", "-b", BRANCH);
+    git(work, "checkout", "-q", "--orphan", "stray");
+    git(work, "rm", "-rfq", ".");
+    commit(".env", "DUMMY=1\n");
+    git(work, "checkout", "-q", BRANCH);
+    git(work, "merge", "-q", "--allow-unrelated-histories", "-m", "merge", "stray");
+    git(work, "rm", "-q", ".env");
+    git(work, "commit", "-q", "-m", "drop");
+    const summary = await inspectResultBundle(bare, bundle("ok.bundle", BRANCH, `^${base}`), base, BRANCH);
+    expect(summary.filesChanged).toContain(".env");
+  });
+
   it("rejects a bundle without the expected branch", async () => {
     git(work, "checkout", "-q", "-b", "other");
     commit("app.ts", "y\n");
