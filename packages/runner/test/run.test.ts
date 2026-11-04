@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { GitHubReader } from "../src/github.js";
 import { RunRecordSchema } from "../src/records.js";
-import { decideStatus, resumeRun, startAssessment, startRun, type RunDeps } from "../src/run.js";
+import { decideStatus, resumeRun, RunNotStartedError, startAssessment, startRun, type RunDeps } from "../src/run.js";
 import { FakeApi } from "./fake-api.js";
 
 const OWNER = { login: "owner", id: 47403803 };
@@ -279,5 +279,37 @@ describe("decideStatus", () => {
     expect(decideStatus("planner", "end_turn", done, {})).toBe("failed");
     expect(decideStatus("planner", "end_turn", done, { planBytes: 10 })).toBe("succeeded");
     expect(decideStatus("builder", "end_turn", done, {})).toBe("failed");
+  });
+});
+
+describe("startRun before a session exists", () => {
+  it.each<[string, (d: RunDeps, api: FakeApi) => void]>([
+    [
+      "the clone fails",
+      (d) => {
+        d.cloneRepo = async () => Promise.reject(new Error("clone failed"));
+      },
+    ],
+    [
+      "the upload fails",
+      (_d, api) => {
+        api.uploadFile = async () => Promise.reject(new Error("upload failed"));
+      },
+    ],
+  ])("says so when %s, and keeps the message", async (_label, arrange) => {
+    const api = new FakeApi();
+    const d = deps(api);
+    arrange(d, api);
+    const err = await startRun(spec(join(dir, "out")), d).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunNotStartedError);
+    expect((err as Error).message).toMatch(/failed/);
+  });
+
+  it("doesn't call a createSession failure 'not started': the session may exist", async () => {
+    const api = new FakeApi();
+    api.createSession = async () => Promise.reject(new Error("502 after create"));
+    const err = await startRun(spec(join(dir, "out")), deps(api)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(RunNotStartedError);
   });
 });

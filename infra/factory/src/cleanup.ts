@@ -12,7 +12,7 @@ import { factoryWorkflowCondition } from "./nightly.js";
 export const CLEANUP_WORKFLOW = ".github/workflows/cleanup.yml";
 export const CLEANUP_PROVIDER_ID = "globalhost-cleanup";
 export const CLEANUP_ACCOUNT_ID = "globalhost-gh-cleanup";
-/** Claims and ledgers, which it deletes. */
+/** Claims and empty ledgers, which it deletes. A ledger with a review in it is kept by the code, not by IAM. */
 export const REVIEWS_PREFIX = "reviews/";
 /** Spend records: it rewrites a day's record to release a hold. Also the lifecycle rule's prefix on the control bucket. */
 export const SPEND_PREFIX = "spend/";
@@ -76,7 +76,7 @@ export function createCleanup({ config, factoryRepoName, pool, control, afterApi
   new gcp.storage.BucketIAMMember("gh-cleanup-control-read", { bucket: control.name, role: "roles/storage.objectViewer", member });
   new gcp.storage.BucketIAMMember("gh-cleanup-control-reviews", {
     bucket: control.name,
-    role: "roles/storage.objectUser", // delete claims and ledgers; rewrite a ledger to release a hold
+    role: "roles/storage.objectUser", // delete claims and empty ledgers; rewrite a ledger to release a hold
     member,
     condition: { title: "review-objects", expression: control.name.apply((b) => cleanupObjectCondition(b, REVIEWS_PREFIX)) },
   });

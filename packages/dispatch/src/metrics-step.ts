@@ -58,16 +58,26 @@ async function safely<T>(description: string, what: () => Promise<T>): Promise<T
   }
 }
 
+/**
+ * Maps with a concurrency limit. If `fn` rejects, no new item starts, and the rejection comes only once every call
+ * in flight has finished: nothing is still running when the caller sees the error.
+ */
 export async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array<R>(items.length);
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    while (next < items.length) {
+    while (next < items.length && !failure) {
       const i = next++;
-      results[i] = await fn(items[i]!);
+      try {
+        results[i] = await fn(items[i]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.error;
   return results;
 }
 

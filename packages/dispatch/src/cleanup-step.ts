@@ -23,7 +23,7 @@ import {
 } from "./cleanup.js";
 import { CONTROL_BUCKET, ControlPlane, ObjectStore, gcloudAccessToken, isRepoSlug, type AccessToken } from "./gcp.js";
 import { GitHubClient, GitHubError } from "./github.js";
-import { failureText, GcpTokenError, READ_CONCURRENCY, mapLimited, reusedToken } from "./metrics-step.js";
+import { failureText, READ_CONCURRENCY, mapLimited, reusedToken } from "./metrics-step.js";
 import { parseSpendName, spendWindow } from "./metrics.js";
 
 /** Where the factory's own list of preview products lives, relative to the checkout. */
@@ -220,18 +220,17 @@ export interface CleanupResult {
 }
 
 /**
- * The whole job. It applies only with CLEANUP_APPLY exactly `true` and CLEANUP_DRY_RUN not `1`; otherwise it plans,
- * prints and writes nothing. Failures to read one thing are reported and don't stop the rest; they fail the job.
+ * The whole job. It applies only with CLEANUP_APPLY exactly `true`, CLEANUP_DRY_RUN not `1`, and the factory not
+ * paused (or unreadably so); otherwise it plans, prints and writes nothing. Failures to read one thing are reported and don't stop the rest; they fail the job.
  *
  * Env: GITHUB_TOKEN (reads PRs; a private repo it can't read is kept and reported), CLEANUP_APPLY, CLEANUP_DRY_RUN.
  */
 export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
   const { env, log } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const apply = env.CLEANUP_APPLY === "true" && env.CLEANUP_DRY_RUN !== "1";
   const now = (deps.now ?? (() => new Date()))();
   const nowMs = now.getTime();
-  if (apply && !env.GITHUB_TOKEN) throw new CleanupError("cleanup: GITHUB_TOKEN is not set");
+  if (env.CLEANUP_APPLY === "true" && env.CLEANUP_DRY_RUN !== "1" && !env.GITHUB_TOKEN) throw new CleanupError("cleanup: GITHUB_TOKEN is not set");
 
   const token = reusedToken(deps.gcpToken ?? gcloudAccessToken);
   const store = new ObjectStore(token, fetchImpl);
@@ -248,14 +247,28 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
 
   const failures: string[] = [];
   const kept: Kept[] = [];
+  /** Never rejects. The same failure many times over (a token, a bucket) is one line. */
   const attempt = async (description: string, what: () => Promise<void>) => {
     try {
       await what();
     } catch (e) {
-      if (e instanceof GcpTokenError && failures.includes(e.message)) return;
-      failures.push(failureText(description, e));
+      const text = failureText(description, e);
+      if (!failures.includes(text)) failures.push(text);
     }
   };
+
+  // The kill switch stops writes here too, read only when they'd otherwise happen. Unreadable means no writes.
+  const wantsApply = env.CLEANUP_APPLY === "true" && env.CLEANUP_DRY_RUN !== "1";
+  let dryRunReason: CleanupReport["dryRunReason"];
+  if (wantsApply) {
+    try {
+      if (await control.paused()) dryRunReason = "paused";
+    } catch (e) {
+      dryRunReason = "pause-unreadable";
+      failures.push(failureText("reading the kill switch", e));
+    }
+  }
+  const apply = wantsApply && dryRunReason === undefined;
 
   // One answer per number per run: a tag and a domain of one PR can't be judged differently.
   const answers = new Map<string, Promise<PrTruth>>();
@@ -312,24 +325,26 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
   const plannedReviews: PlannedReview[] = [];
   await attempt("reading review state", async () => {
     const entries = groupReviewObjects(await store.list(CONTROL_BUCKET, "reviews/"));
-    await mapLimited(entries, READ_CONCURRENCY, async (entry) => {
-      const truth = await truthOf(entry.repo, entry.pr);
-      let ledger: ReviewLedger | null | "corrupt" = null;
-      if (entry.hasLedger) {
-        const obj = await store.read(CONTROL_BUCKET, `reviews/${entry.repo}/pr-${entry.pr}.json`);
-        if (obj) {
-          const parsed = safeLedger(obj.body);
-          ledger = parsed ?? "corrupt";
+    // Each entry's failure is caught here, so the map always finishes: the plan is whole by the time it's counted.
+    await mapLimited(entries, READ_CONCURRENCY, (entry) =>
+      attempt("reading review state", async () => {
+        const truth = await truthOf(entry.repo, entry.pr);
+        let ledger: ReviewLedger | null | "corrupt" = null;
+        if (entry.hasLedger) {
+          const obj = await store.read(CONTROL_BUCKET, `reviews/${entry.repo}/pr-${entry.pr}.json`);
+          if (obj) ledger = safeLedger(obj.body) ?? "corrupt";
         }
-      }
-      const plan = planReviewPr(truth, ledger, nowMs);
-      if (plan.kept) kept.push({ what: "review state", pr: entry.pr, why: plan.kept });
-      if (truth.kind === "closed" && (plan.purge || plan.release.length > 0)) {
-        const reservations = ledger !== null && ledger !== "corrupt" ? ledger.reservations : [];
-        const release = plan.release.map((runId) => ({ runId, usd: reservations.find((r) => r.runId === runId)?.reservedUsd ?? 0 }));
-        plannedReviews.push({ entry, repo: truth.repo, release, purge: plan.purge });
-      }
-    });
+        const plan = planReviewPr(truth, ledger, nowMs);
+        if (plan.kept) kept.push({ what: "review state", pr: entry.pr, why: plan.kept });
+        // A kept ledger with no claims left has nothing to do: it mustn't count toward the cap every night.
+        const purge = plan.deleteLedger || (plan.deleteClaims && entry.shas.length > 0);
+        if (truth.kind === "closed" && (purge || plan.release.length > 0)) {
+          const reservations = ledger !== null && ledger !== "corrupt" ? ledger.reservations : [];
+          const release = plan.release.map((runId) => ({ runId, usd: reservations.find((r) => r.runId === runId)?.reservedUsd ?? 0 }));
+          plannedReviews.push({ entry, repo: truth.repo, release, purge });
+        }
+      }),
+    );
   });
 
   const plannedHolds: { object: string; runId: string; usd: number }[] = [];
@@ -339,21 +354,30 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
       const key = parseSpendName(n);
       return key !== null && key.day >= from && key.day <= to;
     });
-    await mapLimited(names, READ_CONCURRENCY, async (name) => {
-      const obj = await store.read(CONTROL_BUCKET, name);
-      const parsed = obj ? SpendHoldsSchema.safeParse(safeJson(obj.body)) : undefined;
-      if (!parsed?.success) return; // A corrupt record is the watcher's to report.
-      for (const r of parsed.data.reservations) {
-        if (r.kind === "dispatch" && dispatchHoldReleasable(r.at, nowMs)) plannedHolds.push({ object: name, runId: r.runId, usd: r.usd });
-      }
-    });
+    await mapLimited(names, READ_CONCURRENCY, (name) =>
+      attempt("reading the spend records", async () => {
+        const obj = await store.read(CONTROL_BUCKET, name);
+        const parsed = obj ? SpendHoldsSchema.safeParse(safeJson(obj.body)) : undefined;
+        if (!parsed?.success) return; // A corrupt record is the watcher's to report.
+        for (const r of parsed.data.reservations) {
+          if (r.kind === "dispatch" && dispatchHoldReleasable(r.at, nowMs)) plannedHolds.push({ object: name, runId: r.runId, usd: r.usd });
+        }
+      }),
+    );
   });
 
-  const tagPrs = plannedTags.flatMap((t) => [...t.tags.values()]);
-  const domainPrs = [...plannedDomains.values()].flatMap((m) => [...m.values()]);
-  const purges = plannedReviews.filter((r) => r.purge);
-  const releases = plannedReviews.flatMap((r) => r.release.map((x) => ({ pr: r.entry.pr, usd: x.usd })));
-  const planned = tagPrs.length + domainPrs.length + purges.length + releases.length + plannedHolds.length;
+  // What the cap judges is exactly what gets applied: nothing below looks at the arrays planning filled.
+  const plan = Object.freeze({
+    tags: Object.freeze([...plannedTags]),
+    domains: Object.freeze([...plannedDomains]),
+    reviews: Object.freeze([...plannedReviews]),
+    holds: Object.freeze([...plannedHolds]),
+  });
+  const tagPrs = plan.tags.flatMap((t) => [...t.tags.values()]);
+  const domainPrs = plan.domains.flatMap(([, m]) => [...m.values()]);
+  const purges = plan.reviews.filter((r) => r.purge);
+  const releases = plan.reviews.flatMap((r) => r.release.map((x) => ({ pr: r.entry.pr, usd: x.usd })));
+  const planned = tagPrs.length + domainPrs.length + purges.length + releases.length + plan.holds.length;
   const capped = overCap(planned);
 
   const report: CleanupReport = {
@@ -364,9 +388,10 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
     domains: domainPrs,
     reviewState: purges.map((r) => r.entry.pr),
     reservations: releases,
-    dispatchHolds: plannedHolds.map((h) => ({ usd: h.usd })),
+    dispatchHolds: plan.holds.map((h) => ({ usd: h.usd })),
     kept,
     failures,
+    ...(dryRunReason ? { dryRunReason } : {}),
   };
 
   // ── Apply ───────────────────────────────────────────────────────────────────────────────────────
@@ -377,14 +402,14 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
     report.reservations = [];
     report.dispatchHolds = [];
 
-    for (const { product, part, tags } of plannedTags) {
+    for (const { product, part, tags } of plan.tags) {
       await attempt("removing preview tags", async () => {
         const removed = await removeTags(api, product, part, new Set(tags.keys()));
         if (removed === null) failures.push("removing preview tags: the service kept changing; left for the next run");
         else for (const tag of removed) report.tags.push(tags.get(tag)!);
       });
     }
-    for (const [project, orphans] of plannedDomains) {
+    for (const [project, orphans] of plan.domains) {
       await attempt("removing authorized domains", async () => {
         // No etag on this API, so re-read immediately before the write: a concurrent add in the moment since the
         // plan's read is kept, and only the domains judged orphans are taken out of the list as it is now.
@@ -395,7 +420,7 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
         for (const domain of current) if (orphans.has(domain)) report.domains.push(orphans.get(domain)!);
       });
     }
-    for (const review of plannedReviews) {
+    for (const review of plan.reviews) {
       const pr = { repo: review.repo, pr: review.entry.pr };
       for (const { runId, usd } of review.release) {
         await attempt("releasing a reservation", async () => {
@@ -409,7 +434,7 @@ export async function cleanupStep(deps: CleanupDeps): Promise<CleanupResult> {
         else kept.push({ what: "review state", pr: pr.pr, why: outcome === "held" ? "it has an open reservation" : outcome === "corrupt" ? "its ledger is corrupt" : "it changed during this run" });
       });
     }
-    for (const hold of plannedHolds) {
+    for (const hold of plan.holds) {
       await attempt("releasing a dead session's hold", async () => {
         if (await control.releaseDispatchHold(hold.object, hold.runId)) report.dispatchHolds.push({ usd: hold.usd });
       });

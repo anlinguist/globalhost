@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   dispatchHoldReleasable,
+  isEmptyLedger,
   isRemovableTagEntry,
   MAX_CHANGES_PER_RUN,
   overCap,
@@ -17,6 +18,7 @@ import {
 import { cleanupStep, CleanupError, groupReviewObjects, parseStackProducts, readPrTruth, type CleanupDeps } from "../src/cleanup-step.js";
 import { ControlPlane, ObjectStore } from "../src/gcp.js";
 import { GitHubClient } from "../src/github.js";
+import { ShadowEntrySchema } from "@globalhost/core";
 import { FakeCloud } from "./fakes.js";
 
 const NOW = new Date("2026-11-20T03:00:00.000Z");
@@ -128,6 +130,29 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const reservation = (runId: string, at: string) => ({ runId, sha: SHA_A, reservedUsd: 2, reservedAt: at, day: at.slice(0, 10) });
 const ledgerBody = (reservations: unknown[] = []) => JSON.stringify({ version: 1, reviewSpendUsd: 0, truncatedSpendUsd: 0, runs: [], reservations });
+const shadowEntry = (runId: string, costUsd: number) =>
+  ShadowEntrySchema.parse({
+    sha: SHA_A,
+    patchId: "c".repeat(40),
+    baseSha: SHA_B,
+    runId,
+    sessionId: `sesn_${runId}`,
+    agentVersion: 1,
+    model: "claude-opus-5-5",
+    ciRunId: 42,
+    status: "completed",
+    verdicts: { function: "pass", security: "pass", performance: "pass" },
+    overall: "pass",
+    escalations: [],
+    taint: { tainted: false, reasons: [] },
+    scanHits: [],
+    costUsd,
+    prSpendUsd: costUsd,
+    reviewPath: `${REPO}/reviews/pr-5/${SHA_A}/${runId}/review.json`,
+    postedReviewId: null,
+    recordedAt: "2026-11-02T12:00:00.000Z",
+  });
+const shadowLedger = (costUsd = 3) => JSON.stringify({ version: 1, reviewSpendUsd: costUsd, truncatedSpendUsd: 0, runs: [shadowEntry("r1", costUsd)], reservations: [] });
 
 function putReview(c: Live, pr: number, reservations: ReturnType<typeof reservation>[] = [], repo = REPO) {
   c.objects.set(LEDGER(repo, pr), { body: ledgerBody(reservations), generation: 1 });
@@ -245,27 +270,38 @@ describe("what GitHub is taken to say", () => {
 
 describe("review state policy", () => {
   const closed = (days: number): PrTruth => ({ kind: "closed", closedAtMs: NOW_MS - days * 24 * HOUR, repo: REPO });
-  const ledger = (...reservations: ReturnType<typeof reservation>[]) => ({ version: 1 as const, reviewSpendUsd: 0, truncatedSpendUsd: 0, runs: [], reservations });
+  const ledger = (...reservations: ReturnType<typeof reservation>[]) => ({ version: 1 as const, reviewSpendUsd: 0, truncatedSpendUsd: 0, runs: [] as ReturnType<typeof shadowEntry>[], reservations });
+  const NOTHING = { release: [], deleteClaims: false, deleteLedger: false };
 
   it("keeps everything while a PR is open, whatever it holds, and says nothing: the watcher reports the hold", () => {
-    expect(planReviewPr({ kind: "open" }, ledger(reservation("old", ago(1000))), NOW_MS)).toEqual({ release: [], purge: false });
+    expect(planReviewPr({ kind: "open" }, ledger(reservation("old", ago(1000))), NOW_MS)).toEqual(NOTHING);
   });
 
   it("keeps and reports anything GitHub can't vouch for", () => {
-    expect(planReviewPr({ kind: "unknown", why: "GitHub answered HTTP 500" }, ledger(reservation("old", ago(1000))), NOW_MS)).toEqual({ release: [], purge: false, kept: "GitHub answered HTTP 500" });
+    expect(planReviewPr({ kind: "unknown", why: "GitHub answered HTTP 500" }, ledger(reservation("old", ago(1000))), NOW_MS)).toEqual({ ...NOTHING, kept: "GitHub answered HTTP 500" });
   });
 
   it("keeps a corrupt ledger, even a week after closing", () => {
-    expect(planReviewPr(closed(30), "corrupt", NOW_MS)).toEqual({ release: [], purge: false, kept: "its ledger is corrupt" });
+    expect(planReviewPr(closed(30), "corrupt", NOW_MS)).toEqual({ ...NOTHING, kept: "its ledger is corrupt" });
   });
 
   it.each([
     [6.99, false],
     [7, true], // 7+ days
     [30, true],
-  ])("closed %d days ago: purged %s", (days, purge) => {
-    expect(planReviewPr(closed(days), ledger(), NOW_MS).purge).toBe(purge);
-    expect(planReviewPr(closed(days), null, NOW_MS).purge).toBe(purge); // claims with no ledger
+  ])("closed %d days ago: claims and an empty ledger deleted: %s", (days, purge) => {
+    expect(planReviewPr(closed(days), ledger(), NOW_MS)).toEqual({ release: [], deleteClaims: purge, deleteLedger: purge });
+    expect(planReviewPr(closed(days), null, NOW_MS)).toEqual({ release: [], deleteClaims: purge, deleteLedger: false }); // claims with no ledger
+  });
+
+  it("keeps a ledger with a review in it, however long ago the PR closed, and still deletes the claims", () => {
+    const withRun = { ...ledger(), reviewSpendUsd: 3, runs: [shadowEntry("r1", 3)] };
+    expect(planReviewPr(closed(400), withRun, NOW_MS)).toEqual({ release: [], deleteClaims: true, deleteLedger: false });
+  });
+
+  it("keeps a ledger with spend whose runs have all dropped off", () => {
+    expect(isEmptyLedger({ runs: [], reviewSpendUsd: 1 })).toBe(false);
+    expect(isEmptyLedger({ runs: [], reviewSpendUsd: 0 })).toBe(true);
   });
 
   it.each([
@@ -279,13 +315,14 @@ describe("review state policy", () => {
   it("an open reservation under 24 hours blocks the purge, and is reported", () => {
     expect(planReviewPr(closed(10), ledger(reservation("young", ago(2)), reservation("old", ago(30))), NOW_MS)).toEqual({
       release: ["old"],
-      purge: false,
+      deleteClaims: false,
+      deleteLedger: false,
       kept: "an open reservation is under 24 hours old",
     });
   });
 
   it("a stale reservation is released and the purge goes ahead", () => {
-    expect(planReviewPr(closed(10), ledger(reservation("old", ago(30))), NOW_MS)).toEqual({ release: ["old"], purge: true });
+    expect(planReviewPr(closed(10), ledger(reservation("old", ago(30))), NOW_MS)).toEqual({ release: ["old"], deleteClaims: true, deleteLedger: true });
   });
 });
 
@@ -509,7 +546,43 @@ describe("cleanupStep", () => {
   describe("review state", () => {
     const week = 24 * 7;
 
-    it("deletes claims and ledger a week after closing, and nothing else", async () => {
+    it("keeps a ledger with a review in it and deletes its claims; only once, not every night", async () => {
+      const c = new Live();
+      putReview(c, 5);
+      c.objects.set(LEDGER(REPO, 5), { body: shadowLedger(), generation: 1 });
+      c.pr(closedPr(5, ago(week + 1)));
+      const { report } = await cleanupStep(deps(c));
+      expect(report).toMatchObject({ reviewState: [5], planned: 1 });
+      expect(c.objects.has(CLAIM(REPO, 5, SHA_A))).toBe(false);
+      expect(c.objects.get(LEDGER(REPO, 5))!.body).toBe(shadowLedger());
+
+      c.gcsWrites = [];
+      const again = await cleanupStep(deps(c));
+      expect(again.report).toMatchObject({ reviewState: [], planned: 0 });
+      expect(c.allWrites()).toEqual([]);
+    });
+
+    it("re-checks the ledger before deleting: a review recorded after the plan keeps it", async () => {
+      const c = new Live();
+      c.objects.set(LEDGER(REPO, 5), { body: shadowLedger(), generation: 1 });
+      const control = new ControlPlane(new ObjectStore(async () => "gcp", c.fetch), () => NOW);
+      expect(await control.deleteReviewState({ repo: REPO, pr: 5 }, [])).toBe("deleted");
+      expect(c.objects.has(LEDGER(REPO, 5))).toBe(true);
+    });
+
+    it("a reopened PR keeps its budget: what it spent still counts", async () => {
+      const c = new Live();
+      c.objects.set(LEDGER(REPO, 5), { body: shadowLedger(7), generation: 1 });
+      c.pr(closedPr(5, ago(week + 1)));
+      await cleanupStep(deps(c));
+      c.pr(openPr(5)); // reopened
+      const control = new ControlPlane(new ObjectStore(async () => "gcp", c.fetch), () => NOW);
+      expect(await control.prReviewSpend({ repo: REPO, pr: 5 })).toBe(7);
+      const head = { repo: REPO, pr: 5, sha: SHA_A };
+      expect(await control.reserveReview(head, "next", { perRun: 2, perPr: 8, dailyUsd: 20 })).toMatchObject({ reserved: false, reason: "pr-budget" });
+    });
+
+    it("deletes claims and an empty ledger a week after closing, and nothing else", async () => {
       const c = new Live();
       putReview(c, 5);
       c.objects.set(CLAIM(REPO, 5, SHA_B), { body: "{}", generation: 1 });
@@ -681,6 +754,108 @@ describe("cleanupStep", () => {
     });
   });
 
+  describe("a read failing during the plan", () => {
+    /** Slow reads, and one ledger's read failing: the workers are still going when it does. */
+    const flaky = (c: Live, failing: number): typeof fetch => {
+      const inner = recording(c);
+      return (async (input: string | URL, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.includes("storage.googleapis.com/storage/") && (init.method ?? "GET") === "GET" && !url.endsWith("/o")) {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          if (url.includes(`pr-${failing}.json`)) return new Response("{}", { status: 503 });
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+    };
+    const deletes = (c: Live) => c.gcsWrites.filter((w) => w.startsWith("DELETE"));
+    const ledgers = (c: Live, n: number) => {
+      for (let pr = 1; pr <= n; pr++) {
+        c.objects.set(LEDGER(REPO, pr), { body: ledgerBody(), generation: 1 });
+        c.pr(closedPr(pr, ago(24 * 30)));
+      }
+    };
+
+    it("doesn't lower the count: 40 PRs with one read failing are still over the cap, and nothing is deleted", async () => {
+      const c = new Live();
+      ledgers(c, 40);
+      const { report } = await cleanupStep(deps(c, { fetchImpl: flaky(c, 17) }));
+      expect(report).toMatchObject({ overCap: true, mode: "dry-run", planned: 39, failures: ["reading review state failed (HTTP 503)"] });
+      expect(deletes(c)).toEqual([]);
+      expect(c.allWrites()).toEqual([]);
+    });
+
+    it("applies only what was counted, and never more than the cap", async () => {
+      const c = new Live();
+      ledgers(c, MAX_CHANGES_PER_RUN + 1);
+      const { report } = await cleanupStep(deps(c, { fetchImpl: flaky(c, 3) }));
+      expect(report).toMatchObject({ overCap: false, mode: "apply", planned: MAX_CHANGES_PER_RUN, failures: ["reading review state failed (HTTP 503)"] });
+      expect(deletes(c)).toHaveLength(MAX_CHANGES_PER_RUN);
+      expect(c.allWrites().length).toBeLessThanOrEqual(MAX_CHANGES_PER_RUN);
+      expect(c.objects.has(LEDGER(REPO, 3))).toBe(true);
+    });
+
+    it("finishes the spend records too, when one fails", async () => {
+      const c = new Live();
+      const today = NOW.toISOString().slice(0, 10);
+      const previous = new Date(NOW_MS - 24 * HOUR).toISOString().slice(0, 10);
+      const hold = (runId: string) => JSON.stringify({ usd: 0, runs: [], reservations: [{ runId, usd: 4, at: ago(60), kind: "dispatch" }] });
+      c.objects.set(`globalhost-control/spend/${today}/anlinguist__numu-know.json`, { body: hold("a"), generation: 1 });
+      c.objects.set(`globalhost-control/spend/${previous}/anlinguist__numu-know.json`, { body: hold("b"), generation: 1 });
+      c.failing.set(`GET storage.googleapis.com/storage/v1/b/globalhost-control/o/${encodeURIComponent(`spend/${previous}/anlinguist__numu-know.json`)}`, 503);
+      const { report } = await cleanupStep(deps(c));
+      expect(report.failures).toEqual(["reading the spend records failed (HTTP 503)"]);
+      expect(report.dispatchHolds).toEqual([{ usd: 4 }]);
+    });
+  });
+
+  describe("the kill switch", () => {
+    const STATE = "globalhost-control/state.json";
+    function busy() {
+      const c = new Live();
+      c.traffic = [MAIN_TARGET, tagged("pr-5")];
+      c.pr(closedPr(5, ago(3)));
+      return c;
+    }
+
+    it.each([
+      ['{"paused":true}', "paused"],
+      ["{nope", "corrupt, which the kill switch reads as paused"],
+    ])("%s: dry runs whatever CLEANUP_APPLY says, and says so (%s)", async (body) => {
+      const c = busy();
+      c.objects.set(STATE, { body, generation: 1 });
+      const { report, markdown } = await cleanupStep(deps(c));
+      expect(report).toMatchObject({ mode: "dry-run", dryRunReason: "paused", tags: [5], failures: [] });
+      expect(markdown).toContain("The factory is paused, so this is a dry run whatever `CLEANUP_APPLY` says.");
+      expect(c.allWrites()).toEqual([]);
+    });
+
+    it("dry runs and reports it when the state can't be read", async () => {
+      const c = busy();
+      c.failing.set("GET storage.googleapis.com/storage/v1/b/globalhost-control/o/state.json", 500);
+      const { report, markdown } = await cleanupStep(deps(c));
+      expect(report).toMatchObject({ mode: "dry-run", dryRunReason: "pause-unreadable", failures: ["reading the kill switch failed (HTTP 500)"] });
+      expect(markdown).toContain("The kill switch couldn't be read, so this is a dry run");
+      expect(c.allWrites()).toEqual([]);
+    });
+
+    it("applies when the factory isn't paused", async () => {
+      const c = busy();
+      c.objects.set(STATE, { body: '{"paused":false}', generation: 1 });
+      const { report, markdown } = await cleanupStep(deps(c));
+      expect(report).toMatchObject({ mode: "apply", tags: [5] });
+      expect(report.dryRunReason).toBeUndefined();
+      expect(markdown).not.toContain("kill switch");
+    });
+
+    it("doesn't read it for a dry run, which writes nothing anyway", async () => {
+      const c = busy();
+      c.failing.set("GET storage.googleapis.com/storage/v1/b/globalhost-control/o/state.json", 500);
+      const { report } = await cleanupStep(deps(c, { env: { GITHUB_TOKEN: "t" } }));
+      expect(report.failures).toEqual([]);
+      expect(report.dryRunReason).toBeUndefined();
+    });
+  });
+
   describe("dry runs", () => {
     function busy() {
       const c = new Live();
@@ -768,7 +943,7 @@ describe("cleanupStep", () => {
           "",
           "- Removed preview tags: #2, #5",
           "- Removed authorized domains: none",
-          "- Removed review state: #9",
+          "- Removed review claims and empty ledgers: #9",
           "- Released review reservations: #9",
           "- Released dead session holds: 1",
           "- Held amount: $6.00. Not in the ledger, and those sessions may have spent up to it.",
@@ -843,6 +1018,21 @@ describe("ControlPlane: dispatch holds", () => {
     c.objects.set(SPEND("2026-11-02"), { body: '{"usd":"lots"}', generation: 1 });
     await expect(control(c).holdDispatchRun(DEMO, "a", 4)).rejects.toThrow("not a valid spend record");
     expect(c.objects.get(SPEND("2026-11-02"))!.body).toBe('{"usd":"lots"}');
+  });
+
+  it("gives a hold back only by its own id, and only a dispatch hold", async () => {
+    clock = new Date("2026-11-02T10:00:00Z");
+    const c = new FakeCloud();
+    const cp = control(c);
+    const a = await cp.holdDispatchRun(DEMO, "a", 4);
+    await cp.holdDispatchRun(DEMO, "b", 4);
+    await cp.dropDispatchHold(DEMO, a);
+    expect(body(c, "2026-11-02").reservations.map((r) => r.runId)).toEqual(["b"]);
+    expect(await cp.spentTodayUsd(DEMO)).toBe(4);
+    expect(JSON.parse(c.objects.get(SPEND("2026-11-02"))!.body)).not.toHaveProperty("released");
+    c.objects.set(SPEND("2026-11-02"), { body: JSON.stringify({ usd: 0, runs: [], reservations: [{ runId: "review", usd: 2, at: clock.toISOString() }] }), generation: 9 });
+    await cp.dropDispatchHold(DEMO, { runId: "review", day: "2026-11-02" });
+    expect(body(c, "2026-11-02").reservations.map((r) => r.runId)).toEqual(["review"]);
   });
 
   it("recordSpend without a hold doesn't touch reservations", async () => {

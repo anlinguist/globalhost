@@ -3,6 +3,7 @@ import { ObjectStore } from "../src/gcp.js";
 import { GitHubClient } from "../src/github.js";
 import {
   ACTIONS_BOT_LOGIN,
+  mapLimited,
   mergedFactoryPrDays,
   MetricsError,
   metricsStep,
@@ -86,6 +87,29 @@ describe("ObjectStore.list", () => {
     const c = cloud();
     c.failing.set("GET storage.googleapis.com/storage/v1/b/globalhost-runs/o", 403);
     await expect(store(c).list("globalhost-runs", "")).rejects.toThrow("HTTP 403");
+  });
+});
+
+describe("mapLimited", () => {
+  it("rejects only once every call in flight has finished, and starts no more", async () => {
+    let running = 0;
+    let started = 0;
+    const seenRunningAtRejection: number[] = [];
+    const work = async (n: number) => {
+      started++;
+      running++;
+      await new Promise((resolve) => setTimeout(resolve, n === 0 ? 0 : 5));
+      running--;
+      if (n === 0) throw new Error("first");
+      return n;
+    };
+    await mapLimited([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3, work).catch(() => seenRunningAtRejection.push(running));
+    expect(seenRunningAtRejection).toEqual([0]);
+    expect(started).toBeLessThan(10);
+  });
+
+  it("keeps results in order", async () => {
+    expect(await mapLimited([3, 1, 2], 2, async (n) => n * 2)).toEqual([6, 2, 4]);
   });
 });
 

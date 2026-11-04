@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { gate, parseFactoryYaml, validateFactoryConfig, type FactoryConfig, type GateEvent, type Profile, type Registry } from "@globalhost/core";
 import {
   GitHubReader,
+  RunNotStartedError,
   anthropicClient,
   createRepoBundle,
   federationIdsFromEnv,
@@ -275,11 +276,12 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
       cloneRepo: deps.cloneRepo,
     };
     // Before anything can spend: if this job dies, the hold stays, counted against today and reported by the
-    // watcher (ADR-0020). A session that throws leaves it too, since its cost is unknown.
+    // watcher (ADR-0020). A session that throws leaves it too, since its cost is unknown. Only a run the runner says
+    // never had a session gives it back.
     const hold = await control.holdDispatchRun(repo, runId, config.limits.perRunUsd);
-    const record = resumeFrom
-      ? await resumeRun({ sessionId: resumeFrom.session, feedback: feedback!, addBudgetUsd: config.limits.perRunUsd, timeoutMinutes: config.limits.perRunMinutes, outDir, toolchain: settings.toolchain }, runDeps)
-      : await startRun(
+    const session = resumeFrom
+      ? resumeRun({ sessionId: resumeFrom.session, feedback: feedback!, addBudgetUsd: config.limits.perRunUsd, timeoutMinutes: config.limits.perRunMinutes, outDir, toolchain: settings.toolchain }, runDeps)
+      : startRun(
           {
             runId,
             role,
@@ -297,6 +299,12 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
           },
           runDeps,
         );
+    const record = await session.catch(async (err: unknown) => {
+      if (err instanceof RunNotStartedError) {
+        await control.dropDispatchHold(repo, hold).catch(() => log("dispatch: couldn't drop the hold of a run that never started; it stays counted"));
+      }
+      throw err;
+    });
 
     await control.recordSpend(repo, record.runId, Math.max(0, record.costUsd - (resumeFrom?.costUsd ?? 0)), hold);
     await archive(new ObjectStore(gcpToken, deps.fetchImpl), repo, record, outDir);

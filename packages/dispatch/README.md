@@ -117,11 +117,11 @@ Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`. `METRICS_DRY_RUN=1` writes nothing and
 
 `globalhost cleanup` is the factory repo's `cleanup.yml`, which runs before `nightly.yml`. `cleanup.ts` is the pure policy, with the adversarial tests; `cleanup-step.ts` does the I/O: it reads everything into a plan, checks the plan against the cap, and only then writes.
 
-It removes preview tags and authorized domains whose PR GitHub says closed over an hour ago, deletes a PR's claims and ledger a week after closing, releases review reservations over 24 hours old on closed PRs, and releases dispatch holds over 48 hours old. Any GitHub answer but a clean one keeps the thing and reports it. Over 20 changes, it changes nothing and exits 1.
+It removes preview tags and authorized domains whose PR GitHub says closed over an hour ago, deletes a PR's claims a week after closing, and its ledger only if that's empty (one with a review in it stays until P2-01c sets its retention), releases review reservations over 24 hours old on closed PRs, and releases dispatch holds over 48 hours old. Any GitHub answer but a clean one keeps the thing and reports it. Over 20 changes, it changes nothing and exits 1. When the factory is paused, it only dry-runs.
 
 The output is public: PR numbers, amounts and fixed text, in the log and the job summary. A release also goes under `released` on its day's spend record, which the metrics issue reports.
 
-Env: `GITHUB_TOKEN`, and `CLEANUP_APPLY`, which must be exactly `true` for any write. `CLEANUP_DRY_RUN=1` overrides it. A dry run needs no token for public repos, so the owner can run one locally with `gcloud` signed in, from the repo root: `CLEANUP_DRY_RUN=1 pnpm globalhost cleanup`.
+Env: `GITHUB_TOKEN`, and `CLEANUP_APPLY`, which must be exactly `true` for any write. `CLEANUP_DRY_RUN=1` and a paused factory override it. A dry run needs no token for public repos, so the owner can run one locally with `gcloud` signed in, from the repo root: `CLEANUP_DRY_RUN=1 pnpm globalhost cleanup`.
 
 ## Product-repo setup
 

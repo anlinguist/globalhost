@@ -21,6 +21,7 @@ import {
   type ShadowEntry,
 } from "@globalhost/core";
 import { z } from "zod";
+import { isEmptyLedger } from "./cleanup.js";
 
 const exec = promisify(execFile);
 
@@ -591,6 +592,15 @@ export class ControlPlane {
     return this.dropLedgerReservation(name, runId);
   }
 
+  /** Drops a hold whose session never existed, so there's nothing to report. Other holds on the record stay. */
+  async dropDispatchHold(repo: string, hold: DispatchHold): Promise<void> {
+    await this.casDaily(this.spendObjectFor(hold.day, repo), (cur) =>
+      cur?.reservations.some((r) => r.runId === hold.runId && r.kind === "dispatch")
+        ? { next: { ...cur, reservations: cur.reservations.filter((r) => r.runId !== hold.runId) }, result: undefined }
+        : { result: undefined },
+    );
+  }
+
   /** Drops a dead session's dispatch hold from its day's record, listed under `released`. Only `kind: "dispatch"`. */
   async releaseDispatchHold(object: string, runId: string): Promise<boolean> {
     if (!SPEND_OBJECT.test(object)) throw new Error("cleanup: not a spend object");
@@ -603,19 +613,20 @@ export class ControlPlane {
   }
 
   /**
-   * Deletes a closed PR's claims and ledger (the cleanup job). A ledger holding a reservation or failing its schema
-   * is kept, and so are its claims. Every delete is conditional on the generation just read; "conflict" means
-   * something changed under us, and whatever is left waits for the next run. Claims go first, so a ledger with no
-   * claims left is still found again if a later delete fails.
+   * Deletes a closed PR's claims, and its ledger if that's empty (the cleanup job). A ledger with a review in it
+   * stays (isEmptyLedger). One holding a reservation or failing its schema is kept and so are its claims. Every
+   * delete is conditional on the generation just read; "conflict" means something changed under us, and whatever is
+   * left waits for the next run. Claims go first, so a ledger with no claims left is still found again if a later
+   * delete fails. "deleted" says only that nothing that should go is left.
    */
   async deleteReviewState(pr: ReviewPr, claimShas: readonly string[]): Promise<"deleted" | "held" | "corrupt" | "conflict"> {
     const name = reviewLedgerObject(pr);
     const held = async () => {
       const obj = await this.store.read(CONTROL_BUCKET, name);
-      if (!obj) return { obj, verdict: null };
+      if (!obj) return { obj, verdict: null, empty: false };
       const parsed = ReviewLedgerSchema.safeParse(parseJsonSafe(obj.body));
-      if (!parsed.success) return { obj, verdict: "corrupt" as const };
-      return { obj, verdict: parsed.data.reservations.length > 0 ? ("held" as const) : null };
+      if (!parsed.success) return { obj, verdict: "corrupt" as const, empty: false };
+      return { obj, verdict: parsed.data.reservations.length > 0 ? ("held" as const) : null, empty: isEmptyLedger(parsed.data) };
     };
     const before = await held();
     if (before.verdict) return before.verdict;
@@ -626,7 +637,7 @@ export class ControlPlane {
     }
     const after = await held();
     if (after.verdict) return after.verdict;
-    if (after.obj && (await this.store.remove(CONTROL_BUCKET, name, after.obj.generation)) === "conflict") return "conflict";
+    if (after.obj && after.empty && (await this.store.remove(CONTROL_BUCKET, name, after.obj.generation)) === "conflict") return "conflict";
     return "deleted";
   }
 

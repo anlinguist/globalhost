@@ -153,17 +153,48 @@ describe("a session's hold", () => {
     return obj ? (JSON.parse(obj.body) as { usd?: number; reservations: { kind?: string; usd: number }[] }) : undefined;
   };
 
-  it("is on the record before the session starts, and stays when the run dies, so the watcher can see it", async () => {
-    const cloud = new FakeCloud();
-    const api = new Proxy({}, {
+  const dyingApi = () =>
+    new Proxy({}, {
       get: () => () => {
         throw new Error("the session died");
       },
     }) as NonNullable<DispatchDeps["api"]>;
-    // It throws before any spend is recorded, so a hold on the record can only have been taken first.
-    await expect(dispatchStep({ ...deps(cloud, env), api })).rejects.toThrow();
+
+  it("is on the record before a session, and stays when one may exist, so the watcher can see it", async () => {
+    const cloud = new FakeCloud();
+    cloud.routes.set(`GET /repos/${REPO}/issues/comments/556`, { id: 556, body: "try again", user: OWNER });
+    cloud.comments.push({ issue: 30, body: marker({ role: "builder", session: "sesn_abc", run: "r1", costUsd: 0.5 }) });
+    // A resumed session already exists, and this throws before any spend is recorded, so the hold came first.
+    await expect(dispatchStep({ ...deps(cloud, { ...env, GLOBALHOST_ACTION: "resume", GLOBALHOST_PR: "30", GLOBALHOST_COMMENT: "556" }), api: dyingApi() })).rejects.toThrow();
     expect(spend(cloud)).toMatchObject({ reservations: [{ kind: "dispatch", usd: 2 }] });
     expect(spend(cloud)?.usd ?? 0).toBe(0);
+  });
+
+  it("is given back when the runner says no session could exist", async () => {
+    const cloud = new FakeCloud();
+    let held = false;
+    // The fake's repo answer is too thin for the runner, so it fails before any session: the case a clone error is too.
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      held ||= (spend(cloud)?.reservations.length ?? 0) > 0;
+      return cloud.fetch(input, init);
+    }) as typeof fetch;
+    await expect(dispatchStep({ ...deps(cloud, env), api: dyingApi(), fetchImpl })).rejects.toThrow();
+    expect(held).toBe(true); // held while it tried
+    expect(spend(cloud)?.reservations).toEqual([]);
+    expect(await new ControlPlane(new ObjectStore(token, cloud.fetch)).spentTodayUsd(REPO)).toBe(0);
+  });
+
+  it("still reports the original failure when the hold can't be given back", async () => {
+    const cloud = new FakeCloud();
+    const lines: string[] = [];
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes("/upload/") && spend(cloud)) return new Response("", { status: 503 });
+      return cloud.fetch(input, init);
+    }) as typeof fetch;
+    const err = await dispatchStep({ ...deps(cloud, env), api: dyingApi(), fetchImpl, log: (l) => lines.push(l) }).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("RunNotStartedError");
+    expect(lines).toContain("dispatch: couldn't drop the hold of a run that never started; it stays counted");
+    expect(spend(cloud)?.reservations).toHaveLength(1);
   });
 
   it("isn't taken when the run is refused before a session", async () => {

@@ -228,7 +228,29 @@ async function openSession(deps: RunDeps, l: SessionLaunch, bundle: RepoBundle,
   return { sessionId, model: def.model, agent, environmentId };
 }
 
+/**
+ * Thrown when a planner or builder run fails before any session could exist (before createSession was called):
+ * nothing ran, so the caller can drop the budget it held. As ReviewNotStartedError does for reviews.
+ */
+export class RunNotStartedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RunNotStartedError";
+  }
+}
+
+/** Throws RunNotStartedError for a failure before createSession was called, and anything later as it is. */
 export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecord> {
+  const progress = { creating: false };
+  try {
+    return await startRunTracked(spec, deps, progress);
+  } catch (err) {
+    if (progress.creating) throw err;
+    throw new RunNotStartedError(err instanceof Error ? err.message : String(err), { cause: err });
+  }
+}
+
+async function startRunTracked(spec: StartSpec, deps: RunDeps, progress: { creating: boolean }): Promise<RunRecord> {
   if (spec.role === "assessor") throw new Error("the assessor runs through startAssessment, not on an issue");
   if (spec.role === "reviewer") throw new Error("the reviewer runs through startReview, on a pull request");
   const now = deps.now ?? Date.now;
@@ -243,7 +265,7 @@ export async function startRun(spec: StartSpec, deps: RunDeps): Promise<RunRecor
     deps.log(`base ${repo.default_branch}@${bundle.baseSha.slice(0, 12)}`);
     const preProblems: string[] = [];
     const toolchain = await resolveToolchain(spec.toolchain, bundle.bareDir, bundle.baseSha, deps.log, preProblems);
-    const { sessionId, model } = await openSession(deps, spec, bundle);
+    const { sessionId, model } = await openSession(deps, { ...spec, progress }, bundle);
     const message = buildTaskMessage({
       role: spec.role,
       repo: spec.repo,

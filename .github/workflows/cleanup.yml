@@ -1,13 +1,13 @@
 name: cleanup
 
 # Sweeps what closed PRs left behind (PLAN P1-13 slice 2, ADR-0020): preview tags and authorized domains the product
-# workflow's teardown missed, review state of PRs closed for a week, and stale reservations. Kept keyed on GitHub:
+# workflow's teardown missed, claims and empty ledgers of PRs closed for a week, and stale reservations. Kept keyed on GitHub:
 # anything but a clean "closed" answer stays and is reported.
 # A separate workflow from nightly.yml on purpose. GitHub's job_workflow_ref claim names the workflow file, not the
 # job, so jobs sharing a file couldn't have separate identities. Only this file on main can get
 # sa:globalhost-gh-cleanup, and nightly.yml's read-only identity stays read-only (infra/factory/src/cleanup.ts).
 # Runs before nightly.yml, so the metrics issue reads what's left.
-# It only dry-runs until the repo variable CLEANUP_APPLY is exactly `true`.
+# It only dry-runs until the repo variable CLEANUP_APPLY is exactly `true`, and whenever the factory is paused.
 # This repo is public and so are its Actions logs: `globalhost cleanup` logs PR numbers and fixed text only.
 
 on:
@@ -48,7 +48,7 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_CLEANUP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_CLEANUP_SA }}
 
-      - name: Sweep (dry run unless CLEANUP_APPLY is true)
+      - name: Sweep (dry run unless CLEANUP_APPLY is true and the factory isn't paused)
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CLEANUP_APPLY: ${{ vars.CLEANUP_APPLY }}

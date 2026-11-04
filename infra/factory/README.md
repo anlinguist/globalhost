@@ -91,7 +91,7 @@ Nothing at project level, and no secret. After `pulumi up`, set this repo's vari
 | Scope | Role | Condition (object names) | Why |
 |---|---|---|---|
 | `globalhost-control` | `roles/storage.objectViewer` | — | list and read review state and spend records |
-| `globalhost-control` | `roles/storage.objectUser` | `reviews/` | delete claims and ledgers; rewrite a ledger to release a hold |
+| `globalhost-control` | `roles/storage.objectUser` | `reviews/` | delete claims and empty ledgers; rewrite a ledger to release a hold |
 | `globalhost-control` | `roles/storage.objectUser` | `spend/` | rewrite a day's record to release a hold (an overwrite needs delete) |
 | each `<part>-preview` service in `<product>-dev` | custom `globalhostCleanupPreviewTags` (`run.services.get`, `run.services.update`) | — | remove a tag from its traffic |
 | `<product>-dev` project | custom `globalhostCleanupAuthDomains` (`firebaseauth.configs.get`, `firebaseauth.configs.update`, `serviceusage.services.use`) | — | remove an authorized domain, with the dev project as the quota project |
