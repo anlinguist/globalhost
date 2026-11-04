@@ -108,6 +108,15 @@ describe("run records", () => {
     expect(events.map((e) => e.usd)).toEqual([2, 0]);
   });
 
+  it("measures from the highest cost so far, so a dip doesn't count the same spend twice", () => {
+    const { events } = parseRuns([
+      builderObject(runRecord({ turn: 1, costUsd: 2 })),
+      builderObject(runRecord({ turn: 2, costUsd: 1 })),
+      builderObject(runRecord({ turn: 3, costUsd: 3 })),
+    ]);
+    expect(events.map((e) => e.usd)).toEqual([2, 0, 1]);
+  });
+
   it("doesn't count a resumed run's whole session when its first turn has aged out, and notes it", () => {
     const { events } = parseRuns([builderObject(runRecord({ turn: 2, costUsd: 9, finishedAt: "2026-11-12T10:00:00.000Z" }))]);
     expect(events[0]).toMatchObject({ usd: 0, noBaseline: true, redirect: true });
@@ -162,6 +171,9 @@ describe("run records", () => {
     ["a review record in a builder layout", { name: `${PUBLIC_REPO}/run-1/turn-1/run.json`, body: JSON.stringify({ ...reviewRun(), runId: "run-1" }) }],
     ["a builder record in a review layout", { name: `${PUBLIC_REPO}/reviews/pr-38/${SHA}/run-1/run.json`, body: JSON.stringify(runRecord()) }],
     ["a review's PR that disagrees with its path", { name: `${PUBLIC_REPO}/reviews/pr-39/${SHA}/review-1/run.json`, body: JSON.stringify(reviewRun()) }],
+    ["a review's repo that disagrees with its path", { name: `${PUBLIC_REPO}/reviews/pr-38/${SHA}/review-1/run.json`, body: JSON.stringify(reviewRun({ repo: "someone/else" })) }],
+    ["a review's runId that disagrees with its path", { name: `${PUBLIC_REPO}/reviews/pr-38/${SHA}/other/run.json`, body: JSON.stringify(reviewRun()) }],
+    ["a review with a negative cost", { name: `${PUBLIC_REPO}/reviews/pr-38/${SHA}/review-1/run.json`, body: JSON.stringify({ ...reviewRun(), costUsd: -1 }) }],
     ["an unknown layout", { name: `${PUBLIC_REPO}/stray/run.json`, body: JSON.stringify(runRecord()) }],
     ["a repo that isn't a slug", { name: "a$b/c d/run-1/turn-1/run.json", body: JSON.stringify(runRecord({ repo: "a$b/c d" })) }],
   ])("reports %s, and counts nothing from it", (_name, object) => {
@@ -308,6 +320,9 @@ describe("metrics", () => {
   it("warns once a cycle reaches further back than run records last", () => {
     expect(report({ now: new Date("2026-11-08T03:00:00.000Z") }).cycle.runRecordsExpiring).toBe(false);
     expect(report({ now: new Date("2026-11-09T03:00:00.000Z") }).cycle.runRecordsExpiring).toBe(true);
+    // Exactly 30 days after the cycle's first midnight, and a moment before.
+    expect(report({ now: new Date("2026-11-08T23:59:59.999Z") }).cycle.runRecordsExpiring).toBe(false);
+    expect(report({ now: new Date("2026-11-09T00:00:00.000Z") }).cycle.runRecordsExpiring).toBe(true);
   });
 
   it("measures against the factory.yaml default daily limit", () => {
@@ -504,14 +519,68 @@ describe("budget watcher", () => {
       // Over $10, 10% does.
       [14, 12.6, false], // exactly 10%
       [14, 12.59, true],
-      // A crash before recordSpend: run records with no ledger entry at all.
+      // Run records with no ledger entry at all.
       [0, 1, false],
       [0, 1.01, true],
-      // A crash before archiving: ledger with no run record.
+      // A stop between recordSpend and archive, or a failed review settled with no run.json: ledger with no run record.
       [1, 0, false],
       [1.01, 0, true],
     ])("ledger $%d, run records $%d trips it: %s", (ledger, records, trips) => {
       expect(codes(drift(ledger, records)).includes("ledger-drift")).toBe(trips);
+    });
+
+    it("adds up each repo's difference, so one repo's excess can't cancel another's shortfall", () => {
+      const r = report({
+        spend: [spendOn("2026-11-12", 3), spendObject("2026-11-12", "anlinguist/other", { usd: 0 })],
+        runs: [builderObject(runRecord({ repo: "anlinguist/other", costUsd: 3, finishedAt: "2026-11-12T10:00:00.000Z" }))],
+      });
+      expect(r.drift).toMatchObject({ ledgerUsd: 3, runRecordsUsd: 3, diffUsd: 6, allowedUsd: 1 });
+      expect(codes(r)).toEqual(["ledger-drift"]);
+    });
+
+    it.each([
+      [0.5, false], // $0.50 each way: $1.00 in all, exactly the floor
+      [0.51, true],
+    ])("applies the threshold to the sum: $%d each way trips it: %s", (each, trips) => {
+      const r = report({
+        spend: [spendOn("2026-11-12", each)],
+        runs: [builderObject(runRecord({ repo: "anlinguist/other", costUsd: each, finishedAt: "2026-11-12T10:00:00.000Z" }))],
+      });
+      expect(codes(r).includes("ledger-drift")).toBe(trips);
+    });
+
+    it("joins a repo's ledger and run records whatever their case", () => {
+      const r = report({
+        spend: [spendObject("2026-11-12", "AnLinguist/Numu-Know", { usd: 3 })],
+        runs: [builderObject(runRecord({ repo: "anlinguist/numu-know", costUsd: 3, finishedAt: "2026-11-12T10:00:00.000Z" }))],
+      });
+      expect(r.drift.diffUsd).toBe(0);
+    });
+
+    it("doesn't report drift when a resumed turn in the window has no baseline, and says it wasn't checked", () => {
+      const r = report({
+        spend: [spendOn("2026-11-12", 2)],
+        runs: [builderObject(runRecord({ turn: 2, costUsd: 32, finishedAt: "2026-11-12T10:00:00.000Z" }))],
+      });
+      expect(r.drift).toMatchObject({ ledgerUsd: 2, runRecordsUsd: 0, diffUsd: 2, unknownBaseline: true });
+      expect(codes(r)).not.toContain("ledger-drift");
+      expect(renderMetricsMarkdown(r)).toContain("Not checked: a resumed run in this window");
+    });
+
+    it("still reports drift when the no-baseline turn is outside the window", () => {
+      const r = report({
+        spend: [spendOn("2026-11-12", 2)],
+        runs: [builderObject(runRecord({ turn: 2, costUsd: 32, finishedAt: "2026-11-01T10:00:00.000Z" }))],
+      });
+      expect(r.drift.unknownBaseline).toBe(false);
+      expect(codes(r)).toContain("ledger-drift");
+    });
+
+    it("names the causes it can see, and says a builder killed mid-session isn't one", () => {
+      const { message } = drift(5, 0).findings.find((f) => f.code === "ledger-drift")!;
+      expect(message).toContain("failed review settled up to its cap with no run.json");
+      expect(message).toContain("crossing midnight");
+      expect(message).toContain("A builder killed mid-session doesn't show here");
     });
 
     it("compares over the window, so a run crossing midnight isn't drift", () => {
@@ -568,6 +637,13 @@ describe("budget watcher", () => {
       ["2026-11-13T03:16:59.999Z", true],
     ])("reserved at %s trips it: %s", (at, trips) => {
       expect(codes(report({ spend: [reservation(at)] })).includes("stale-reservation")).toBe(trips);
+    });
+
+    it("uses the reservation's own age, not its record's day", () => {
+      const old = spendObject("2026-11-14", PUBLIC_REPO, { usd: 0, reservations: [{ runId: "r", usd: 2, at: "2026-11-01T00:00:00.000Z" }] });
+      const fresh = spendObject("2026-11-07", PUBLIC_REPO, { usd: 0, reservations: [{ runId: "r", usd: 2, at: "2026-11-14T03:00:00.000Z" }] });
+      expect(codes(report({ spend: [old] }))).toEqual(["stale-reservation"]);
+      expect(codes(report({ spend: [fresh] }))).toEqual([]);
     });
 
     it("says how much is held", () => {

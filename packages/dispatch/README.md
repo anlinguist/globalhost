@@ -109,6 +109,8 @@ A run that crashes never settles, so its hold stays counted at the full per-run 
 
 The output is public. Only numbers, enums and slug-checked repo names are taken from a record, and any repo not confirmed public is `other`. Errors logged carry fixed text and a status, never an object name. To find a record the watcher flagged, read `gs://globalhost-control/metrics/<day>.problems.json`, which lists object names and stays in the private bucket.
 
+The drift check compares two records of the same run, so a builder killed or throwing mid-session, which writes neither, doesn't show. ADR-0020 lists this and the check's other limits.
+
 Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`. `METRICS_DRY_RUN=1` writes nothing and prints the report, so the owner can run it locally with `gcloud` signed in.
 
 ## Product-repo setup

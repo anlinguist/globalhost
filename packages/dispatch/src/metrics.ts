@@ -326,7 +326,17 @@ export interface MetricsReport {
   };
   byRepo: { repo: string; metrics: PeriodMetrics }[];
   days: { day: string; metrics: PeriodMetrics }[];
-  drift: { from: string; to: string; ledgerUsd: number; runRecordsUsd: number; diffUsd: number; allowedUsd: number };
+  drift: {
+    from: string;
+    to: string;
+    ledgerUsd: number;
+    runRecordsUsd: number;
+    /** Each repo's difference, absolute, added up: one repo's excess can't hide another's shortfall. */
+    diffUsd: number;
+    allowedUsd: number;
+    /** A resumed turn in the window has no earlier turn on record, so the run-record side is known to be short. */
+    unknownBaseline: boolean;
+  };
   dailyLimitUsd: number;
   notes: { runsWithoutBaseline: number; reposWithoutMergeCount: number };
   findings: Finding[];
@@ -419,12 +429,22 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
     });
   }
 
-  // (d) Run records against the ledger, over a window so a run that crosses midnight doesn't count as drift.
+  // (d) Run records against the ledger, over a window so a run that crosses midnight mid-window doesn't count as
+  // drift. This only sees a gap between the two records: a builder killed mid-session writes neither (ADR-0020).
   const driftFrom = addDays(day, 1 - DRIFT_WINDOW_DAYS);
   const inDrift = (d: string) => d >= driftFrom && d <= day;
-  const ledgerUsd = addUsd(...spend.rows.filter((r) => inDrift(r.day)).map((r) => r.usd));
-  const runRecordsUsd = addUsd(...runs.events.filter((e) => inDrift(e.day)).map((e) => e.usd));
-  const diffCents = Math.abs(cents(ledgerUsd) - cents(runRecordsUsd));
+  const windowRows = spend.rows.filter((r) => inDrift(r.day));
+  const windowEvents = runs.events.filter((e) => inDrift(e.day));
+  const ledgerUsd = addUsd(...windowRows.map((r) => r.usd));
+  const runRecordsUsd = addUsd(...windowEvents.map((e) => e.usd));
+  const diffCents = [...new Set([...windowRows.map((r) => r.repo), ...windowEvents.map((e) => e.repo)])]
+    .map((repo) => {
+      const ledger = addUsd(...windowRows.filter((r) => r.repo === repo).map((r) => r.usd));
+      const records = addUsd(...windowEvents.filter((e) => e.repo === repo).map((e) => e.usd));
+      return Math.abs(cents(ledger) - cents(records));
+    })
+    .reduce((sum, d) => sum + d, 0);
+  const unknownBaseline = windowEvents.some((e) => e.noBaseline);
   const drift = {
     from: driftFrom,
     to: day,
@@ -432,13 +452,15 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
     runRecordsUsd,
     diffUsd: diffCents / 100,
     allowedUsd: Math.max(DRIFT_MIN_USD, ledgerUsd * DRIFT_SHARE),
+    unknownBaseline,
   };
-  if (diffCents > cents(DRIFT_MIN_USD) && diffCents > cents(ledgerUsd) * DRIFT_SHARE) {
+  if (!unknownBaseline && diffCents > cents(DRIFT_MIN_USD) && diffCents > cents(ledgerUsd) * DRIFT_SHARE) {
     findings.push({
       code: "ledger-drift",
       message:
-        `Run records and the ledger differ by ${usd(drift.diffUsd)} from ${driftFrom} to ${day} (run records ${usd(runRecordsUsd)}, ledger ${usd(ledgerUsd)}; ` +
-        `allowed ${usd(drift.allowedUsd)}). A harness that crashed before recording spend, or before archiving, does this.`,
+        `Run records and the ledger differ by ${usd(drift.diffUsd)}, added up per repo, from ${driftFrom} to ${day} (run records ${usd(runRecordsUsd)}, ledger ${usd(ledgerUsd)}; ` +
+        `allowed ${usd(drift.allowedUsd)}). Possible causes: a failed review settled up to its cap with no run.json, which stays red until it leaves the window; a run crossing midnight at the window's edge, which clears in a day; ` +
+        `a job that stopped between recording spend and archiving. A builder killed mid-session doesn't show here: only the Console sees its spend.`,
     });
   }
 
@@ -556,9 +578,9 @@ export function renderMetricsMarkdown(report: MetricsReport): string {
     "",
     "## Check against the Console",
     "",
-    `Cycle to date: **${usd(cycle.spendUsd)}**. Compare with the \`globalhost-runners\` workspace in the Anthropic Console (P1-13). The Console should read higher by what the ledger doesn't see: \`security-audit.yml\` and local \`globalhost run\` / \`assess\`. Ledger costs are list cost.`,
+    `Cycle to date: **${usd(cycle.spendUsd)}**. Compare with the \`globalhost-runners\` workspace in the Anthropic Console (P1-13). The Console should read higher by what the ledger doesn't see: \`security-audit.yml\`, local \`globalhost run\` / \`assess\`, and any builder killed or failing mid-session, whose spend is recorded nowhere else. The Console's workspace limit is the hard cap. Ledger costs are list cost.`,
     "",
-    `Run records against the ledger, ${drift.from} to ${drift.to}: ${usd(drift.runRecordsUsd)} and ${usd(drift.ledgerUsd)}, a difference of ${usd(drift.diffUsd)} (allowed ${usd(drift.allowedUsd)}).`,
+    `Run records against the ledger, ${drift.from} to ${drift.to}: ${usd(drift.runRecordsUsd)} and ${usd(drift.ledgerUsd)}, a difference of ${usd(drift.diffUsd)} added up per repo (allowed ${usd(drift.allowedUsd)}).${drift.unknownBaseline ? " Not checked: a resumed run in this window has no earlier turn on record." : ""}`,
     "",
     "## By day",
     "",

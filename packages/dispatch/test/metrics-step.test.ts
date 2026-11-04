@@ -180,6 +180,15 @@ describe("the rolling issue", () => {
     expect(await publishMetricsIssue(gh(c), FACTORY, "body")).toBe(70);
   });
 
+  it("stops on any other label error, without opening an unlabelled issue", async () => {
+    const c = cloud();
+    c.routes.set(`GET ${ISSUES}`, []);
+    c.routes.set(`POST /repos/${FACTORY}/issues`, { number: 71, labels: [] });
+    c.failing.set(`POST /repos/${FACTORY}/labels`, 403);
+    await expect(publishMetricsIssue(gh(c), FACTORY, "body")).rejects.toThrow("HTTP 403");
+    expect(c.calls.some((x) => x.method === "POST" && x.path === `/repos/${FACTORY}/issues`)).toBe(false);
+  });
+
   it("creates the label and the issue when there's none", async () => {
     const c = cloud();
     c.routes.set(`GET ${ISSUES}`, []);
@@ -244,6 +253,39 @@ describe("metricsStep", () => {
     const { report } = await metricsStep(deps(c));
     expect(report.drift).toMatchObject({ ledgerUsd: 2, runRecordsUsd: 2 });
     expect(report.findings).toEqual([]);
+  });
+
+  it("reads a malformed spend name, whatever its day, so it gets reported", async () => {
+    const c = cloud();
+    putSpend(c, { name: "spend/whatever.json", body: "{}" });
+    const { report } = await metricsStep(deps(c));
+    expect(report.findings.map((f) => f.code)).toEqual(["corrupt-spend"]);
+    expect(JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/whatever.json"] });
+  });
+
+  describe("the private problems file", () => {
+    const problems = (c: FakeCloud) => JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body) as unknown;
+
+    it("lists only the bad run.json when no spend record is bad", async () => {
+      const c = cloud();
+      putRun(c, { name: `${PUBLIC_REPO}/broken/turn-1/run.json`, body: "{" });
+      await metricsStep(deps(c));
+      expect(problems(c)).toEqual({ unrecognizedRuns: [`${PUBLIC_REPO}/broken/turn-1/run.json`], corruptSpend: [] });
+    });
+
+    it("lists only the bad spend record when no run.json is bad", async () => {
+      const c = cloud();
+      putSpend(c, { name: "spend/2026-11-13/anlinguist__numu-know.json", body: "{" });
+      await metricsStep(deps(c));
+      expect(problems(c)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/2026-11-13/anlinguist__numu-know.json"] });
+    });
+
+    it("holds names, never a record's contents", async () => {
+      const c = cloud();
+      putRun(c, { name: `${PUBLIC_REPO}/broken/turn-1/run.json`, body: JSON.stringify({ report: "HOSTILE" }) });
+      await metricsStep(deps(c));
+      expect(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body).not.toContain("HOSTILE");
+    });
   });
 
   it("skips an object deleted between listing and reading", async () => {
