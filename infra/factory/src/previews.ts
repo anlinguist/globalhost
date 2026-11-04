@@ -364,6 +364,12 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       role: "roles/iam.serviceAccountUser",
       member: deployerMember,
     });
+    // Cloud Run checks actAs on the runtime identity for any service update, even a traffic-only one (ADR-0020).
+    new gcp.serviceaccount.IAMMember(n("cleanup-acts-as-runtime"), {
+      serviceAccountId: runtime.name,
+      role: "roles/iam.serviceAccountUser",
+      member: cleanupMember,
+    });
     // Firebase Auth authorized domains don't take wildcards; the workflow adds and removes each preview host. A
     // custom role, because firebaseauth.admin would also let it read and export every dev user.
     const authDomainsRole = new gcp.projects.IAMCustomRole(
