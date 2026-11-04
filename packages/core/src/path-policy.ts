@@ -37,6 +37,9 @@ function segmentMatch(pattern: string, segment: string): boolean {
   return new RegExp(`^${source}$`, "s").test(segment);
 }
 
+/** A part-relative glob as a repo-relative one. */
+export const scopeGlobToPart = (partPath: string, glob: string) => (partPath === "." ? glob : `${partPath}/${glob}`);
+
 export interface PathPolicyInput {
   immutable: readonly string[];
   loadBearing: readonly string[];

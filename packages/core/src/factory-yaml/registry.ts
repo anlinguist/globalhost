@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { BINDING_INPUT_PATTERN, DESCRIPTOR_ID_PATTERN, PREVIEW_KINDS, PREVIEW_OUTPUT_PATTERN } from "./schema.js";
+import { BINDING_INPUT_PATTERN, DESCRIPTOR_ID_PATTERN, GLOB_PATTERN, PREVIEW_KINDS, PREVIEW_OUTPUT_PATTERN } from "./schema.js";
 
 export type PreviewKind = (typeof PREVIEW_KINDS)[number];
 
@@ -10,6 +10,8 @@ export interface ProfileDescriptor {
   configSchema: z.ZodType;
   preview: { kinds: PreviewKind[]; outputs: string[]; inputs: string[] };
   release: { allowedAdapters: string[] };
+  /** `immutable`: part-relative globs the validator adds to `guardrails.immutable`, scoped to each part using the profile. */
+  guardrails?: { immutable: string[] };
 }
 
 /** What the validator needs to know about a deploy adapter. P1-03's `DeployAdapter` extends it. */
@@ -59,6 +61,7 @@ export function createRegistry<P extends ProfileDescriptor, A extends AdapterDes
     checkNames(`profile ${p.id}: preview output`, p.preview.outputs, PREVIEW_OUTPUT_PATTERN);
     checkNames(`profile ${p.id}: preview input`, p.preview.inputs, BINDING_INPUT_PATTERN);
     checkNames(`profile ${p.id}: allowed adapter`, p.release.allowedAdapters, DESCRIPTOR_ID_PATTERN);
+    checkNames(`profile ${p.id}: immutable glob`, p.guardrails?.immutable ?? [], GLOB_PATTERN);
     profileMap.set(p.id, p);
   }
   for (const a of adapters) {
