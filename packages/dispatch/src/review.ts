@@ -137,6 +137,8 @@ export async function writeReviewGateOutputs(path: string, out: ReviewGateOutput
 export const JOB_SETUP_MINUTES = 5;
 /** Minutes kept after startReview returns: archiving, settling, completing the claim, posting. */
 export const AFTER_REVIEW_MINUTES = 2;
+/** A review token older than this is minted again before use (GitHub installation tokens expire after 60 min). */
+export const REVIEW_TOKEN_REUSE_MS = 50 * 60_000;
 
 export type ReviewStepResult =
   | { outcome: "ignored"; reason: string }
@@ -160,12 +162,22 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
   const ownerIds = config.owners.map((o) => o.id);
   const gcpToken = deps.gcpToken ?? gcloudAccessToken;
 
-  // A fresh review-scoped token per write burst (installation tokens last an hour).
+  // The review-scoped token, minted before claiming and reused until it's REVIEW_TOKEN_REUSE_MS old (installation
+  // tokens last an hour; a review can run for limits.perRunMinutes), then minted again.
+  let minted: { client: GitHubClient; at: number } | undefined;
   const writer = async () => {
-    const token = deps.reviewToken
-      ? await deps.reviewToken(repo)
-      : await reviewInstallationToken(need(env, "GLOBALHOST_APP_ID"), await accessSecret(gcpToken, "github-app-key", deps.fetchImpl), repo, deps.fetchImpl);
-    return new GitHubClient(token, deps.fetchImpl);
+    if (minted && now() - minted.at < REVIEW_TOKEN_REUSE_MS) return minted.client;
+    const at = now();
+    let token: string;
+    try {
+      token = deps.reviewToken
+        ? await deps.reviewToken(repo)
+        : await reviewInstallationToken(need(env, "GLOBALHOST_APP_ID"), await accessSecret(gcpToken, "github-app-key", deps.fetchImpl), repo, deps.fetchImpl);
+    } catch (err) {
+      throw new Error(`can't mint the review App token for ${repo} (App key readable? App installed on the repo?): ${(err as Error).message}`, { cause: err });
+    }
+    minted = { client: new GitHubClient(token, deps.fetchImpl), at };
+    return minted.client;
   };
   const unlabel = async (pr: number) => {
     try {
@@ -207,6 +219,9 @@ export async function reviewStep(deps: ReviewDeps): Promise<ReviewStepResult> {
       log("review: the factory is paused; nothing ran");
       return { outcome: "paused" };
     }
+    // Mint the write token now: an unreadable App key or an App not installed on the repo fails here, before a
+    // claim, reservation or session exists, instead of after a paid review that can't be posted.
+    await writer();
     const head: ReviewHead = { repo, pr: target.pr, sha: target.sha };
     const claim = await control.reviewClaim(head, runId, { perRunMinutes: config.limits.perRunMinutes, rereview: target.rereview });
     if (!claim.claimed) {

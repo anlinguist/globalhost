@@ -44,7 +44,7 @@ If any fail → Cloud Run Job runner (ARCHITECTURE §2.4) is primary.
 
 ## Spike P1-00 results (2026-10-29)
 
-**Setup:** numu-know#10 ("CSP blocks audio"), on `claude-opus-5-5` with default effort. Networking was `limited` with package managers only, web tools off, and permission policy `always_allow`. The repo was uploaded as a git bundle. Auth was keyless (ADR-0014). Code is in `spikes/managed-agents/`.
+**Setup:** numu-know#10 ("CSP blocks audio"), on `claude-opus-5-5` with default effort. Networking was `limited` with package managers only, web tools off, and permission policy `always_allow`. The repo was uploaded as a git bundle. Auth was keyless (ADR-0014). The code was in `spikes/managed-agents/`, removed once the P1-06 harness landed.
 
 | # | Criterion | Result | Numbers |
 |---|---|---|---|

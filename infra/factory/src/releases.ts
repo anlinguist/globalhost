@@ -1,10 +1,11 @@
 // Release observation (PLAN P1-12, ADR-0017): after a merge to a product's default branch, the product repo's
 // `globalhost-release.yml` reads the Cloud Build build for the merge commit and reports it on the PR and issue.
 // The only factory identity with any role on a prod project, and it can only read builds, triggers and the Cloud Run
-// service it checks the merged commit is live on (ADR-0019).
+// service it checks the merged commit is live on (ADR-0019). The product's prod Cloud Build triggers are imported
+// here too, so their config is reviewed in PRs and only changes through the owner's `pulumi up`.
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import type { FactoryConfig, ReleaseObserver } from "./config.js";
+import type { FactoryConfig, ReleaseObserver, ReleaseTrigger } from "./config.js";
 
 export const RELEASE_WORKFLOW = ".github/workflows/globalhost-release.yml";
 /**
@@ -34,6 +35,33 @@ export function releaseProviderCondition(config: FactoryConfig, r: ReleaseObserv
     `assertion.workflow_ref == '${r.repo.name}/${RELEASE_WORKFLOW}@${ref}'`,
     `assertion.runner_environment == 'github-hosted'`,
   ].join(" && ");
+}
+
+/**
+ * A product's prod Cloud Build trigger, exactly as it exists (ADR-0019): GitHub push on the branch, building the
+ * repo's config file. No `build` (inline steps) and no service account override: neither is configurable.
+ */
+export function releaseTriggerArgs(r: ReleaseObserver, t: ReleaseTrigger): gcp.cloudbuild.TriggerArgs {
+  const [owner, name] = r.repo.name.split("/") as [string, string];
+  return {
+    project: r.prodProject,
+    location: "global",
+    name: t.name,
+    ...(t.description !== undefined ? { description: t.description } : {}),
+    disabled: t.disabled,
+    filename: t.filename,
+    github: { owner, name, push: { branch: t.branch } },
+    substitutions: { ...t.substitutions, _SERVICE_NAME: t.service },
+    tags: t.tags,
+  };
+}
+
+/**
+ * Imported, never created: the trigger already exists, and `pulumi up` adopts it only if the live config matches.
+ * Protected so a config edit can't delete the trigger that deploys prod. The import ID is ignored once it's in state.
+ */
+export function releaseTriggerOptions(r: ReleaseObserver, t: ReleaseTrigger): pulumi.CustomResourceOptions {
+  return { import: `projects/${r.prodProject}/locations/global/triggers/${t.id}`, protect: true };
 }
 
 export interface ReleaseInputs {
@@ -93,6 +121,9 @@ export function createReleaseObservers({ config, pool, afterApis }: ReleaseInput
       role: role.name,
       member: pulumi.interpolate`serviceAccount:${sa.email}`,
     });
+    for (const t of r.triggers) {
+      new gcp.cloudbuild.Trigger(n(`trigger-${t.key}`), releaseTriggerArgs(r, t), releaseTriggerOptions(r, t));
+    }
     return pulumi.output({
       product: r.product,
       prodProject: r.prodProject,
