@@ -50,6 +50,8 @@ export class FakeCloud {
   reviews: { pr: number; id: number; body: string; user: { login: string; type: string }; commit_id?: string; event?: string }[] = [];
   /** Requests that fail with this status, by `METHOD path` prefix (for fault injection). */
   failing = new Map<string, number>();
+  /** Object names per page of a bucket listing. */
+  listPageSize = 1000;
   private gen = 1;
 
   constructor(factoryYaml = FACTORY_YAML) {
@@ -133,6 +135,17 @@ export class FakeCloud {
   }) as typeof fetch;
 
   private gcs(url: URL, method: string, init: RequestInit): Response {
+    const listing = /^\/storage\/v1\/b\/([^/]+)\/o$/.exec(url.pathname);
+    if (listing && method === "GET") {
+      const bucket = listing[1]!;
+      const prefix = `${bucket}/${url.searchParams.get("prefix") ?? ""}`;
+      const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort().map((k) => k.slice(bucket.length + 1));
+      const start = Number(url.searchParams.get("pageToken") ?? "0");
+      const end = start + this.listPageSize;
+      // Like the real API, an empty result has no `items` at all.
+      const items = all.slice(start, end).map((name) => ({ name }));
+      return Response.json({ ...(items.length > 0 ? { items } : {}), ...(end < all.length ? { nextPageToken: String(end) } : {}) });
+    }
     if (url.pathname.startsWith("/upload/")) {
       const name = `${url.pathname.split("/")[5]}/${url.searchParams.get("name")}`;
       const cur = this.objects.get(name);

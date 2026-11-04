@@ -1,0 +1,51 @@
+name: nightly
+
+# Factory metrics and the budget watcher (PLAN P1-13, ADR-0020). Aggregates the spend ledger and run.json files,
+# writes gs://globalhost-control/metrics/<day>.json and edits the rolling "Factory metrics" issue. The job fails when
+# the watcher has a finding, so GitHub emails the owner. Only this file on main can get sa:globalhost-gh-nightly: the
+# WIF provider pins job_workflow_ref (infra/factory/src/nightly.ts).
+# This repo is public and so are its Actions logs: `globalhost metrics` logs fixed text and aggregate numbers only.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  metrics:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout
+      id-token: write # WIF -> sa:globalhost-gh-nightly
+      issues: write # the rolling metrics issue, through GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # No dependency cache: nothing a PR run wrote can reach a job with these credentials.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # Install and build run before the GCP login, and GITHUB_TOKEN is only in the last step's env.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec turbo run build --filter=@globalhost/cli
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_NIGHTLY_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_NIGHTLY_SA }}
+
+      - name: Aggregate, publish and check the budget
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node packages/cli/dist/bin.js metrics

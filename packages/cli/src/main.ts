@@ -23,6 +23,8 @@ Commands:
   assess <repo>    Assess a repo for onboarding; writes the onboarding issue (globalhost assess --help)
   run              Run a factory role on an issue from this machine (globalhost run --help)
   roles sync       Create or update the role agents in Managed Agents
+  metrics          Aggregate factory metrics and run the budget watcher (nightly.yml; env-configured)
+                   Exit codes: 0 all clear, 1 watcher findings or a failure
 
 Options:
   --json         validate: print {"ok": bool, "errors": [{path, code, message}]}

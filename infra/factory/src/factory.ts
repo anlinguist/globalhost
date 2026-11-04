@@ -7,6 +7,7 @@
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudflareConfig, DispatchRepo, FactoryConfig } from "./config.js";
+import { createNightly, METRICS_PREFIX } from "./nightly.js";
 import { createPreviews } from "./previews.js";
 import { createReleaseObservers } from "./releases.js";
 import { createReviewer } from "./reviews.js";
@@ -17,6 +18,8 @@ export const CONTROL_STATE_OBJECT = "state.json";
 export const GITHUB_APP_KEY_SECRET = "github-app-key";
 export const BUDGET_DISPLAY_NAME = "globalhost-factory-monthly";
 export const DISPATCH_PROVIDER_ID = "globalhost-dispatch";
+/** Daily metrics reports are small but would otherwise pile up forever (ADR-0020). */
+export const METRICS_RETENTION_DAYS = 400;
 
 export const REQUIRED_APIS = [
   "artifactregistry.googleapis.com", // image store for the budget function's build (Cloud Functions 2nd gen)
@@ -118,6 +121,8 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
       lifecycleRules: [
         { action: { type: "Delete" }, condition: { withState: "ARCHIVED", daysSinceNoncurrentTime: 30 } },
         { action: { type: "Delete" }, condition: { withState: "ARCHIVED", numNewerVersions: 100 } },
+        // The one rule that touches live objects. It deletes nothing else: not state.json, spend, or review state.
+        { action: { type: "Delete" }, condition: { age: METRICS_RETENTION_DAYS, withState: "LIVE", matchesPrefixes: [METRICS_PREFIX] } },
       ],
       softDeletePolicy: { retentionDurationSeconds: 0 },
       labels,
@@ -202,6 +207,9 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
 
   // ── Reviewer (PLAN P2-01, ADR-0018): its own provider and identity; review objects only ─────────────
   const reviewer = createReviewer({ config, pool, control, runs, controlStateObject: CONTROL_STATE_OBJECT, afterApis });
+
+  // ── Nightly (PLAN P1-13, ADR-0020): reads both buckets, writes only metrics/ ───────────────────────
+  const nightly = createNightly({ config, factoryRepoName, pool, control, runs, afterApis });
 
   // ── Secret: GitHub App private key (value added by the owner via infra/github-app) ─────────────
   const appKey = new gcp.secretmanager.Secret(
@@ -452,5 +460,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     releaseObservers: releases.releaseObservers,
     reviewServiceAccount: reviewer?.serviceAccount,
     reviewWorkloadIdentityProvider: reviewer?.workloadIdentityProvider,
+    nightlyServiceAccount: nightly.serviceAccount,
+    nightlyWorkloadIdentityProvider: nightly.workloadIdentityProvider,
   };
 }

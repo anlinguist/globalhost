@@ -167,10 +167,17 @@ On merge to `main`, `cloud-build-trigger` adapter watches the build for the merg
 **AC:** a merged factory PR shows "Deployed to prod via Cloud Build `<build-id>` ✅" within 15 min. On a forced failure (test trigger), the adapter comments ❌ with a log link.
 
 ### P1-13 Cleanup + budget watcher
-Scheduled workflow in the factory repo, nightly:
-- delete preview tags/images/KV for closed PRs, old run artifacts;
-- aggregate `run.json` into `docs/metrics.md` (runs, $/run, $/merged PR, redirects/PR) and the daily spend in `globalhost-control`.
-**AC:** an orphan created by hand is removed the next night; the metrics file updates; the daily spend sum matches Anthropic Console within 10%.
+**Status:** slice 1 (metrics and budget watcher, ADR-0020) built; live once the owner runs `pulumi up` and sets the repo variables. Slice 2 (cleanup) not started.
+Scheduled workflow in the factory repo, `nightly.yml`:
+- slice 1: aggregate `run.json` and the daily spend ledger in `globalhost-control` into `gs://globalhost-control/metrics/<day>.json` and one rolling "Factory metrics" issue (runs by role, spend, $/run, redirects/PR, review $/PR, $/merged factory PR, per UTC day and per budget cycle), and fail the job when the budget watcher has a finding (ADR-0020);
+- slice 2: delete preview tags, images and authorized domains for closed PRs (no KV since ADR-0016), review claims and ledgers of closed PRs, and release stale review reservations. Needs its own write grants; the nightly identity is read-only apart from `metrics/` until then.
+
+**AC, slice 1:** the issue and the day's object update nightly; each watcher condition fails the job; the owner compares the issue's cycle-to-date with the `globalhost-runners` workspace in the Anthropic Console and records the result here, within 10% after allowing for known unledgered spend (`security-audit.yml`, local `globalhost run` and `assess`, builders that died mid-session). There's no automated check: Anthropic's Admin cost API needs a key (ADR-0014). Console check: not done yet.
+**AC, slice 2:** an orphan created by hand is removed the next night.
+**Follow-ups:**
+- Record builder spend or a reservation before a builder session starts, so crashes can be seen. Today `recordSpend` and `archive` run only after `startRun`/`resumeRun` returns, so a builder killed or throwing mid-session leaves neither record and the drift check stays at $0. That spend is visible only in the Console, and the Console workspace limit remains the hard cap (ADR-0020).
+- Slice 2: archive a run record for failed reviews. One that settles up to its cap with no `run.json` trips drift until it leaves the 7-day window, and review $/PR omits it.
+- Slice 2: read PR-ledger holds in `reviews/`, and reservations older than the spend window. The watcher sees neither today.
 
 ### P1-14 Run the loop for real (×3) ✅ (2026-11-02)
 **Status:** numu-know #32, #29 and #31 went label → builder → preview → adversarial review → one steering round each → owner merge → prod deploy → issue closed by the release observer (PRs numu-know #38, #40, #41). About $3.26 of agent spend over 6 runs. Retro: #45 (no build queue, builder/CI toolchain mismatch, signed-in paths untested, screenshot routes miss changed code, manual rules deploys, weak tests). GCP run-rate to confirm after a billing cycle.

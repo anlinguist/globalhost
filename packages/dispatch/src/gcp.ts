@@ -20,8 +20,14 @@ import {
   type ReviewReservation,
   type ShadowEntry,
 } from "@globalhost/core";
+import { z } from "zod";
 
 const exec = promisify(execFile);
+
+const ListPageSchema = z.object({
+  items: z.array(z.object({ name: z.string() })).default([]),
+  nextPageToken: z.string().optional(),
+});
 
 export const CONTROL_BUCKET = "globalhost-control";
 export const RUNS_BUCKET = "globalhost-runs";
@@ -73,6 +79,22 @@ export class ObjectStore {
     return "ok";
   }
 
+  /** Every object name under a prefix, following pagination. A bucket that can't be listed throws. */
+  async list(bucket: string, prefix: string): Promise<string[]> {
+    const names: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({ prefix, fields: "items(name),nextPageToken" });
+      if (pageToken) params.set("pageToken", pageToken);
+      const resp = await this.fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?${params}`, { headers: await this.headers() });
+      if (!resp.ok) throw new Error(`GCS list gs://${bucket}: HTTP ${resp.status}`);
+      const page = ListPageSchema.parse(await resp.json());
+      for (const item of page.items) names.push(item.name);
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return names;
+  }
+
   async remove(bucket: string, name: string, ifGenerationMatch: string): Promise<"ok" | "conflict"> {
     const resp = await this.fetchImpl(
       `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(name)}?ifGenerationMatch=${ifGenerationMatch}`,
@@ -104,6 +126,9 @@ const MAX_CAS_ATTEMPTS = 8;
 // Owner: 1–39 alphanumerics or hyphens, not starting with a hyphen. Name: 1–100 of [A-Za-z0-9._-]. This is a
 // superset of what GitHub allows (it also forbids trailing or doubled hyphens); `.` and `..` names are refused below.
 const REPO_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
+/** Whether a string is a well-formed `owner/name`, safe to put in an object name or a report. */
+export const isRepoSlug = (repo: string): boolean => REPO_SLUG.test(repo) && !repo.endsWith("/.") && !repo.includes("..");
+
 // 40-hex only: a SHA-256 repository fails closed here (known limit; ReviewRecord itself accepts 64-hex).
 const HEAD_SHA = /^[0-9a-f]{40}$/;
 
@@ -120,7 +145,7 @@ export interface ReviewHead extends ReviewPr {
 
 /** The validated, lowercased repo and PR number, checked before either goes into an object name. */
 function reviewKey(repo: unknown, pr: unknown): { repo: string; pr: string } {
-  if (typeof repo !== "string" || !REPO_SLUG.test(repo) || repo.endsWith("/.") || repo.includes("..")) {
+  if (typeof repo !== "string" || !isRepoSlug(repo)) {
     throw new Error("review: repo must be an owner/name slug");
   }
   if (typeof pr !== "number" || !Number.isSafeInteger(pr) || pr < 1) throw new Error("review: pr must be a positive integer");

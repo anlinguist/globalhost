@@ -2,6 +2,7 @@
 import { run } from "./main.js";
 import { assessCommand } from "./assess-command.js";
 import { dispatchCommand } from "./dispatch-command.js";
+import { metricsCommand } from "./metrics-command.js";
 import { runCommand } from "./run-command.js";
 
 const argv = process.argv.slice(2);
@@ -16,6 +17,8 @@ function finish(code: number): void {
 
 if (argv[0] === "dispatch") {
   finish(await dispatchCommand(argv, process.env, (t) => process.stderr.write(t)));
+} else if (argv[0] === "metrics") {
+  finish(await metricsCommand(argv, process.env, (t) => process.stdout.write(t), (t) => process.stderr.write(t)));
 } else if (argv[0] === "assess") {
   finish(await assessCommand(argv, {
     out: (t) => process.stdout.write(t),

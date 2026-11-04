@@ -25,6 +25,8 @@ export const AUTO_MERGE_CATEGORIES = ["renovate:patch", "renovate:minor-dev", "l
 export const NOTIFICATION_MODES = ["push", "digest", "none"] as const;
 export const PREVIEW_KINDS = ["url", "artifact", "screenshots", "gif", "api-docs"] as const;
 export const AGENT_BRANCH_PREFIX = "factory/";
+/** `limits.dailyUsd` when a repo doesn't set it. The nightly budget watcher measures against it too (ADR-0020). */
+export const DEFAULT_DAILY_USD = 20;
 
 /** Always immutable to agents, whatever the file says (ADR-0013). */
 export const IMMUTABLE_BASELINE = [".github/**", "factory.yaml", "CODEOWNERS", "docs/CODEOWNERS"] as const;
@@ -151,7 +153,7 @@ export const factoryYamlShape = z
         maxConcurrentBuilders: z.number().int().min(1).max(5).default(1),
         perRunUsd: money(0.01, 50).default(4),
         perRunMinutes: z.number().int().min(5).max(180).default(45),
-        dailyUsd: money(0.01, 200).default(20),
+        dailyUsd: money(0.01, 200).default(DEFAULT_DAILY_USD),
         /** Review spend per PR across all its review runs (ADR-0015 §13). Going over it escalates. */
         reviewPerPrUsd: money(0.01, 50).default(8),
         /** Per review run; a review starts only if the PR's spend plus this fits under reviewPerPrUsd. */

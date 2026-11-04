@@ -8,7 +8,7 @@ Pulumi program for the factory's own GCP resources in project `globalhost-factor
 |---|---|---|
 | APIs | see `REQUIRED_APIS` in `src/factory.ts` | never disabled on destroy |
 | Bucket | `globalhost-runs` | run artifacts (bundle, `run.json`, session exports); deleted after 30 days; uniform access, public access prevention |
-| Bucket | `globalhost-control` | `state.json` (kill switch, spend), lock objects, review claims and per-PR review ledgers (`reviews/`); versioned; noncurrent versions deleted after 30 days or beyond 100 newer |
+| Bucket | `globalhost-control` | `state.json` (kill switch), daily spend ledger (`spend/<UTC day>/<owner>__<name>.json`), lock objects, review claims and per-PR review ledgers (`reviews/`), nightly reports (`metrics/`, deleted after 400 days); versioned; noncurrent versions deleted after 30 days or beyond 100 newer |
 | WIF pool | `github` | **imported**, not created: it already exists from `infra/bootstrap/security-audit.sh`. `protect: true`. That script still owns the audit provider `github-actions` |
 | WIF provider | `github/globalhost-dispatch` | GitHub OIDC; condition pins `repository_owner_id` 47403803, the environment `globalhost`, and each configured repo ID on its default branch |
 | Service account | `globalhost-gh-dispatch` | the dispatcher (`sa:gh-dispatch`). Bucket- and secret-level roles only; impersonable only via `principalSet://…/attribute.dispatch/<repo id>@globalhost` |
@@ -65,6 +65,21 @@ Created only once `reviewRepos` lists a repo (each must match a `dispatchRepos` 
 Nothing at project level, no lock objects, no other repo's review state. Renaming a product repo means updating its `reviewRepos` (and `dispatchRepos`) name, or the name conditions stop matching and reviews fail closed. The name must use GitHub's canonical casing (`gh api repos/<owner>/<name> --jq .full_name`). The `reviews/` and runs prefixes are lowercased, but the spend records (`spend/<day>/<owner>__<name>.json`, which builders share) keep `GITHUB_REPOSITORY`'s case, and IAM conditions can't compare case-insensitively. A mismatch fails closed: the review can't reserve its spend. It talks to Anthropic with its own GitHub OIDC token through its own federation rule (Console; environment `globalhost-review`).
 
 After `pulumi up`, set the product repo's variables `GLOBALHOST_REVIEW_WIF_PROVIDER` and `GLOBALHOST_REVIEW_SA` from `pulumi stack output reviewWorkloadIdentityProvider` and `reviewServiceAccount`.
+
+### Nightly identity (PLAN P1-13, ADR-0020)
+
+| Resource | Notes |
+|---|---|
+| WIF provider `github/globalhost-nightly` | only `.github/workflows/nightly.yml` on main in this repo (`job_workflow_ref` and `workflow_ref`), event `schedule` or `workflow_dispatch`, GitHub-hosted |
+| SA `globalhost-gh-nightly` | impersonable only via `principalSet://…/attribute.nightly/<factory repo id>` |
+
+| Scope | Role | Condition (object names) | Why |
+|---|---|---|---|
+| `globalhost-runs` | `roles/storage.objectViewer` | — | read `run.json` files |
+| `globalhost-control` | `roles/storage.objectViewer` | — | read the spend ledger |
+| `globalhost-control` | `roles/storage.objectUser` | `metrics/` | write and overwrite the day's report |
+
+Nothing at project level, and no secret. After `pulumi up`, set this repo's variables `GCP_NIGHTLY_WIF_PROVIDER` and `GCP_NIGHTLY_SA` from `pulumi stack output nightlyWorkloadIdentityProvider` and `nightlyServiceAccount`.
 
 ### Permissions of `sa:globalhost-gh-dispatch`
 
