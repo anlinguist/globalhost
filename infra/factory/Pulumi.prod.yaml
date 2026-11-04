@@ -42,7 +42,7 @@ config:
         - key: staging
           id: 4b81e1d4-2dd8-42bb-8532-842ff4ec729c
           name: rmgpgab-staging-numu-know-us-central1-anlinguist-numu-know--qlh
-          description: DISABLED 2026-11-03 - main now deploys staging-numu-know (the www service); was on push to "^staging$"
+          description: DISABLED 2026-11-03 - prod deploys from main to the numu-know service; was on push to "^staging$"
           disabled: true
           branch: ^staging$
           filename: cloudbuild.yaml
