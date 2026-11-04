@@ -361,7 +361,7 @@ describe("publish", () => {
     expect([...cloud.labels.get(12)!]).toEqual(["factory:in-review"]);
   });
 
-  it.each([".github/workflows/evil.yml", "factory.yaml", "CODEOWNERS", ".GitHub/workflows/x.yml"])(
+  it.each([".github/workflows/evil.yml", "factory.yaml", "CODEOWNERS", ".GitHub/workflows/x.yml", ".env", ".env.production", ".ENV.local", "sub/.env", "apps/web/sub/.env.local", ".env.example", ".envrc", "sub/.env.d/x"])(
     "rejects a bundle touching %s and pushes nothing",
     async (path) => {
       const { fx, cloud, result } = await publishWith({ [path]: "x\n", "ok.ts": "1\n" });

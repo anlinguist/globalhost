@@ -64,8 +64,9 @@ export const webApp: Profile<WebAppConfig, WebAppDetection> = {
     allowedAdapters: ["cloud-build-trigger"],
   },
   guardrails: {
-    // Env files hold real values; agents never write them (skills/web-app). Example files are owner-edited too.
-    immutable: [".env", ".env.*"],
+    // Env files hold real values; agents never write them, at any depth in the part (skills/web-app). That includes
+    // `.env.example`, which the owner adds: there's deliberately no carve-out. `.env.d/` is a directory of the same files.
+    immutable: ["**/.env", "**/.env.*", "**/.envrc", "**/.env.d/**"],
     checks: [dependencyChange, visualBaseline],
   },
 };

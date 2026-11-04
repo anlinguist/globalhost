@@ -63,7 +63,7 @@ export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg
   };
 
   guardrails: {
-    immutable: string[];              // part-relative globs agents can never change (Phase 1)
+    immutable: string[];              // part-relative globs agents can never change; the validator scopes them to the part
     checks: Guardrail[];              // evaluated checks below; Phase 2, empty until then
   };
 
@@ -180,7 +180,7 @@ A part may list several release targets (e.g. an extension shipping to Chrome, E
 | Data | previews use the dev project's DB/Firestore with seed data |
 | Config | `routes` to screenshot, `port`, `previewEnv` (non-secret build/runtime env), `seed` command, `install` (overrides the lockfile-derived install, e.g. `npm ci --legacy-peer-deps` for numu-know); `buildArgs` later |
 
-**v0 (P1-03)** implements detect, the skill, verify (install, typecheck, lint, test, build, Playwright smoke with screenshots), guidance and the preview contract's shape. `preview.build`/`teardown` throw until P1-11. Release allows only `cloud-build-trigger` until `cloud-run` exists. Guardrails: `immutable` (`.env`, `.env.*`); `visual-baseline` and `dependency-change` are in `checks` since P2-03, and the others above arrive in Phase 2.
+**v0 (P1-03)** implements detect, the skill, verify (install, typecheck, lint, test, build, Playwright smoke with screenshots), guidance and the preview contract's shape. `preview.build`/`teardown` throw until P1-11. Release allows only `cloud-build-trigger` until `cloud-run` exists. Guardrails: `immutable` (`.env`, `.env.*`, `.envrc` and `.env.d/`, at any depth in the part, `.env.example` included); `visual-baseline` and `dependency-change` are in `checks` since P2-03, and the others above arrive in Phase 2.
 
 ### 4.2 `chrome-extension` (MV3; multi-store capable)
 

@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { scopeGlobToPart } from "../path-policy.js";
 import { formatPath, quote, sortErrors, type FactoryYamlError, type FactoryYamlErrorCode, type PathSegment } from "./errors.js";
 import type { Registry } from "./registry.js";
 import {
@@ -390,7 +391,10 @@ function crossCheck(s: FactoryYamlShape, raw: unknown, registry: Registry): Vali
     );
   }
 
-  const immutable = [...new Set<string>([...IMMUTABLE_BASELINE, ...s.guardrails.immutable])];
+  const profileImmutable = Object.values(normalizedParts).flatMap((part) =>
+    (registry.profile(part.profile)?.guardrails?.immutable ?? []).map((g) => scopeGlobToPart(part.path, g)),
+  );
+  const immutable = [...new Set<string>([...IMMUTABLE_BASELINE, ...s.guardrails.immutable, ...profileImmutable])];
   const immutableFolded = new Set(immutable.map((g) => g.toLowerCase()));
   s.guardrails.loadBearing.forEach((g, i) => {
     if (immutableFolded.has(g.toLowerCase())) {

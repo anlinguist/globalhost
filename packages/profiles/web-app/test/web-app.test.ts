@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { GLOB_PATTERN, type PartCtx, type RepoSnapshot } from "@globalhost/core";
+import { evaluatePathPolicy, GLOB_PATTERN, scopeGlobToPart, type PartCtx, type RepoSnapshot } from "@globalhost/core";
 import { describe, expect, it } from "vitest";
 import {
   detectWebApp,
@@ -253,6 +253,27 @@ describe("profile object", () => {
   it("points at a skill that exists", () => {
     const skill = new URL(`../../../../${webApp.skills[0]?.path}/SKILL.md`, import.meta.url);
     expect(fs.readFileSync(skill, "utf8")).toMatch(/^---\nname: web-app\n/);
+  });
+
+  describe("immutable env files", () => {
+    const refused = (path: string, part = ".") =>
+      evaluatePathPolicy([path], { immutable: webApp.guardrails.immutable.map((g) => scopeGlobToPart(part, g)), loadBearing: [] }).rejected.length === 1;
+
+    it.each([".env", ".env.production", ".env.local", ".env.example", ".envrc", ".env.d/x", ".env.d/a/b", "sub/.env", "sub/deep/.env.staging", "sub/.envrc", "sub/.env.d/x", ".ENV"])(
+      "a root part refuses %s",
+      (path) => {
+        expect(refused(path)).toBe(true);
+      },
+    );
+
+    it.each([".env", "sub/.env", "sub/.env.example", ".envrc"])("a part at apps/web refuses %s under it, and not outside it", (path) => {
+      expect(refused(`apps/web/${path}`, "apps/web")).toBe(true);
+      expect(refused(path, "apps/web")).toBe(false);
+    });
+
+    it.each(["environment.ts", "src/env.ts", ".environment", "src/.envelope", ".env-cmdrc", "docs/env.md"])("leaves %s alone", (path) => {
+      expect(refused(path)).toBe(false);
+    });
   });
 
   it("declares immutable globs in factory.yaml glob syntax and its evaluated checks", () => {

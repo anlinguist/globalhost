@@ -16,6 +16,24 @@ import { webApp } from "@globalhost/profile-web-app";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/main.js";
 
+describe("the real web-app profile", () => {
+  it("adds its immutable globs to the config the publisher reads", () => {
+    const parsed = parseFactoryYaml(`version: 1
+product: sample
+owners: [{ login: a, id: 1 }]
+environments:
+  prod: { gcpProject: sample-prod, region: us-central1 }
+  dev: { gcpProject: sample-dev, region: us-central1 }
+parts:
+  web: { path: apps/web, profile: web-app, config: { routes: ["/"] } }
+`);
+    if (!parsed.ok) throw new Error("expected YAML to parse");
+    const result = validateFactoryConfig(parsed.value, createRegistry([webApp], [cloudBuildTrigger]));
+    if (!result.ok) throw new Error(JSON.stringify(result.errors));
+    expect(result.config.guardrails.immutable).toEqual(expect.arrayContaining(["apps/web/**/.env", "apps/web/**/.env.*", "apps/web/**/.envrc", "apps/web/**/.env.d/**"]));
+  });
+});
+
 // "Adding a profile = adding a package + registering its id. No core change." (PROFILES.md §1)
 // This file plays the new package: a `static-site` profile and a `bucket-upload` adapter written against
 // core's public exports only, registered next to the real ones.
