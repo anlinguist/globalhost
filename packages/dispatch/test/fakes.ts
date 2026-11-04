@@ -15,7 +15,7 @@ const webApp: ProfileDescriptor = {
   configSchema: z.object({}).passthrough(),
   preview: { kinds: ["url"], outputs: ["url"], inputs: [] },
   release: { allowedAdapters: [] },
-  guardrails: { immutable: [".env", ".env.*"] },
+  guardrails: { immutable: ["**/.env", "**/.env.*", "**/.envrc", "**/.env.d/**"] },
 };
 const adapter: AdapterDescriptor = { id: "cloud-build-trigger", configSchema: z.object({}).passthrough() };
 export const registry = createRegistry([webApp], [adapter]);
