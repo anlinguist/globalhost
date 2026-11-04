@@ -30,8 +30,9 @@ export const PreviewProductSchema = z
 export type PreviewProduct = z.infer<typeof PreviewProductSchema>;
 
 /**
- * An existing Cloud Build trigger in the product's prod project, imported and kept in Pulumi so its config can't
- * drift unseen (ADR-0019: the pilot's trigger ran an inline `echo` for weeks). It always builds from a config file in
+ * An existing Cloud Build trigger in the product's prod project, imported and kept in Pulumi so its intended config is
+ * reviewed in PRs and `pulumi preview --refresh` shows live drift (ADR-0019: the pilot's trigger ran an inline `echo`
+ * for weeks). It always builds from a config file in
  * the repo: there is deliberately no field for inline steps. These values are committed to a public repo; never put
  * secrets in substitutions.
  */
@@ -43,10 +44,10 @@ export const ReleaseTriggerSchema = z
     id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
     name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/),
     description: z.string().max(500).optional(),
-    /** Push branch regex on the product repo, anchored, e.g. `^main$`. */
-    branch: z.string().regex(/^\^[A-Za-z0-9._/-]+\$$/),
-    /** Build config file in the repo. */
-    filename: z.string().regex(/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\.ya?ml$/),
+    /** Push branch regex on the product repo, anchored and literal (no `.` or other regex metacharacters), e.g. `^main$`. */
+    branch: z.string().regex(/^\^[A-Za-z0-9_/-]+\$$/),
+    /** Build config file in the repo; no `..` or hidden path segments. */
+    filename: z.string().regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.ya?ml$/),
     /** The Cloud Run service it deploys, rendered as the `_SERVICE_NAME` substitution. */
     service: z.string().regex(/^[a-z][a-z0-9-]{0,47}[a-z0-9]$/),
     /** Other substitutions; `_SERVICE_NAME` comes from `service`. */
@@ -144,10 +145,10 @@ export function parseFactoryConfig(input: unknown): FactoryConfig {
       const values = r.triggers.map((t) => t[field]);
       if (new Set(values).size !== values.length) throw new Error(`releaseObservers: ${r.product} has a duplicate trigger ${field}`);
     }
-    // Merges deploy through exactly one enabled trigger on the default branch.
-    const deploy = r.triggers.filter((t) => !t.disabled && t.branch === `^${r.repo.defaultBranch}$`);
-    if (r.triggers.length > 0 && deploy.length !== 1) {
-      throw new Error(`releaseObservers: ${r.product} needs exactly one enabled trigger on ^${r.repo.defaultBranch}$`);
+    // Prod is reached only by merging: the one enabled trigger builds the default branch; any other is disabled.
+    const enabled = r.triggers.filter((t) => !t.disabled);
+    if (r.triggers.length > 0 && (enabled.length !== 1 || enabled[0]!.branch !== `^${r.repo.defaultBranch}$`)) {
+      throw new Error(`releaseObservers: ${r.product} needs exactly one enabled trigger, on ^${r.repo.defaultBranch}$`);
     }
   }
   const reviewIds = config.reviewRepos.map((r) => r.id);

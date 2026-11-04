@@ -35,7 +35,7 @@ A throwaway script runs one real numu-know issue on Managed Agents: `limited` ne
 - **Spend.** Per-session `budget` is $5, the looping test (criterion 6) gets $1, and the whole spike is capped at about $25 in `globalhost-runners`. `networking.type: limited` is set explicitly on every environment.
 
 **Open (owner):**
-- **Connect the spike workload.** In Console, use Connect workload → Google Cloud, with the SA's unique ID and email (the setup script prints both), workspace `globalhost-runners`, scope `workspace:developer` and 600 s. Then send the organization, rule, service-account and workspace IDs.
+- **Connect the spike workload.** In Console, use Connect workload → Google Cloud, with the SA's unique ID and email (the spike's setup script, since removed, printed both), workspace `globalhost-runners`, scope `workspace:developer` and 600 s. Then send the organization, rule, service-account and workspace IDs.
 **Status (2026-10-29): ✅ go.** Criteria 2, 3, 4 and 6 pass and 5 is inconclusive, with numbers in ADR-0011. Criterion 1 is the owner's Console billing check. Afterwards the owner deletes the spike's federation rule, Console service account and `sa:globalhost-spike`.
 **AC:** all six go/no-go criteria in ADR-0011 are recorded with numbers. The ADR is marked accepted, or rejected in favor of the Cloud Run Job runner. P1-04/P1-06 are adjusted accordingly (with Managed Agents: no runner image, no Cloud Run Job; the harness becomes the session-creation and output-collection code in the dispatcher).
 

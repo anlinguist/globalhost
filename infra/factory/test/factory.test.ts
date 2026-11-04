@@ -576,6 +576,10 @@ describe("prod Cloud Build triggers (ADR-0019)", () => {
     ["two enabled triggers on the default branch", withTriggers([main, { ...main, key: "other", id: "00000000-0000-0000-0000-000000000000", name: "other" }])],
     ["a duplicate trigger id", withTriggers([main, { ...main, key: "other", name: "other", disabled: true }])],
     ["a non-UUID id", withTriggers([{ ...main, id: "../../other" }])],
+    ["an enabled trigger on another branch (prod only by merging)", withTriggers([main, { ...main, key: "staging", id: "00000000-0000-0000-0000-000000000000", name: "staging", branch: "^staging$" }])],
+    ["only a non-default branch enabled", withTriggers([{ ...main, branch: "^staging$" }])],
+    ["a regex metacharacter in the branch", withTriggers([{ ...main, branch: "^ma.n$" }])],
+    ["a .. segment in the build config path", withTriggers([{ ...main, filename: "../other/cloudbuild.yaml" }])],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });
