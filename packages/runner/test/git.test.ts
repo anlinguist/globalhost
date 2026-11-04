@@ -81,6 +81,21 @@ describe("inspectResultBundle", () => {
     expect(summary.filesChanged).toEqual([".env", "evil.ts", "left.ts", "right.ts"]);
   });
 
+  it("lists a file a merge restores from an older commit, whichever parent comes first", async () => {
+    // The merge takes its tree from an ancestor of the base, so against its first parent it changes nothing.
+    commit("proxy.ts", "old\n");
+    const old = git(work, "rev-parse", "HEAD");
+    git(work, "rm", "-q", "proxy.ts");
+    git(work, "commit", "-q", "-m", "drop");
+    const newBase = git(work, "rev-parse", "HEAD");
+    git(work, "push", "-q", bare, "main");
+    const tree = git(work, "rev-parse", `${old}^{tree}`);
+    const merge = git(work, "commit-tree", tree, "-p", old, "-p", newBase, "-m", "merge");
+    git(work, "update-ref", `refs/heads/${BRANCH}`, merge);
+    const summary = await inspectResultBundle(bare, bundle("ok.bundle", BRANCH, `^${newBase}`), newBase, BRANCH);
+    expect(summary.filesChanged).toContain("proxy.ts");
+  });
+
   it("lists a file from a merged commit with no shared history", async () => {
     git(work, "checkout", "-q", "-b", BRANCH);
     git(work, "checkout", "-q", "--orphan", "stray");
