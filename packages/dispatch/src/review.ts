@@ -27,6 +27,7 @@ import {
   REVIEW_SETTLE_MARGIN_MINUTES,
   ReviewNotStartedError,
   ReviewRunError,
+  ReviewRunSchema,
   anthropicClient,
   createReviewBundle,
   federationIdsFromEnv,
@@ -477,6 +478,14 @@ async function runClaimed(c: ClaimedContext): Promise<ReviewStepResult> {
     if (bundle) await rm(join(bundle.bareDir, ".."), { recursive: true, force: true }).catch(() => undefined);
   }
 
+  // A session may have cost something and nothing archived its run.json: archive a record of it, so run records
+  // agree with the ledger and review $/PR counts it. Best effort: settling below must happen either way.
+  if (settle && !archived && costUsd > 0) {
+    await archiveFailedRun(store, c, { run, costUsd, sessionId, bundle, at: now() }).catch((err: unknown) => {
+      log(`review: archiving the failed run's record failed: ${(err as Error).name}`);
+    });
+  }
+
   if (settle) {
     // Settle whatever happened. A record that wasn't archived is settled as a failed run instead, so the shadow
     // index never points at a review that isn't there. Building that fallback is inside the try, so a problem
@@ -574,6 +583,54 @@ function buildRecord(c: ClaimedContext, p: RecordParts): ReviewRecord {
     recordedAt: new Date(c.now()).toISOString(),
     verification: null,
   });
+}
+
+/**
+ * run.json for a failed attempt whose normal archive didn't finish: the harness's own record if it wrote one, or
+ * else a minimal one at the cost being settled. Only the fields metrics needs are known; the rest are fixed text.
+ * Create-only, and one already there (the archive failed after writing it) is fine.
+ */
+async function archiveFailedRun(
+  store: ObjectStore,
+  c: ClaimedContext,
+  f: { run: ReviewRun | undefined; costUsd: number; sessionId: string | null; bundle: ReviewBundle | undefined; at: number },
+): Promise<void> {
+  const { head, runId, target, config } = c;
+  const baseSha = f.bundle?.baseSha ?? target.pull.base.sha;
+  const at = new Date(f.at).toISOString();
+  const record: ReviewRun = ReviewRunSchema.parse(
+    f.run
+      ? { ...f.run, costUsd: f.costUsd }
+      : {
+          version: 1,
+          kind: "review",
+          runId,
+          repo: head.repo,
+          pr: target.pr,
+          issue: target.issue,
+          headSha: head.sha,
+          baseSha,
+          mergeBaseSha: f.bundle?.mergeBaseSha ?? baseSha,
+          sessionId: f.sessionId ?? "unknown",
+          agent: { id: "unknown", version: 0 },
+          environmentId: "unknown",
+          model: DEFAULT_MODEL,
+          status: "failed",
+          stopReason: "harness_error",
+          output: null,
+          outputIssues: [],
+          outputBytes: null,
+          screenshots: [],
+          startedAt: at,
+          finishedAt: at,
+          wallSeconds: 0,
+          activeSeconds: null,
+          costUsd: f.costUsd,
+          budgetUsd: config.limits.reviewPerRunUsd,
+          problems: ["the review step failed before archiving; cost settled by the step"],
+        },
+  );
+  await store.write(RUNS_BUCKET, `${reviewArchivePrefix(head, runId)}run.json`, `${JSON.stringify(record, null, 2)}\n`, "0");
 }
 
 /** Create-only archive of one attempt; review.json goes last, so its presence means the attempt is complete. */

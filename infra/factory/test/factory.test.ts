@@ -11,6 +11,7 @@ import {
   createFactory,
   dispatchProviderCondition,
 } from "../src/factory.js";
+import { cleanupObjectCondition, cleanupProviderCondition, REVIEWS_PREFIX, SPEND_PREFIX } from "../src/cleanup.js";
 import { METRICS_PREFIX, nightlyMetricsCondition, nightlyProviderCondition } from "../src/nightly.js";
 import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
 import { releaseProviderCondition, releaseTriggerArgs, releaseTriggerOptions } from "../src/releases.js";
@@ -246,9 +247,13 @@ describe("factory infra", () => {
     const rules = control.inputs.lifecycleRules as { action: { type: string }; condition: Record<string, unknown> }[];
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) expect(rule.action.type).toBe("Delete");
-    // The only rule that can delete a live object is limited to metrics/: never state.json, spend or review state.
+    // The only rules that can delete a live object are limited to metrics/ and spend/: never state.json, locks or
+    // review state. Versioning keeps what they delete as a noncurrent version, which the 30-day rule then removes.
     const live = rules.filter((r) => r.condition.withState !== "ARCHIVED");
-    expect(live.map((r) => r.condition)).toEqual([{ age: 400, withState: "LIVE", matchesPrefixes: ["metrics/"] }]);
+    expect(live.map((r) => r.condition)).toEqual([
+      { age: 400, withState: "LIVE", matchesPrefixes: ["metrics/"] },
+      { age: 400, withState: "LIVE", matchesPrefixes: ["spend/"] },
+    ]);
     expect(rules.some((r) => r.condition.daysSinceNoncurrentTime === 30)).toBe(true);
   });
 
@@ -636,6 +641,94 @@ describe("nightly identity (P1-13, ADR-0020)", () => {
   it("anchors the write condition on the prefix with its slash, so a lookalike object doesn't match", () => {
     expect(METRICS_PREFIX).toBe("metrics/");
     expect(nightlyMetricsCondition("b")).toBe('resource.name.startsWith("projects/_/buckets/b/objects/metrics/")');
+  });
+});
+
+describe("cleanup identity (P1-13 slice 2, ADR-0020)", () => {
+  const WF = "anlinguist/globalhost/.github/workflows/cleanup.yml@refs/heads/main";
+  const GH_CLEANUP = `serviceAccount:globalhost-gh-cleanup@${PROJECT}.iam.gserviceaccount.com`;
+  const grants = () => resources.filter((r) => r.inputs.member === GH_CLEANUP);
+  const condition = (r: Registered) => (r.inputs.condition as { expression?: string } | undefined)?.expression ?? null;
+
+  it("pins the provider to main's cleanup.yml in the factory repo, not nightly.yml", () => {
+    const provider = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "cleanup-provider");
+    expect(provider.inputs.workloadIdentityPoolProviderId).toBe("globalhost-cleanup");
+    expect(provider.inputs.attributeCondition).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.repository_id == '1437394155' && " +
+        `assertion.ref == 'refs/heads/main' && assertion.job_workflow_ref == '${WF}' && assertion.workflow_ref == '${WF}' && ` +
+        "assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'",
+    );
+    expect(cleanupProviderCondition(config, "anlinguist/globalhost")).toBe(provider.inputs.attributeCondition);
+    expect(String(provider.inputs.attributeCondition)).not.toContain("nightly.yml");
+    expect(String(one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "nightly-provider").inputs.attributeCondition)).not.toContain("cleanup.yml");
+  });
+
+  it("binds the service account only through the attribute its own provider maps", () => {
+    const wif = ofType("gcp:serviceaccount/iAMMember:IAMMember").filter((r) => String(r.inputs.serviceAccountId).includes("globalhost-gh-cleanup@"));
+    expect(wif.map((b) => [b.inputs.role, b.inputs.member])).toEqual([
+      [
+        "roles/iam.workloadIdentityUser",
+        `principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.cleanup/1437394155`,
+      ],
+    ]);
+    const others = ofType("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider").filter((p) => p.name !== "cleanup-provider");
+    for (const p of others) expect(Object.keys(p.inputs.attributeMapping as object)).not.toContain("attribute.cleanup");
+  });
+
+  it("holds exactly these grants, and every write is conditioned or scoped", () => {
+    const summary = grants().map((r) => [r.type, r.inputs.bucket ?? r.inputs.name ?? r.inputs.project, r.inputs.role, condition(r)].join(" "));
+    expect(summary.sort()).toEqual(
+      [
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectViewer `,
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectUser resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/reviews/")`,
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectUser resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/spend/")`,
+        `gcp:projects/iAMMember:IAMMember ${DEV_PROJECT} projects/${DEV_PROJECT}/roles/globalhostCleanupAuthDomains `,
+        `gcp:cloudrunv2/serviceIamMember:ServiceIamMember numu-know-web-preview projects/${DEV_PROJECT}/roles/globalhostCleanupPreviewTags `,
+      ].sort(),
+    );
+  });
+
+  it("has nothing on a prod project, the runs bucket, images, or a project-wide Cloud Run role", () => {
+    const text = JSON.stringify(grants().map((r) => r.inputs));
+    expect(text).not.toContain(RUNS_BUCKET);
+    expect(text).not.toContain("artifactregistry");
+    expect(text).not.toContain("roles/run.");
+    for (const g of grants()) expect(g.inputs.project === PROD_PROJECT).toBe(false);
+    const mentions = resources.filter((r) => r.name !== "gh-cleanup" && JSON.stringify(r.inputs).includes("globalhost-gh-cleanup@"));
+    expect([...new Set(mentions.map((r) => r.type))].sort()).toEqual([
+      "gcp:cloudrunv2/serviceIamMember:ServiceIamMember",
+      "gcp:projects/iAMMember:IAMMember",
+      "gcp:serviceaccount/iAMMember:IAMMember",
+      "gcp:storage/bucketIAMMember:BucketIAMMember",
+    ]);
+    const projectGrants = grants().filter((g) => g.type === "gcp:projects/iAMMember:IAMMember");
+    expect(projectGrants.map((g) => g.inputs.project)).toEqual([DEV_PROJECT]);
+    const secret = one("gcp:secretmanager/secretIamPolicy:SecretIamPolicy", "github-app-key-policy");
+    expect(JSON.stringify(secret.inputs)).not.toContain("globalhost-gh-cleanup");
+  });
+
+  it("limits its dev-project roles to exactly what it needs", () => {
+    const tags = one("gcp:projects/iAMCustomRole:IAMCustomRole", "numu-know-cleanup-tags-role");
+    expect(tags.inputs).toMatchObject({ project: DEV_PROJECT, roleId: "globalhostCleanupPreviewTags", permissions: ["run.services.get", "run.services.update"] });
+    const domains = one("gcp:projects/iAMCustomRole:IAMCustomRole", "numu-know-cleanup-domains-role");
+    expect(domains.inputs).toMatchObject({
+      project: DEV_PROJECT,
+      roleId: "globalhostCleanupAuthDomains",
+      permissions: ["firebaseauth.configs.get", "firebaseauth.configs.update", "serviceusage.services.use"],
+    });
+  });
+
+  it("anchors the conditions on the prefix with its slash, so a lookalike object doesn't match", () => {
+    expect(REVIEWS_PREFIX).toBe("reviews/");
+    expect(SPEND_PREFIX).toBe("spend/");
+    expect(cleanupObjectCondition("b", REVIEWS_PREFIX)).toBe('resource.name.startsWith("projects/_/buckets/b/objects/reviews/")');
+  });
+
+  it("leaves the nightly identity read-only", () => {
+    const nightly = resources.filter((r) => r.inputs.member === `serviceAccount:globalhost-gh-nightly@${PROJECT}.iam.gserviceaccount.com`);
+    for (const g of nightly) {
+      if (g.inputs.role !== "roles/storage.objectViewer") expect(condition(g)).toContain("/objects/metrics/");
+    }
   });
 });
 

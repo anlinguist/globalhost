@@ -10,9 +10,12 @@ import {
   aggregateMetrics,
   budgetCycle,
   lastCompleteDay,
+  parseLedgers,
   parseRuns,
   parseSpend,
   parseSpendName,
+  REVIEW_LEDGER_PATH,
+  staleLedgerHolds,
   renderMetricsMarkdown,
   spendWindow,
   type MetricsReport,
@@ -25,7 +28,7 @@ export const METRICS_LABEL = "factory:metrics";
 /** Who GITHUB_TOKEN writes as. The rolling issue is only ever one this account opened. */
 export const ACTIONS_BOT_LOGIN = "github-actions[bot]";
 
-const READ_CONCURRENCY = 8;
+export const READ_CONCURRENCY = 8;
 const MAX_PULL_PAGES = 20;
 const TOKEN_REUSE_MS = 30 * 60_000;
 const FACTORY_BRANCH = /^factory\/issue-[1-9][0-9]*$/;
@@ -33,32 +36,53 @@ const FACTORY_BRANCH = /^factory\/issue-[1-9][0-9]*$/;
 /** A failure whose message is safe for a public log. */
 export class MetricsError extends Error {}
 
+/** Minting a GCP token failed. Its own type because the cause isn't the object store, and the message stays fixed. */
+export class GcpTokenError extends Error {
+  constructor() {
+    super("getting a GCP token failed");
+    this.name = "GcpTokenError";
+  }
+}
+
 /** Only the status survives from a failure: the rest of the message can hold an object name or API path. */
-const httpStatus = (e: unknown) => /HTTP \d+/.exec(e instanceof Error ? e.message : "")?.[0] ?? "no HTTP status";
+export const httpStatus = (e: unknown) => /HTTP \d+/.exec(e instanceof Error ? e.message : "")?.[0] ?? "no HTTP status";
+
+/** A failure as fixed text, safe for a public log. A token failure reads as one, whatever was being attempted. */
+export const failureText = (description: string, e: unknown) => (e instanceof GcpTokenError ? e.message : `${description} failed (${httpStatus(e)})`);
 
 async function safely<T>(description: string, what: () => Promise<T>): Promise<T> {
   try {
     return await what();
   } catch (e) {
-    throw new MetricsError(`metrics: ${description} failed (${httpStatus(e)})`);
+    throw new MetricsError(`metrics: ${failureText(description, e)}`);
   }
 }
 
-async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/**
+ * Maps with a concurrency limit. If `fn` rejects, no new item starts, and the rejection comes only once every call
+ * in flight has finished: nothing is still running when the caller sees the error.
+ */
+export async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array<R>(items.length);
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    while (next < items.length) {
+    while (next < items.length && !failure) {
       const i = next++;
-      results[i] = await fn(items[i]!);
+      try {
+        results[i] = await fn(items[i]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.error;
   return results;
 }
 
 /** An object deleted between listing and reading (the 30-day lifecycle) just isn't there any more. */
-async function readAll(store: ObjectStore, bucket: string, names: readonly string[]): Promise<StoredObject[]> {
+export async function readAll(store: ObjectStore, bucket: string, names: readonly string[]): Promise<StoredObject[]> {
   const read = await mapLimited(names, READ_CONCURRENCY, async (name) => {
     const obj = await store.read(bucket, name);
     return obj ? { name, body: obj.body } : null;
@@ -71,6 +95,14 @@ export async function readRunRecords(store: ObjectStore): Promise<StoredObject[]
   return safely("reading the runs bucket", async () => {
     const names = (await store.list(RUNS_BUCKET, "")).filter((n) => n === "run.json" || n.endsWith("/run.json"));
     return readAll(store, RUNS_BUCKET, names);
+  });
+}
+
+/** Every PR review ledger, for the holds they carry. Claims aren't read: they hold no spend. */
+export async function readReviewLedgers(store: ObjectStore): Promise<StoredObject[]> {
+  return safely("reading the review ledgers", async () => {
+    const names = (await store.list(CONTROL_BUCKET, "reviews/")).filter((n) => REVIEW_LEDGER_PATH.test(n));
+    return readAll(store, CONTROL_BUCKET, names);
   });
 }
 
@@ -168,10 +200,16 @@ export async function publishMetricsIssue(gh: GitHubClient, repo: string, body: 
 }
 
 /** One token for the whole job, so reading hundreds of objects doesn't spawn gcloud hundreds of times. */
-function reusedToken(mint: AccessToken, now: () => number = Date.now): AccessToken {
+export function reusedToken(mint: AccessToken, now: () => number = Date.now): AccessToken {
   let held: { token: string; at: number } | undefined;
   return async () => {
-    if (!held || now() - held.at > TOKEN_REUSE_MS) held = { token: await mint(), at: now() };
+    if (!held || now() - held.at > TOKEN_REUSE_MS) {
+      try {
+        held = { token: await mint(), at: now() };
+      } catch {
+        throw new GcpTokenError(); // gcloud's own message can name the account or a path
+      }
+    }
     return held.token;
   };
 }
@@ -211,10 +249,20 @@ export async function metricsStep(deps: MetricsDeps): Promise<MetricsResult> {
 
   const runs = parseRuns(await readRunRecords(store));
   const spend = parseSpend(await readSpendRecords(store, now));
-  const seen = [...new Set([...runs.events.map((e) => e.repo), ...runs.unrecognized.flatMap((u) => u.repo ?? []), ...spend.rows.map((r) => r.repo), ...spend.corrupt.flatMap((c) => c.repo ?? [])])].sort();
+  const ledgers = parseLedgers(await readReviewLedgers(store));
+  const seen = [
+    ...new Set([
+      ...runs.events.map((e) => e.repo),
+      ...runs.unrecognized.flatMap((u) => u.repo ?? []),
+      ...spend.rows.map((r) => r.repo),
+      ...spend.corrupt.flatMap((c) => c.repo ?? []),
+      ...ledgers.holds.map((h) => h.repo),
+      ...ledgers.corrupt.map((c) => c.repo),
+    ]),
+  ].sort();
   const repos = await readRepoInfo(gh, seen, budgetCycle(lastCompleteDay(now)).start);
 
-  const report = aggregateMetrics({ now, runs, spend, repos });
+  const report = aggregateMetrics({ now, runs, spend, repos, ledgers });
   const markdown = renderMetricsMarkdown(report);
   log(`metrics: ${report.day}: ${report.cycle.metrics.totalRuns} runs in the cycle, ${report.findings.length} findings`);
 
@@ -229,18 +277,23 @@ export async function metricsStep(deps: MetricsDeps): Promise<MetricsResult> {
     try {
       await what();
     } catch (e) {
-      failures.push(`${description} (${httpStatus(e)})`);
+      failures.push(failureText(description, e));
     }
   };
   await attempt(async () => {
     await store.write(CONTROL_BUCKET, `metrics/${report.day}.json`, `${JSON.stringify(report, null, 2)}\n`);
     // Where the problems are, for the owner: names can name a private repo, so they stay in the private bucket.
-    const problems = { unrecognizedRuns: runs.unrecognized.map((u) => u.name), corruptSpend: spend.corrupt.map((c) => c.name) };
-    if (problems.unrecognizedRuns.length + problems.corruptSpend.length > 0) {
+    const problems = {
+      unrecognizedRuns: runs.unrecognized.map((u) => u.name),
+      corruptSpend: spend.corrupt.map((c) => c.name),
+      corruptLedgers: ledgers.corrupt.map((c) => c.name),
+      staleLedgerHolds: staleLedgerHolds(ledgers, now).map((h) => ({ object: h.name, runId: h.runId })),
+    };
+    if (Object.values(problems).some((list) => list.length > 0)) {
       await store.write(CONTROL_BUCKET, `metrics/${report.day}.problems.json`, `${JSON.stringify(problems, null, 2)}\n`);
     }
-  }, `writing gs://${CONTROL_BUCKET}/metrics/${report.day}.json failed`);
-  await attempt(() => publishMetricsIssue(gh, factoryRepo, markdown), "updating the metrics issue failed");
+  }, `writing gs://${CONTROL_BUCKET}/metrics/${report.day}.json`);
+  await attempt(() => publishMetricsIssue(gh, factoryRepo, markdown), "updating the metrics issue");
   if (failures.length > 0) throw new MetricsError(`metrics: ${failures.join("; ")}`);
   return { report, markdown };
 }

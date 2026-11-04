@@ -60,7 +60,7 @@ export type ShadowEntry = z.infer<typeof ShadowEntrySchema>;
 /**
  * A review run's budget hold, taken before the run starts (`limits.reviewPerRunUsd`). It counts against the
  * PR budget, and `day`'s daily budget, until the run's cost is recorded. A run that crashes never settles, so
- * its hold stays counted: the ledger fails toward overcounting, and only an owner clears it.
+ * its hold stays counted: the ledger fails toward overcounting, and only an owner or the cleanup job clears it.
  */
 export const ReviewReservationSchema = z.strictObject({
   runId,

@@ -3,6 +3,7 @@ import { ObjectStore } from "../src/gcp.js";
 import { GitHubClient } from "../src/github.js";
 import {
   ACTIONS_BOT_LOGIN,
+  mapLimited,
   mergedFactoryPrDays,
   MetricsError,
   metricsStep,
@@ -86,6 +87,29 @@ describe("ObjectStore.list", () => {
     const c = cloud();
     c.failing.set("GET storage.googleapis.com/storage/v1/b/globalhost-runs/o", 403);
     await expect(store(c).list("globalhost-runs", "")).rejects.toThrow("HTTP 403");
+  });
+});
+
+describe("mapLimited", () => {
+  it("rejects only once every call in flight has finished, and starts no more", async () => {
+    let running = 0;
+    let started = 0;
+    const seenRunningAtRejection: number[] = [];
+    const work = async (n: number) => {
+      started++;
+      running++;
+      await new Promise((resolve) => setTimeout(resolve, n === 0 ? 0 : 5));
+      running--;
+      if (n === 0) throw new Error("first");
+      return n;
+    };
+    await mapLimited([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3, work).catch(() => seenRunningAtRejection.push(running));
+    expect(seenRunningAtRejection).toEqual([0]);
+    expect(started).toBeLessThan(10);
+  });
+
+  it("keeps results in order", async () => {
+    expect(await mapLimited([3, 1, 2], 2, async (n) => n * 2)).toEqual([6, 2, 4]);
   });
 });
 
@@ -260,7 +284,7 @@ describe("metricsStep", () => {
     putSpend(c, { name: "spend/whatever.json", body: "{}" });
     const { report } = await metricsStep(deps(c));
     expect(report.findings.map((f) => f.code)).toEqual(["corrupt-spend"]);
-    expect(JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/whatever.json"] });
+    expect(JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/whatever.json"], corruptLedgers: [], staleLedgerHolds: [] });
   });
 
   describe("the private problems file", () => {
@@ -270,14 +294,14 @@ describe("metricsStep", () => {
       const c = cloud();
       putRun(c, { name: `${PUBLIC_REPO}/broken/turn-1/run.json`, body: "{" });
       await metricsStep(deps(c));
-      expect(problems(c)).toEqual({ unrecognizedRuns: [`${PUBLIC_REPO}/broken/turn-1/run.json`], corruptSpend: [] });
+      expect(problems(c)).toEqual({ unrecognizedRuns: [`${PUBLIC_REPO}/broken/turn-1/run.json`], corruptSpend: [], corruptLedgers: [], staleLedgerHolds: [] });
     });
 
     it("lists only the bad spend record when no run.json is bad", async () => {
       const c = cloud();
       putSpend(c, { name: "spend/2026-11-13/anlinguist__numu-know.json", body: "{" });
       await metricsStep(deps(c));
-      expect(problems(c)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/2026-11-13/anlinguist__numu-know.json"] });
+      expect(problems(c)).toEqual({ unrecognizedRuns: [], corruptSpend: ["spend/2026-11-13/anlinguist__numu-know.json"], corruptLedgers: [], staleLedgerHolds: [] });
     });
 
     it("holds names, never a record's contents", async () => {
@@ -374,6 +398,67 @@ describe("metricsStep", () => {
     expect(printed).toBe(markdown);
     expect(c.objects.size).toBe(0);
     expect(c.calls.filter((x) => x.method !== "GET")).toEqual([]);
+  });
+
+  it("says a GCP token failed, not that a bucket did, with no raw message", async () => {
+    await expect(metricsStep(deps(cloud(), { gcpToken: async () => Promise.reject(new Error("gcloud: no such account a@b.example")) }))).rejects.toThrow(
+      new MetricsError("metrics: getting a GCP token failed"),
+    );
+  });
+
+  it("still says a bucket failed when the token was fine", async () => {
+    const c = cloud();
+    c.failing.set("GET storage.googleapis.com/storage/v1/b/globalhost-runs/o", 403);
+    await expect(metricsStep(deps(c))).rejects.toThrow(new MetricsError("metrics: reading the runs bucket failed (HTTP 403)"));
+  });
+
+  describe("PR ledger holds", () => {
+    const HELD_AT = "2026-11-12T01:00:00.000Z"; // over 24 hours before NOW
+    const ledger = (reservations: unknown[]) => JSON.stringify({ version: 1, reviewSpendUsd: 0, truncatedSpendUsd: 0, runs: [], reservations });
+    const hold = (runId: string, reservedAt = HELD_AT) => ({ runId, sha: "a".repeat(40), reservedUsd: 2, reservedAt, day: reservedAt.slice(0, 10) });
+
+    it("reports a stale hold from a ledger, and where to find it only in the private file", async () => {
+      const c = cloud();
+      put(c, "globalhost-control", { name: `reviews/${PRIVATE_REPO}/pr-3.json`, body: ledger([hold("crashed")]) });
+      const { report, markdown } = await metricsStep(deps(c));
+      expect(report.findings.map((f) => f.code)).toEqual(["stale-reservation"]);
+      expect(markdown).not.toContain("secret-product");
+      expect(JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body)).toMatchObject({
+        staleLedgerHolds: [{ object: `reviews/${PRIVATE_REPO}/pr-3.json`, runId: "crashed" }],
+      });
+    });
+
+    it("sees a hold older than the spend window, which the day records no longer show", async () => {
+      const c = cloud();
+      put(c, "globalhost-control", { name: `reviews/${PUBLIC_REPO}/pr-3.json`, body: ledger([hold("ancient", "2026-06-01T00:00:00.000Z")]) });
+      expect((await metricsStep(deps(c))).report.findings.map((f) => f.code)).toEqual(["stale-reservation"]);
+    });
+
+    it("counts a review's hold once, though it's on both its day and its ledger", async () => {
+      const c = cloud();
+      putSpend(c, spendObject("2026-11-12", PUBLIC_REPO, { usd: 0, reservations: [{ runId: "crashed", usd: 2, at: HELD_AT }] }));
+      put(c, "globalhost-control", { name: `reviews/${PUBLIC_REPO}/pr-3.json`, body: ledger([hold("crashed")]) });
+      const { report } = await metricsStep(deps(c));
+      expect(report.findings.find((f) => f.code === "stale-reservation")!.message).toContain("1 open reservation is");
+      expect(report.findings.find((f) => f.code === "stale-reservation")!.message).toContain("$2.00");
+    });
+
+    it("ignores claims and a young hold", async () => {
+      const c = cloud();
+      put(c, "globalhost-control", { name: `reviews/${PUBLIC_REPO}/pr-3/${"a".repeat(40)}.claim.json`, body: "not a ledger" });
+      put(c, "globalhost-control", { name: `reviews/${PUBLIC_REPO}/pr-4.json`, body: ledger([hold("young", "2026-11-14T01:00:00.000Z")]) });
+      expect((await metricsStep(deps(c))).report.findings).toEqual([]);
+    });
+
+    it("reports a corrupt ledger by label, and its name only in the private file", async () => {
+      const c = cloud();
+      put(c, "globalhost-control", { name: `reviews/${PRIVATE_REPO}/pr-3.json`, body: "{nope" });
+      const { report, markdown } = await metricsStep(deps(c));
+      expect(report.findings.map((f) => f.code)).toEqual(["corrupt-ledger"]);
+      expect(markdown).toContain("(other)");
+      expect(markdown).not.toContain("secret-product");
+      expect(JSON.parse(c.objects.get("globalhost-control/metrics/2026-11-13.problems.json")!.body)).toMatchObject({ corruptLedgers: [`reviews/${PRIVATE_REPO}/pr-3.json`] });
+    });
   });
 
   it("mints one GCP token for the whole job", async () => {

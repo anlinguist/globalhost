@@ -1,0 +1,55 @@
+name: cleanup
+
+# Sweeps what closed PRs left behind (PLAN P1-13 slice 2, ADR-0020): preview tags and authorized domains the product
+# workflow's teardown missed, claims and empty ledgers of PRs closed for a week, and stale reservations. Kept keyed on GitHub:
+# anything but a clean "closed" answer stays and is reported.
+# A separate workflow from nightly.yml on purpose. GitHub's job_workflow_ref claim names the workflow file, not the
+# job, so jobs sharing a file couldn't have separate identities. Only this file on main can get
+# sa:globalhost-gh-cleanup, and nightly.yml's read-only identity stays read-only (infra/factory/src/cleanup.ts).
+# Runs before nightly.yml, so the metrics issue reads what's left.
+# It only dry-runs until the repo variable CLEANUP_APPLY is exactly `true`, and whenever the factory is paused.
+# This repo is public and so are its Actions logs: `globalhost cleanup` logs PR numbers and fixed text only.
+
+on:
+  schedule:
+    - cron: "47 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout, and reading public product repos' PRs through GITHUB_TOKEN
+      id-token: write # WIF -> sa:globalhost-gh-cleanup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # No dependency cache: nothing a PR run wrote can reach a job with these credentials.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # Install and build run before the GCP login, and GITHUB_TOKEN is only in the last step's env.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec turbo run build --filter=@globalhost/cli
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_CLEANUP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLEANUP_SA }}
+
+      - name: Sweep (dry run unless CLEANUP_APPLY is true and the factory isn't paused)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLEANUP_APPLY: ${{ vars.CLEANUP_APPLY }}
+        run: node packages/cli/dist/bin.js cleanup

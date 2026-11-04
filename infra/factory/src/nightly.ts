@@ -12,12 +12,12 @@ export const NIGHTLY_ACCOUNT_ID = "globalhost-gh-nightly";
 export const METRICS_PREFIX = "metrics/";
 
 /**
- * Only main's copy of the nightly workflow in the factory repo (both `job_workflow_ref` and `workflow_ref`, so no
- * other workflow can call it and get the token), for its two triggers, on a GitHub-hosted runner.
+ * Only main's copy of one scheduled workflow in the factory repo (both `job_workflow_ref` and `workflow_ref`, so no
+ * other workflow can call it and get the token), for `schedule` and `workflow_dispatch`, on a GitHub-hosted runner.
  */
-export function nightlyProviderCondition(config: FactoryConfig, factoryRepoName: string): string {
+export function factoryWorkflowCondition(config: FactoryConfig, factoryRepoName: string, workflow: string): string {
   const ref = "refs/heads/main";
-  const wf = `${factoryRepoName}/${NIGHTLY_WORKFLOW}@${ref}`;
+  const wf = `${factoryRepoName}/${workflow}@${ref}`;
   return [
     `assertion.repository_owner_id == '${config.githubOwnerId}'`,
     `assertion.repository_id == '${config.factoryRepoId}'`,
@@ -28,6 +28,8 @@ export function nightlyProviderCondition(config: FactoryConfig, factoryRepoName:
     `assertion.runner_environment == 'github-hosted'`,
   ].join(" && ");
 }
+
+export const nightlyProviderCondition = (config: FactoryConfig, factoryRepoName: string) => factoryWorkflowCondition(config, factoryRepoName, NIGHTLY_WORKFLOW);
 
 /** The object prefix it can write. The trailing slash is the point: `metrics-x` doesn't match. */
 export function nightlyMetricsCondition(bucket: string): string {

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { ReviewRecordSchema, type Finding, type ReviewOutput } from "@globalhost/core";
 import { ReviewNotStartedError, ReviewRunError, ReviewRunSchema, type ManagedAgentsApi, type ReviewBundle, type ReviewRun, type ReviewSpec } from "@globalhost/runner";
 import { CONTROL_BUCKET, ControlPlane, ObjectStore, RUNS_BUCKET, reviewClaimObject } from "../src/gcp.js";
+import { parseRuns } from "../src/metrics.js";
 import { REVIEW_TOKEN_REUSE_MS, reviewStep, type ReviewDeps } from "../src/review.js";
 import { FakeCloud, OWNER, REPO, git, registry } from "./fakes.js";
 import { CI_RUN, ISSUE, PR, ciRun, eventFile, labelEvent, pull, routePull, workflowRunEvent } from "./review-fixtures.js";
@@ -425,6 +426,62 @@ describe("reviewStep: settles on every exit", () => {
     expect(daily(s).reservations).toEqual([]);
     expect(claim(s)!.recordPath).toBeNull();
     expect(s.cloud.reviews).toEqual([]);
+  });
+
+  describe("the run record of a failed attempt", () => {
+    const runJson = (s: Setup) => {
+      const entry = [...s.cloud.objects.entries()].find(([k]) => k.startsWith(`${RUNS_BUCKET}/`) && k.endsWith("/run.json"));
+      return entry ? { name: entry[0].slice(`${RUNS_BUCKET}/`.length), body: entry[1].body } : undefined;
+    };
+
+    it.each<[string, Partial<ReviewDeps>, number]>([
+      ["a throw with unknown cost, at the run cap", { startReview: boom("session exploded") }, 2],
+      [
+        "a ReviewRunError, at its cost",
+        {
+          startReview: async () => {
+            throw new ReviewRunError("run.json unwritable", "sesn_x", 0.7);
+          },
+        },
+        0.7,
+      ],
+    ])("is archived for %s, so metrics counts it and drift stays clear", async (_label, over, cost) => {
+      const s = setup();
+      Object.assign(s.deps, over);
+      await expect(reviewStep(s.deps)).rejects.toThrow();
+      const obj = runJson(s)!;
+      expect(ReviewRunSchema.parse(JSON.parse(obj.body))).toMatchObject({ status: "failed", costUsd: cost, pr: PR });
+      const parsed = parseRuns([obj]);
+      expect(parsed.unrecognized).toEqual([]);
+      expect(parsed.events).toEqual([expect.objectContaining({ role: "reviewer", usd: cost, pr: PR })]);
+      expect((await ledger(s))!.runs[0]!.costUsd).toBe(cost); // the ledger agrees
+    });
+
+    it("isn't written when nothing could have spent", async () => {
+      const s = setup();
+      Object.assign(s.deps, {
+        startReview: async () => {
+          throw new ReviewNotStartedError("upload failed");
+        },
+      });
+      await expect(reviewStep(s.deps)).rejects.toThrow();
+      expect(runJson(s)).toBeUndefined();
+    });
+
+    it("doesn't get in the way of settling when it can't be written", async () => {
+      const s = setup();
+      Object.assign(s.deps, { startReview: boom("session exploded") });
+      s.cloud.failing.set(`POST storage.googleapis.com/upload/storage/v1/b/${RUNS_BUCKET}/`, 503);
+      await expect(reviewStep(s.deps)).rejects.toThrow("session exploded");
+      expect((await ledger(s))!.runs[0]).toMatchObject({ status: "failed", costUsd: 2 });
+      expect(s.logs).toContain("review: archiving the failed run's record failed: Error");
+    });
+
+    it("isn't written twice for a review archived normally", async () => {
+      const s = setup();
+      await reviewStep(s.deps);
+      expect(archived(s).filter((n) => n === "run.json")).toHaveLength(1);
+    });
   });
 
   it("settles a minimal entry when the failure record itself won't validate, and still throws the original error", async () => {
