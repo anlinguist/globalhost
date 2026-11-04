@@ -82,11 +82,11 @@ workflow_run (globalhost-ci completed) / pull_request_target labeled factory:rev
   └─ review-gate  (read-only GITHUB_TOKEN)  decideReview → review | unlabel | ignore, pr, timeout (= limits.perRunMinutes)
   └─ unlabel      (GITHUB_TOKEN pull-requests: write; no environment)  remove the refused factory:review
   └─ review       (environment globalhost-review)
-       decideReview again with its own reads → validate the step's environment → kill switch → claim → reserve
+       decideReview again with its own reads → validate the step's environment → kill switch → mint the review App token → claim → reserve
        bundle base + PR head once (read-only token) → diff, commits, paths, patch-id
        CI summary (jobs, steps, log tails; capped) + CI `smoke` artifact screenshots (zip parsed in memory)
        scanDiff over diff, commits, paths and the CI summary → startReview (budget reviewPerRunUsd)
-       ReviewRecord via overallVerdict → archive create-only → settle → complete claim → post
+       ReviewRecord via overallVerdict → archive create-only → settle → complete claim → post (same token, re-minted if 50+ min old)
 ```
 
 - **Who triggers it.** A same-repo PR from `factory/issue-<n>` into the default branch, opened by `<GLOBALHOST_APP_SLUG>[bot]` (type Bot), open, with its head equal to the CI run's head; the CI run must be `globalhost-ci` (`.github/workflows/globalhost-ci.yml`) for a `pull_request` event, and its actor and triggering actor the bot or an owner. `factory:review` counts only when an owner applies it; it re-reviews the current head if CI succeeded on it, and is removed once acted on (also when refused). Only that path re-reviews a SHA. Reviews don't take a builder slot.

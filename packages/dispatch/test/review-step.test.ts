@@ -1,6 +1,7 @@
 // The review step end to end against the fake GitHub + GCS and a real git repo, with startReview stubbed:
 // claim → reserve → inputs → scan → run → record → archive → settle → complete claim → post, and that every
 // exit after the claim settles the run.
+import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { ReviewRecordSchema, type Finding, type ReviewOutput } from "@globalhost/core";
 import { ReviewNotStartedError, ReviewRunError, ReviewRunSchema, type ManagedAgentsApi, type ReviewBundle, type ReviewRun, type ReviewSpec } from "@globalhost/runner";
 import { CONTROL_BUCKET, ControlPlane, ObjectStore, RUNS_BUCKET, reviewClaimObject } from "../src/gcp.js";
-import { reviewStep, type ReviewDeps } from "../src/review.js";
+import { REVIEW_TOKEN_REUSE_MS, reviewStep, type ReviewDeps } from "../src/review.js";
 import { FakeCloud, OWNER, REPO, git, registry } from "./fakes.js";
 import { CI_RUN, ISSUE, PR, ciRun, eventFile, labelEvent, pull, routePull, workflowRunEvent } from "./review-fixtures.js";
 import { png, writeZip } from "./zip-fixture.js";
@@ -466,6 +467,77 @@ describe("reviewStep: settles on every exit", () => {
     }) as typeof fetch;
     await expect(reviewStep(s.deps)).rejects.toThrow("primary failure");
     expect(s.logs.some((l) => l.includes("settling failed too"))).toBe(true);
+  });
+});
+
+describe("reviewStep: the review App token", () => {
+  /** A throwaway App key, made at runtime so no key material is committed. */
+  const KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const SECRET = `GET https://secretmanager.googleapis.com/v1/projects/globalhost-factory/secrets/github-app-key/versions/latest:access`;
+
+  /** The installed workflow's path: the key from Secret Manager, then the installation lookup and the mint. */
+  function realMint(opts: { secret?: number; installation?: number } = {}) {
+    const run = stubRun(output());
+    const s = setup({ start: run.fn });
+    delete s.deps.reviewToken;
+    s.cloud.raw.set(SECRET, () =>
+      opts.secret ? new Response("{}", { status: opts.secret }) : Response.json({ payload: { data: Buffer.from(KEY).toString("base64") } }),
+    );
+    if (opts.installation) s.cloud.failing.set(`GET /repos/${REPO}/installation`, opts.installation);
+    else s.cloud.routes.set(`GET /repos/${REPO}/installation`, { id: 77 });
+    s.cloud.routes.set("POST /app/installations/77/access_tokens", { token: "review-app-token" });
+    const mints = () => s.cloud.calls.filter((c) => c.method === "POST" && c.path === "/app/installations/77/access_tokens").length;
+    return { s, run, mints };
+  }
+
+  const nothingClaimed = async (s: Setup, run: ReturnType<typeof stubRun>) => {
+    expect(claim(s)).toBeUndefined();
+    expect(await ledger(s)).toBeNull();
+    expect([...s.cloud.objects.keys()].filter((k) => k.startsWith(`${CONTROL_BUCKET}/spend/`))).toEqual([]);
+    expect(run.calls).toEqual([]);
+    expect(s.cloud.reviews).toEqual([]);
+  };
+
+  it("fails before claiming when the App key can't be read", async () => {
+    const { s, run, mints } = realMint({ secret: 403 });
+    await expect(reviewStep(s.deps)).rejects.toThrow(/review App token.*Secret Manager github-app-key: HTTP 403/);
+    expect(mints()).toBe(0);
+    await nothingClaimed(s, run);
+  });
+
+  it("fails before claiming when the App isn't installed on the repo", async () => {
+    const { s, run, mints } = realMint({ installation: 404 });
+    await expect(reviewStep(s.deps)).rejects.toThrow(/review App token.*installation: HTTP 404/);
+    expect(mints()).toBe(0);
+    await nothingClaimed(s, run);
+  });
+
+  it("mints once before claiming and reuses the token to post", async () => {
+    const { s, mints } = realMint();
+    const out = await reviewStep(s.deps);
+    expect(out).toMatchObject({ outcome: "reviewed", posted: expect.any(Number) });
+    expect(mints()).toBe(1);
+    const order = s.cloud.calls.map((c) => c.path);
+    expect(order.indexOf("/app/installations/77/access_tokens")).toBeLessThan(order.findIndex((p) => /\/pulls\/\d+\/reviews/.test(p)));
+  });
+
+  it("mints again to post when the review outlasted the token's reuse window", async () => {
+    let clock = Date.parse("2026-11-03T12:00:00Z");
+    const minted: number[] = [];
+    // The review "takes" longer than the reuse window: the clock jumps while it runs.
+    const run = stubRun(output(), {}, async () => {
+      clock += REVIEW_TOKEN_REUSE_MS + 60_000;
+    });
+    const s = setup({ start: run.fn });
+    s.deps.now = () => clock;
+    s.deps.reviewToken = async () => {
+      minted.push(clock);
+      return "review-app-token";
+    };
+    const out = await reviewStep(s.deps);
+    expect(out.outcome).toBe("reviewed");
+    expect(minted).toHaveLength(2);
+    expect(minted[1]! - minted[0]!).toBeGreaterThanOrEqual(REVIEW_TOKEN_REUSE_MS);
   });
 });
 
