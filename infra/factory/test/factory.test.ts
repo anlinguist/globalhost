@@ -684,8 +684,15 @@ describe("cleanup identity (P1-13 slice 2, ADR-0020)", () => {
         `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectUser resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/spend/")`,
         `gcp:projects/iAMMember:IAMMember ${DEV_PROJECT} projects/${DEV_PROJECT}/roles/globalhostCleanupAuthDomains `,
         `gcp:cloudrunv2/serviceIamMember:ServiceIamMember numu-know-web-preview projects/${DEV_PROJECT}/roles/globalhostCleanupPreviewTags `,
+        "gcp:serviceaccount/iAMMember:IAMMember  roles/iam.serviceAccountUser ",
       ].sort(),
     );
+  });
+
+  it("can act only as the preview runtime identity, which Cloud Run requires for a traffic update", () => {
+    const actAs = ofType("gcp:serviceaccount/iAMMember:IAMMember").filter((r) => r.inputs.member === GH_CLEANUP);
+    expect(actAs.map((r) => [r.name, r.inputs.role])).toEqual([["numu-know-cleanup-acts-as-runtime", "roles/iam.serviceAccountUser"]]);
+    expect(String(actAs[0]?.inputs.serviceAccountId)).toContain(`preview-runtime@${DEV_PROJECT}`);
   });
 
   it("has nothing on a prod project, the runs bucket, images, or a project-wide Cloud Run role", () => {

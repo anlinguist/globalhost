@@ -2,8 +2,8 @@
 // sa:globalhost-gh-cleanup. A workflow file of its own, because `job_workflow_ref` names a file, not a job.
 //
 // On the control bucket it reads, and can write only under reviews/ and spend/. The grants on each product's dev
-// project (the preview service's traffic, and the authorized domains) are made beside those resources, in
-// previews.ts. Nothing on a prod project, on globalhost-runs, or on images.
+// project (the preview service's traffic, acting as its runtime identity, and the authorized domains) are made
+// beside those resources, in previews.ts. Nothing on a prod project, on globalhost-runs, or on images.
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { FactoryConfig } from "./config.js";
