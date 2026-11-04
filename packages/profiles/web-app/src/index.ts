@@ -1,9 +1,10 @@
 // The `web-app` profile (docs/PROFILES.md §4.1), v0: detect, skill, verify, guidance and the preview contract.
-// Previews are built in P1-11; evaluated guardrails arrive in Phase 2.
+// Previews are built in P1-11. Evaluated guardrails: dependency-change (shared) and visual-baseline (P2-03).
 import type { EnvironmentSpec, Profile, RepoSnapshot, Toolchain } from "@globalhost/core";
-import { detectBun, detectNode, joinToolchains } from "@globalhost/profile-toolchains";
+import { dependencyChange, detectBun, detectNode, joinToolchains } from "@globalhost/profile-toolchains";
 import { webAppConfigSchema, type WebAppConfig } from "./config.js";
 import { detectWebApp, type WebAppDetection } from "./detect.js";
+import { visualBaseline } from "./guardrails.js";
 import { webAppGuidance } from "./guidance.js";
 import { verifySteps } from "./verify.js";
 
@@ -18,6 +19,7 @@ export {
   type PackageManager,
   type WebAppDetection,
 } from "./detect.js";
+export { VISUAL_BASELINE_GLOBS, visualBaseline } from "./guardrails.js";
 export { SESSION_OUTPUTS, webAppGuidance } from "./guidance.js";
 export { installCommand, SCREENSHOT_DIR, smokeEnv, VERIFY_STEP_IDS, verifySteps } from "./verify.js";
 
@@ -64,6 +66,6 @@ export const webApp: Profile<WebAppConfig, WebAppDetection> = {
   guardrails: {
     // Env files hold real values; agents never write them (skills/web-app). Example files are owner-edited too.
     immutable: [".env", ".env.*"],
-    checks: [],
+    checks: [dependencyChange, visualBaseline],
   },
 };

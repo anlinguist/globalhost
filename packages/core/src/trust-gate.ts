@@ -25,6 +25,9 @@ export type GateDecision =
   | { action: "resume"; role: "builder"; issue: number; pullRequest: number; feedback: string }
   | { action: "resume"; role: "planner"; issue: number; feedback: string };
 
+/** A human owner: matched by immutable ID, and never a bot or App, even one whose ID got into the owner list. */
+export const isOwnerActor = (actor: { id: number; type: string }, ownerIds: readonly number[]) => actor.type === "User" && ownerIds.includes(actor.id);
+
 const FACTORY_BRANCH = /^factory\/issue-([1-9][0-9]{0,9})$/;
 
 export function gate(event: GateEvent, ownerIds: readonly number[]): GateDecision {

@@ -4,10 +4,12 @@
 // A successful build isn't a deploy (ADR-0019): `verifyLive()` checks the configured Cloud Run service serves it.
 import {
   GCP_PROJECT_PATTERN,
+  GLOB_PATTERN,
   REGION_PATTERN,
   z,
   type DeployAdapter,
   type ReleaseCtx,
+  type ReleaseExecutionSet,
   type ReleaseHandle,
   type ReleaseLiveness,
   type ReleaseState,
@@ -51,6 +53,14 @@ export const cloudBuildTriggerConfigSchema = z.strictObject({
       region: z.string().regex(REGION_PATTERN, { error: "must be a GCP region such as us-central1" }),
     })
     .optional(),
+  /** The trigger's build config file, repo-relative. Only needed when it isn't `cloudbuild.yaml`. */
+  buildConfig: z
+    .string()
+    .regex(GLOB_PATTERN, { error: "must be a repo-relative path" })
+    .refine((p) => !/[*?]/.test(p), { error: "must be a path, not a glob" })
+    .optional(),
+  /** Repo-relative globs of anything else the build config's steps run, such as a deploy script. */
+  releaseInputs: z.array(z.string().regex(GLOB_PATTERN, { error: "must be a glob" })).max(100).optional(),
 });
 export type CloudBuildTriggerConfig = z.output<typeof cloudBuildTriggerConfigSchema>;
 
@@ -94,6 +104,30 @@ const handleDataSchema = z
     error: "runProject, runRegion and runService go together",
   });
 type HandleData = z.output<typeof handleDataSchema>;
+
+const DEFAULT_BUILD_CONFIG = "cloudbuild.yaml";
+
+/**
+ * What a Cloud Build trigger runs with its service account: the build config, and the image definition and upload
+ * filter its docker step reads. At any depth, since a config can point a build anywhere in the repo. The build's whole
+ * context isn't in the set (`COPY . .` would make it every file); application code is what the build/deploy split of
+ * ADR-0015 §9 is for. Steps that run a repo script need it listed in `releaseInputs`.
+ */
+export const BUILD_DEFINITION_GLOBS: readonly string[] = Object.freeze([
+  "**/cloudbuild.yaml",
+  "**/cloudbuild.yml",
+  "**/cloudbuild.json",
+  "**/Dockerfile",
+  "**/Dockerfile.*",
+  "**/*.Dockerfile",
+  "**/.dockerignore",
+  "**/.gcloudignore",
+]);
+
+export function cloudBuildReleaseSet(cfg: CloudBuildTriggerConfig): ReleaseExecutionSet {
+  const config = cloudBuildTriggerConfigSchema.parse(cfg);
+  return { globs: [...new Set([config.buildConfig ?? DEFAULT_BUILD_CONFIG, ...BUILD_DEFINITION_GLOBS, ...(config.releaseInputs ?? [])])] };
+}
 
 /** Cloud Build `Build.Status` → release state. Anything unlisted (incl. STATUS_UNKNOWN) is "unknown". */
 export const STATUS_MAP: Readonly<Record<string, ReleaseState>> = {
@@ -214,6 +248,8 @@ export function createCloudBuildTriggerAdapter(deps: CloudBuildTriggerDeps): Dep
     id: ADAPTER_ID,
     configSchema: cloudBuildTriggerConfigSchema,
     capabilities: { preview: false, canary: false, rollback: false, asyncGate: false },
+
+    releaseExecutionSet: (_part, cfg) => cloudBuildReleaseSet(cfg),
 
     async release(ctx: ReleaseCtx, cfg: CloudBuildTriggerConfig): Promise<ReleaseHandle> {
       if (!SHA_PATTERN.test(ctx.sha)) throw new Error("release sha must be 40 lowercase hex characters");
