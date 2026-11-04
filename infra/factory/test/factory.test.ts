@@ -11,6 +11,7 @@ import {
   createFactory,
   dispatchProviderCondition,
 } from "../src/factory.js";
+import { METRICS_PREFIX, nightlyMetricsCondition, nightlyProviderCondition } from "../src/nightly.js";
 import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
 import { releaseProviderCondition, releaseTriggerArgs, releaseTriggerOptions } from "../src/releases.js";
 import { reviewControlCondition, reviewProviderCondition, reviewRunsCondition } from "../src/reviews.js";
@@ -244,10 +245,10 @@ describe("factory infra", () => {
     expect(control.inputs.versioning).toEqual({ enabled: true });
     const rules = control.inputs.lifecycleRules as { action: { type: string }; condition: Record<string, unknown> }[];
     expect(rules.length).toBeGreaterThan(0);
-    for (const rule of rules) {
-      expect(rule.action.type).toBe("Delete");
-      expect(rule.condition.withState).toBe("ARCHIVED"); // never deletes the live state.json
-    }
+    for (const rule of rules) expect(rule.action.type).toBe("Delete");
+    // The only rule that can delete a live object is limited to metrics/: never state.json, spend or review state.
+    const live = rules.filter((r) => r.condition.withState !== "ARCHIVED");
+    expect(live.map((r) => r.condition)).toEqual([{ age: 400, withState: "LIVE", matchesPrefixes: ["metrics/"] }]);
     expect(rules.some((r) => r.condition.daysSinceNoncurrentTime === 30)).toBe(true);
   });
 
@@ -582,6 +583,59 @@ describe("prod Cloud Build triggers (ADR-0019)", () => {
     ["a .. segment in the build config path", withTriggers([{ ...main, filename: "../other/cloudbuild.yaml" }])],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+  });
+});
+
+describe("nightly identity (P1-13, ADR-0020)", () => {
+  const WF = "anlinguist/globalhost/.github/workflows/nightly.yml@refs/heads/main";
+  const GH_NIGHTLY = `serviceAccount:globalhost-gh-nightly@${PROJECT}.iam.gserviceaccount.com`;
+
+  it("pins the provider to main's copy of the nightly workflow in the factory repo, for its two triggers", () => {
+    const provider = one("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "nightly-provider");
+    expect(provider.inputs.workloadIdentityPoolProviderId).toBe("globalhost-nightly");
+    expect(provider.inputs.attributeCondition).toBe(
+      "assertion.repository_owner_id == '47403803' && assertion.repository_id == '1437394155' && " +
+        `assertion.ref == 'refs/heads/main' && assertion.job_workflow_ref == '${WF}' && assertion.workflow_ref == '${WF}' && ` +
+        "assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'",
+    );
+    expect(nightlyProviderCondition(config, "anlinguist/globalhost")).toBe(provider.inputs.attributeCondition);
+  });
+
+  it("binds the service account only through the attribute its own provider maps", () => {
+    const wif = ofType("gcp:serviceaccount/iAMMember:IAMMember").filter((r) => String(r.inputs.serviceAccountId).includes("globalhost-gh-nightly@"));
+    expect(wif.map((b) => [b.inputs.role, b.inputs.member])).toEqual([
+      [
+        "roles/iam.workloadIdentityUser",
+        `principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.nightly/1437394155`,
+      ],
+    ]);
+    const others = ofType("gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider").filter((p) => p.name !== "nightly-provider");
+    expect(others.length).toBeGreaterThan(0);
+    for (const p of others) expect(Object.keys(p.inputs.attributeMapping as object)).not.toContain("attribute.nightly");
+  });
+
+  it("reads both buckets and can write only under metrics/ in the control bucket", () => {
+    const grants = resources.filter((r) => r.inputs.member === GH_NIGHTLY);
+    const summary = grants.map((r) => [r.type, r.inputs.bucket, r.inputs.role, (r.inputs.condition as { expression?: string } | undefined)?.expression ?? null].join(" "));
+    expect(summary.sort()).toEqual(
+      [
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectUser resource.name.startsWith("projects/_/buckets/${CONTROL_BUCKET}/objects/metrics/")`,
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${CONTROL_BUCKET} roles/storage.objectViewer `,
+        `gcp:storage/bucketIAMMember:BucketIAMMember ${RUNS_BUCKET} roles/storage.objectViewer `,
+      ].sort(),
+    );
+  });
+
+  it("gives it no project-level role, no secret, and nothing beyond those grants", () => {
+    const mentions = resources.filter((r) => r.name !== "gh-nightly" && JSON.stringify(r.inputs).includes("globalhost-gh-nightly@"));
+    expect([...new Set(mentions.map((r) => r.type))].sort()).toEqual(["gcp:serviceaccount/iAMMember:IAMMember", "gcp:storage/bucketIAMMember:BucketIAMMember"]);
+    const secret = one("gcp:secretmanager/secretIamPolicy:SecretIamPolicy", "github-app-key-policy");
+    expect(JSON.stringify(secret.inputs)).not.toContain("globalhost-gh-nightly");
+  });
+
+  it("anchors the write condition on the prefix with its slash, so a lookalike object doesn't match", () => {
+    expect(METRICS_PREFIX).toBe("metrics/");
+    expect(nightlyMetricsCondition("b")).toBe('resource.name.startsWith("projects/_/buckets/b/objects/metrics/")');
   });
 });
 

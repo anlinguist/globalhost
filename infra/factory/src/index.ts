@@ -74,3 +74,5 @@ export const previews = out.previews;
 export const releaseObservers = out.releaseObservers;
 export const reviewServiceAccount = out.reviewServiceAccount;
 export const reviewWorkloadIdentityProvider = out.reviewWorkloadIdentityProvider;
+export const nightlyServiceAccount = out.nightlyServiceAccount;
+export const nightlyWorkloadIdentityProvider = out.nightlyWorkloadIdentityProvider;

@@ -29,7 +29,7 @@ skills/              Claude skills mounted into runs
 templates/           files rendered into product repos
 infra/               Pulumi: factory infra + reusable components
 projects/            multi-repo project manifests
-docs/                architecture, profiles, onboarding, ADRs, metrics
+docs/                architecture, profiles, onboarding, ADRs
 ```
 
 ## Stack & conventions

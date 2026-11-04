@@ -103,6 +103,14 @@ Step environment: `GITHUB_*`, `RUNNER_TEMP`, `GLOBALHOST_APP_ID`, `GLOBALHOST_AP
 
 A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, but only for the owner or a cleanup job; nothing calls it automatically. The P1-13 orphans job should also delete `reviews/<repo>/pr-<n>*` once the PR is closed, after any shadow-index export the metrics need.
 
+## Metrics and the budget watcher (P1-13, ADR-0020)
+
+`globalhost metrics` is the factory repo's nightly job, not a product-repo step. `metrics.ts` is pure: it parses `run.json` files and spend records and aggregates them. `metrics-step.ts` does the I/O: it reads both buckets and GitHub, writes `metrics/<day>.json` and edits the rolling issue. The job exits 1 when the watcher has a finding, after publishing.
+
+The output is public. Only numbers, enums and slug-checked repo names are taken from a record, and any repo not confirmed public is `other`. Errors logged carry fixed text and a status, never an object name. To find a record the watcher flagged, read `gs://globalhost-control/metrics/<day>.problems.json`, which lists object names and stays in the private bucket.
+
+Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`. `METRICS_DRY_RUN=1` writes nothing and prints the report, so the owner can run it locally with `gcloud` signed in.
+
 ## Product-repo setup
 
 `globalhost install` will automate this (P1-09). Until then, set it up by hand, once per repo:
