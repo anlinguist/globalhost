@@ -28,6 +28,33 @@ config:
     - product: numu-know
       prodProject: numu-know
       repo: {name: anlinguist/numu-know, id: "338675328", defaultBranch: main}
+      # The prod Cloud Build triggers, imported as they are live (ADR-0019); change them here, then `pulumi up`.
+      triggers:
+        - key: main
+          id: 769b4e4c-bf17-456c-b380-ed9b5e176802
+          name: rmgpgab-numu-know-us-central1-anlinguist-Numu-Know--mafyn
+          description: Build and deploy to Cloud Run service numu-know on push to "^main$" (cloudbuild.yaml)
+          branch: ^main$
+          filename: cloudbuild.yaml
+          service: numu-know
+          substitutions: {_REGION: us-central1}
+          tags: [gcp-cloud-build-deploy-cloud-run, gcp-cloud-build-deploy-cloud-run-managed, numu-know]
+        - key: staging
+          id: 4b81e1d4-2dd8-42bb-8532-842ff4ec729c
+          name: rmgpgab-staging-numu-know-us-central1-anlinguist-numu-know--qlh
+          description: DISABLED 2026-11-03 - main now deploys staging-numu-know (the www service); was on push to "^staging$"
+          disabled: true
+          branch: ^staging$
+          filename: cloudbuild.yaml
+          service: staging-numu-know
+          substitutions:
+            _DEPLOY_REGION: us-central1
+            _GCR_HOSTNAME: us.gcr.io
+            _LABELS: gcb-trigger-id=4b81e1d4-2dd8-42bb-8532-842ff4ec729c
+            _PLATFORM: managed
+            _REGION: us-central1
+            _TRIGGER_ID: 4b81e1d4-2dd8-42bb-8532-842ff4ec729c
+          tags: [gcp-cloud-build-deploy-cloud-run, gcp-cloud-build-deploy-cloud-run-managed, staging-numu-know]
   # Product repos whose default-branch globalhost-review.yml, in environment `globalhost-review`, may act as
   # sa:globalhost-gh-review (PLAN P2-01, ADR-0018). Each must match a dispatchRepos entry.
   globalhost-factory:reviewRepos:

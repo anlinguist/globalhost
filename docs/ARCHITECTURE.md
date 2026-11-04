@@ -217,7 +217,7 @@ Rules:
 | Owner's `GITHUB_TOKEN` (local, optional) | the owner's shell, for `globalhost run` / `globalhost assess` | read private repos; with `assess --post`, open the one onboarding issue (Issues write) | reach any agent session: the harness uses it only for REST calls and clones in trusted code |
 | Owner's gcloud login (local) | `globalhost assess --gcp-project` | read-only `list` calls: Cloud Build triggers, Cloud Run services, Firestore databases, service-account keys | be passed to the agent; only names, branches and URLs are kept (env vars and substitutions are dropped) |
 | `sa:globalhost-local` | impersonated by the owner for `globalhost run` and `globalhost assess` | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014) | any GCP role; anything else |
-| `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014); deleted when the spike ends | any GCP role; anything else |
+| `sa:globalhost-spike` (temporary, P1-00) | impersonated by the owner locally | mint its own Google identity token, which one Anthropic federation rule accepts (ADR-0014). The spike code is removed; the owner deletes this SA, its federation rule and its Console service account | any GCP role; anything else |
 | `sa:preview-deployer` (in `<product>-dev`) | WIF provider `<product>-preview`: `globalhost-preview.yml` on the default branch, environment `preview-deploy`, `pull_request_target` or an owner/bot `workflow_run` | push to AR `previews`; read the factory's `globalhost-images` (the guard image); `run.developer` on its `<part>-preview` services; act as `sa:preview-runtime`; read/update the Identity Platform config only (custom role, authorized domains) | touch any prod project; change IAM; read users; be minted by any PR's workflow file |
 | `sa:preview-screenshots` (in `<product>-dev`) | same provider, environment `preview-screenshots` | read the preview Access token secrets; create objects in the screenshot bucket | deploy anything |
 | `sa:preview-runtime` (in `<product>-dev`) | Cloud Run preview services | `datastore.user` in the dev project | anything else |
@@ -240,7 +240,7 @@ No GCP Organization exists (projects are under the personal account). Layout:
 |---|---|---|
 | `globalhost-factory` (new) | run artifacts, control bucket, Pulumi state bucket + KMS, WIF pool, factory secrets, budget-pause function (`infra/factory`). No runner job or runner image (ADR-0011) | part of $25/mo factory budget |
 | `<product>-dev` (new per product as needed, e.g. `numu-know-dev`) | preview services, dev Firestore/DB, seed data | part of $25/mo factory budget |
-| existing prod projects (`numu-know`, `biblia-sacra`, `reader-365202`, …) | unchanged prod | existing |
+| existing prod projects (`numu-know`, `biblia-sacra`, `reader-365202`, …) | unchanged prod, except the release observer's read-only role and, for a product with `releaseObservers[].triggers`, its imported Cloud Build triggers (`infra/factory`, applied only by the owner's `pulumi up`; ADR-0019) | existing |
 
 Budget alerts at 40/80/100% of $25 on the factory+dev projects; the 100% alert publishes to Pub/Sub → a tiny function sets `paused=true` in the control bucket (GCP budgets alert but don't cap by themselves).
 

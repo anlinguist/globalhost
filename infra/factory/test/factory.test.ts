@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import * as pulumi from "@pulumi/pulumi";
+import { parse as parseYaml } from "yaml";
 import { beforeAll, describe, expect, it } from "vitest";
 import { parseFactoryConfig } from "../src/config.js";
 import {
@@ -10,13 +12,15 @@ import {
   dispatchProviderCondition,
 } from "../src/factory.js";
 import { imagesProviderCondition, previewProviderCondition } from "../src/previews.js";
-import { releaseProviderCondition } from "../src/releases.js";
+import { releaseProviderCondition, releaseTriggerArgs, releaseTriggerOptions } from "../src/releases.js";
 import { reviewControlCondition, reviewProviderCondition, reviewRunsCondition } from "../src/reviews.js";
 
 interface Registered {
   type: string;
   name: string;
   inputs: Record<string, unknown>;
+  /** The `import` resource option, if any. */
+  importId: string | undefined;
 }
 
 const PROJECT = "globalhost-factory";
@@ -26,6 +30,7 @@ const PROD_PROJECT = "numu-know";
 const DEV_PROJECT_NUMBER = "414694776649";
 const GUARD_IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/globalhost-images/access-guard@sha256:${"b".repeat(64)}`;
 const resources: Registered[] = [];
+const PROD_STACK = parseYaml(readFileSync(new URL("../Pulumi.prod.yaml", import.meta.url), "utf8")) as { config: Record<string, unknown> };
 
 /** Mocks see secret inputs as `{ <specialSigKey>: <secret sig>, value }`; tests compare the plain values. */
 function unwrapSecrets(v: unknown): unknown {
@@ -41,7 +46,7 @@ function unwrapSecrets(v: unknown): unknown {
 pulumi.runtime.setMocks(
   {
     newResource(args) {
-      resources.push({ type: args.type, name: args.name, inputs: unwrapSecrets(args.inputs) as Record<string, unknown> });
+      resources.push({ type: args.type, name: args.name, inputs: unwrapSecrets(args.inputs) as Record<string, unknown>, importId: args.id });
       const state: Record<string, unknown> = { ...args.inputs };
       switch (args.type) {
         case "gcp:serviceaccount/account:Account": {
@@ -97,7 +102,8 @@ const config = parseFactoryConfig({
   previews: [{ product: "numu-know", devProject: DEV_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }, parts: ["web"] }],
   previewActorIds: ["47403803", "350478808"],
   accessGuardImage: GUARD_IMAGE,
-  releaseObservers: [{ product: "numu-know", prodProject: PROD_PROJECT, repo: { name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" } }],
+  // The committed stack config, so these tests check the triggers that are actually imported.
+  releaseObservers: PROD_STACK.config["globalhost-factory:releaseObservers"],
   reviewRepos: [{ name: "anlinguist/numu-know", id: "338675328", defaultBranch: "main" }],
 });
 
@@ -377,10 +383,12 @@ describe("previews (P1-11)", () => {
     );
   });
 
-  it("touches no prod project except the release observer's read-only role and its one grant", () => {
+  it("touches no prod project except the release observer's read-only role, its one grant and the imported triggers", () => {
     const projects = new Set(resources.map((r) => r.inputs.project).filter((p) => p !== undefined));
     expect([...projects].sort()).toEqual([DEV_PROJECT, PROD_PROJECT, PROJECT].sort());
     expect(resources.filter((r) => r.inputs.project === PROD_PROJECT).map((r) => `${r.type} ${r.name}`).sort()).toEqual([
+      "gcp:cloudbuild/trigger:Trigger numu-know-trigger-main",
+      "gcp:cloudbuild/trigger:Trigger numu-know-trigger-staging",
       "gcp:projects/iAMCustomRole:IAMCustomRole numu-know-release-observer-role",
       "gcp:projects/iAMMember:IAMMember numu-know-release-observer-grant",
     ]);
@@ -513,6 +521,61 @@ describe("release observer (P1-12, ADR-0017)", () => {
     ["duplicate products", { releaseObservers: [config.releaseObservers[0], config.releaseObservers[0]] }],
     ["a shared repo id", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", prodProject: "other-proj" }] }],
     ["a shared prod project", { releaseObservers: [config.releaseObservers[0], { ...config.releaseObservers[0], product: "other", repo: { name: "a/b", id: "9", defaultBranch: "main" } }] }],
+  ])("rejects config with %s", (_name, patch) => {
+    expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
+  });
+});
+
+describe("prod Cloud Build triggers (ADR-0019)", () => {
+  const observer = config.releaseObservers[0]!;
+
+  it("imports exactly the existing triggers, never creating one", () => {
+    expect(ofType("gcp:cloudbuild/trigger:Trigger").map((t) => [t.name, t.importId])).toEqual([
+      ["numu-know-trigger-main", "projects/numu-know/locations/global/triggers/769b4e4c-bf17-456c-b380-ed9b5e176802"],
+      ["numu-know-trigger-staging", "projects/numu-know/locations/global/triggers/4b81e1d4-2dd8-42bb-8532-842ff4ec729c"],
+    ]);
+    for (const t of observer.triggers) {
+      expect(releaseTriggerOptions(observer, t)).toEqual({ import: `projects/numu-know/locations/global/triggers/${t.id}`, protect: true });
+    }
+  });
+
+  it("deploys merges to main from the repo's build config file, with no inline steps, to the configured service", () => {
+    const main = one("gcp:cloudbuild/trigger:Trigger", "numu-know-trigger-main");
+    expect(main.inputs).toEqual({
+      project: PROD_PROJECT,
+      location: "global",
+      name: "rmgpgab-numu-know-us-central1-anlinguist-Numu-Know--mafyn",
+      description: 'Build and deploy to Cloud Run service numu-know on push to "^main$" (cloudbuild.yaml)',
+      disabled: false,
+      filename: "cloudbuild.yaml",
+      github: { owner: "anlinguist", name: "numu-know", push: { branch: "^main$" } },
+      substitutions: { _REGION: "us-central1", _SERVICE_NAME: "numu-know" },
+      tags: ["gcp-cloud-build-deploy-cloud-run", "gcp-cloud-build-deploy-cloud-run-managed", "numu-know"],
+    });
+    // No inline build, and no other source or identity that could point the build elsewhere.
+    for (const field of ["build", "gitFileSource", "sourceToBuild", "repositoryEventConfig", "serviceAccount"]) {
+      expect(main.inputs).not.toHaveProperty(field);
+    }
+  });
+
+  it("keeps the old staging trigger, disabled", () => {
+    const staging = one("gcp:cloudbuild/trigger:Trigger", "numu-know-trigger-staging");
+    expect(staging.inputs).toMatchObject({ disabled: true, filename: "cloudbuild.yaml", github: { push: { branch: "^staging$" } } });
+    expect(staging.inputs).not.toHaveProperty("build");
+    expect(releaseTriggerArgs(observer, observer.triggers[1]!).substitutions).toMatchObject({ _SERVICE_NAME: "staging-numu-know" });
+  });
+
+  const main = observer.triggers[0]!;
+  const withTriggers = (triggers: unknown[]) => ({ releaseObservers: [{ ...observer, triggers }] });
+  it.each([
+    ["inline build steps", withTriggers([{ ...main, build: { steps: [{ name: "ubuntu", args: ["echo", "hello world"] }] } }])],
+    ["no build config file", withTriggers([{ ...main, filename: undefined }])],
+    ["_SERVICE_NAME in substitutions", withTriggers([{ ...main, substitutions: { _SERVICE_NAME: "other" } }])],
+    ["an unanchored branch", withTriggers([{ ...main, branch: "main" }])],
+    ["no enabled trigger on the default branch", withTriggers([{ ...main, disabled: true }])],
+    ["two enabled triggers on the default branch", withTriggers([main, { ...main, key: "other", id: "00000000-0000-0000-0000-000000000000", name: "other" }])],
+    ["a duplicate trigger id", withTriggers([main, { ...main, key: "other", name: "other", disabled: true }])],
+    ["a non-UUID id", withTriggers([{ ...main, id: "../../other" }])],
   ])("rejects config with %s", (_name, patch) => {
     expect(() => parseFactoryConfig({ ...config, ...patch })).toThrow();
   });
