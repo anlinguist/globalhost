@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   createRegistry,
+  evaluatePathPolicy,
   FACTORY_SCHEMA_ID,
   factoryJsonSchema,
   formatPath,
@@ -60,6 +61,47 @@ describe("validateFactoryConfig", () => {
   it("validates with an empty registry, failing any part with unknown_profile", () => {
     const result = validateFactoryConfig(base({ app: { path: ".", profile: "fake-ext" } }), createRegistry([], []));
     expect(result).toMatchObject({ ok: false, errors: [{ path: "parts.app.profile", code: "unknown_profile" }] });
+  });
+
+  describe("profile-declared immutable globs", () => {
+    const withImmutable = createRegistry(
+      [{ id: "guarded", configSchema: z.object({}), preview: { kinds: [], outputs: [], inputs: [] }, release: { allowedAdapters: [] }, guardrails: { immutable: [".env", ".env.*"] } }],
+      [],
+    );
+    const validate = (parts: Record<string, unknown>, extra: Record<string, unknown> = {}) => validateFactoryConfig({ version: 1, product: "demo", owners: [{ login: "a", id: 1 }], parts, ...extra }, withImmutable);
+    const immutableOf = (r: ReturnType<typeof validate>) => (r.ok ? r.config.guardrails.immutable : r.errors);
+
+    it("adds them to the normalized list, as they are for a root part", () => {
+      expect(immutableOf(validate({ web: { path: ".", profile: "guarded" } }))).toEqual([...IMMUTABLE_BASELINE, ".env", ".env.*"]);
+    });
+
+    it("scopes them to each part's path", () => {
+      const r = validate({ a: { path: "apps/a", profile: "guarded" }, b: { path: "apps/b", profile: "guarded" } });
+      expect(immutableOf(r)).toEqual([...IMMUTABLE_BASELINE, "apps/a/.env", "apps/a/.env.*", "apps/b/.env", "apps/b/.env.*"]);
+    });
+
+    it("the publisher's policy refuses what they name, and only under the part", () => {
+      const r = validate({ a: { path: "apps/a", profile: "guarded" } });
+      if (!r.ok) throw new Error("expected valid");
+      const policy = evaluatePathPolicy(["apps/a/.env", "apps/a/.env.production", ".env", "apps/b/.env"], r.config.guardrails);
+      expect(policy.rejected.map((x) => x.path)).toEqual(["apps/a/.env", "apps/a/.env.production"]);
+    });
+
+    it("drops exact repeats of a glob the file already lists", () => {
+      const r = validate({ web: { path: ".", profile: "guarded" } }, { guardrails: { immutable: [".env"] } });
+      expect(immutableOf(r)).toEqual([...IMMUTABLE_BASELINE, ".env", ".env.*"]);
+    });
+
+    it("counts as immutable for the loadBearing conflict check", () => {
+      const r = validate({ web: { path: ".", profile: "guarded" } }, { guardrails: { loadBearing: [".ENV"] } });
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.errors.map((e) => e.code)).toContain("guardrail_conflict");
+    });
+
+    it("createRegistry refuses a glob outside the dialect", () => {
+      const bad = { id: "bad", configSchema: z.object({}), preview: { kinds: [], outputs: [], inputs: [] }, release: { allowedAdapters: [] }, guardrails: { immutable: ["{a,b}"] } };
+      expect(() => createRegistry([bad], [])).toThrow(/immutable glob/);
+    });
   });
 
   it("can't remove the immutable baseline", () => {

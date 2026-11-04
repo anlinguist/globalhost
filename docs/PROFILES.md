@@ -63,7 +63,7 @@ export interface Profile<Cfg = unknown, D extends Detection<Cfg> = Detection<Cfg
   };
 
   guardrails: {
-    immutable: string[];              // part-relative globs agents can never change (Phase 1)
+    immutable: string[];              // part-relative globs agents can never change; the validator scopes them to the part
     checks: Guardrail[];              // evaluated checks below; Phase 2, empty until then
   };
 
