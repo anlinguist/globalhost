@@ -236,7 +236,7 @@ export async function gitSnapshot(repoDir: string, commit: string): Promise<Repo
 
 /**
  * Checks the agent's result bundle: it must carry exactly `refs/heads/<branch>`, its prerequisites
- * must be in the base repo, and the branch must descend from the base commit. Returns what changed.
+ * must be in the base repo, and the branch must descend from the base commit. Returns what changed, in any commit.
  */
 export async function inspectResultBundle(
   bareDir: string,
@@ -266,9 +266,10 @@ export async function inspectResultBundle(
   const commits = Number((await git(["rev-list", "--count", `${baseSha}..${headSha}`], { cwd: bareDir })).trim());
   if (commits === 0) throw new Error(`${branch} has no commits on top of the base`);
   if (commits > MAX_COMMITS) throw new Error(`${branch} has ${commits} commits (max ${MAX_COMMITS})`);
-  const filesChanged = (await git(["diff", "--name-only", "-z", baseSha, headSha], { cwd: bareDir }))
-    .split("\0")
-    .filter(Boolean);
+  // Every path any commit touched, not the net diff: the push carries each commit, so a file added and then deleted
+  // still reaches the branch. Rename detection stays off so a move reports the path it left too.
+  const touched = await git(["log", "--no-renames", "--diff-merges=separate", "--name-only", "-z", "--format=", `${baseSha}..${headSha}`], { cwd: bareDir });
+  const filesChanged = [...new Set(touched.split("\0").filter(Boolean))].sort();
 
   const bytes = await readFile(bundlePath);
   return {

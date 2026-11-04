@@ -190,7 +190,7 @@ async function publishBuild(ctx: PublishContext): Promise<PublishResult> {
       ctx.pullRequest ?? issue,
       runReport(record, [
         "",
-        "**Rejected by the path policy; nothing was pushed.** Agents may not change these files (FACTORY-YAML §3.8):",
+        "**Rejected by the path policy; nothing was pushed.** Agents may not change these files in any commit, even one a later commit undoes (FACTORY-YAML §3.8):",
         "",
         ...bad.map((b) => `- ${b}`),
         "",

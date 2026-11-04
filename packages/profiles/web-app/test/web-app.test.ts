@@ -259,7 +259,7 @@ describe("profile object", () => {
     const refused = (path: string, part = ".") =>
       evaluatePathPolicy([path], { immutable: webApp.guardrails.immutable.map((g) => scopeGlobToPart(part, g)), loadBearing: [] }).rejected.length === 1;
 
-    it.each([".env", ".env.production", ".env.local", ".env.example", ".envrc", ".env.d/x", ".env.d/a/b", "sub/.env", "sub/deep/.env.staging", "sub/.envrc", "sub/.env.d/x", ".ENV"])(
+    it.each([".env", ".env.production", ".env.local", ".env.example", ".envrc", ".env.d/x", ".env.d/a/b", "sub/.env", "sub/deep/.env.staging", "sub/.envrc", "sub/.env.d/x", ".ENV", ".env/x", ".env.local/x", ".env-local", ".env_local", ".env-cmdrc", ".env~", ".env.local~", ".env-local/x", ".envrc.local", ".envrc~", ".envrc/x", ".env.ts", ".env.d.ts", ".envs/local", ".envy"])(
       "a root part refuses %s",
       (path) => {
         expect(refused(path)).toBe(true);
@@ -271,7 +271,7 @@ describe("profile object", () => {
       expect(refused(path, "apps/web")).toBe(false);
     });
 
-    it.each(["environment.ts", "src/env.ts", ".environment", "src/.envelope", ".env-cmdrc", "docs/env.md"])("leaves %s alone", (path) => {
+    it.each(["environment.ts", "src/env.ts", ".environment", "src/.envelope", ".envrc-x", "docs/env.md", "env.d.ts", "next-env.d.ts"])("leaves %s alone", (path) => {
       expect(refused(path)).toBe(false);
     });
   });

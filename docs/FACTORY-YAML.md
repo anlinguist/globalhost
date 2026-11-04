@@ -184,7 +184,7 @@ The set leaves out the rest of the Docker build context, or it would be every fi
 | Key | Default | Meaning |
 |---|---|---|
 | `loadBearing` | `[]` | Globs. Any agent change touching them gets `needs:owner-approval`. |
-| `immutable` | `[]` | Globs. The publisher rejects any agent bundle touching them. |
+| `immutable` | `[]` | Globs. The publisher rejects any agent bundle where a commit touches them, even if a later commit undoes it. A move counts as touching the path it left. |
 
 **The immutable baseline always applies.** These four patterns are added to `immutable` whether or not they are listed:
 - `.github/**`
@@ -192,9 +192,9 @@ The set leaves out the rest of the Docker build context, or it would be every fi
 - `CODEOWNERS`
 - `docs/CODEOWNERS`
 
-**A part's profile can declare immutable globs too** (`guardrails.immutable` in its definition, such as web-app's `**/.env`, `**/.env.*`, `**/.envrc` and `**/.env.d/**`). They are relative to the part, so the validator adds each one under that part's path.
+**A part's profile can declare immutable globs too** (`guardrails.immutable` in its definition, such as web-app's env file patterns, `**/.env/**` through `**/.envrc?/**`). They are relative to the part, so the validator adds each one under that part's path.
 
-The validator's normalized output contains the union, which is the list the publisher applies. A product can add protection but can't remove the baseline or a profile's globs. web-app's cover `.env.example` too, with no carve-out: agents can't add one, so the owner does. There's no negation syntax, and listing a baseline pattern is allowed but redundant.
+The validator's normalized output contains the union, which is the list the publisher applies. A product can add protection but can't remove the baseline or a profile's globs. web-app's cover `.env.example` and `.env.ts` too, with no carve-out: agents can't add them, so the owner does. There's no negation syntax, and listing a baseline pattern is allowed but redundant.
 
 Separately from `immutable`, the publisher always refuses a bundle containing a file whose basename is `review.json`, `run.json`, `output.raw.json` or `inputs.json` (any case, any depth, trailing dots or spaces ignored). Those names belong to harness records, which are read only from GCS (ADR-0015 §3).
 

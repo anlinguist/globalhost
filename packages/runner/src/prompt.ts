@@ -318,7 +318,7 @@ export function buildFeedbackMessage(ctx: Pick<TaskContext, "role" | "branch" | 
   ];
   if (ctx.role === "builder") {
     lines.push(
-      `1. Add commits on \`${ctx.branch}\`; keep earlier commits unless the feedback says to redo them.`,
+      `1. Add commits on \`${ctx.branch}\`; keep earlier commits unless the feedback says to redo them. If an earlier commit touched a protected path, a new commit can't undo that: every commit is checked, so report outcome \`blocked\` and ask the owner for a redo.`,
       `2. \`git -C /workspace/repo bundle create ${OUTPUTS}/result.bundle ${ctx.branch} ^${ctx.baseSha}\``,
       `3. \`${OUTPUTS}/report.json\``,
     );
