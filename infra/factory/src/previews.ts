@@ -42,6 +42,14 @@ export const PREVIEW_DEV_APIS = [
   "storage.googleapis.com",
 ] as const;
 
+/** What the cleanup identity holds on the preview service: read it and change its traffic. Nothing project-wide. */
+export const CLEANUP_TAG_PERMISSIONS = ["run.services.get", "run.services.update"] as const;
+/**
+ * What it holds on the dev project for the authorized domains. These can't be limited below the whole Identity
+ * Platform config. `serviceusage` is for the quota-project header: its home project is the factory, not this one.
+ */
+export const CLEANUP_DOMAIN_PERMISSIONS = ["firebaseauth.configs.get", "firebaseauth.configs.update", "serviceusage.services.use"] as const;
+
 export const previewProviderId = (p: PreviewProduct) => `${p.product}-preview`;
 export const previewServiceName = (p: PreviewProduct, part: string) => `${p.product}-${part}-preview`;
 export const screenshotBucketName = (p: PreviewProduct) => `${p.devProject}-previews`;
@@ -95,9 +103,11 @@ export interface PreviewInputs {
   cloudflare?: pulumi.Output<CloudflareConfig>;
   /** The built router (packages/preview-router/dist/index.js): one self-contained ES module. */
   routerScript: string;
+  /** sa:globalhost-gh-cleanup, which sweeps closed PRs' tags and authorized domains (ADR-0020). */
+  cleanupMember: pulumi.Input<string>;
 }
 
-export function createPreviews({ config, factoryRepoName, pool, afterApis, cloudflare: cf, routerScript }: PreviewInputs) {
+export function createPreviews({ config, factoryRepoName, pool, afterApis, cloudflare: cf, routerScript, cleanupMember }: PreviewInputs) {
   const { project, region } = config;
   const labels = { system: "globalhost", "managed-by": "pulumi" };
 
@@ -368,6 +378,29 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
       afterDevApis,
     );
     new gcp.projects.IAMMember(n("deployer-auth-domains"), { project: dev, role: authDomainsRole.name, member: deployerMember });
+    const cleanupDomainsRole = new gcp.projects.IAMCustomRole(
+      n("cleanup-domains-role"),
+      {
+        project: dev,
+        roleId: "globalhostCleanupAuthDomains",
+        title: "globalhost cleanup: authorized domains",
+        description: "Read and update the Identity Platform config (authorized domains), billed to this project.",
+        permissions: [...CLEANUP_DOMAIN_PERMISSIONS],
+      },
+      afterDevApis,
+    );
+    new gcp.projects.IAMMember(n("cleanup-auth-domains"), { project: dev, role: cleanupDomainsRole.name, member: cleanupMember });
+    const cleanupTagsRole = new gcp.projects.IAMCustomRole(
+      n("cleanup-tags-role"),
+      {
+        project: dev,
+        roleId: "globalhostCleanupPreviewTags",
+        title: "globalhost cleanup: preview tags",
+        description: "Read a preview service and change its traffic; granted on the service, not the project.",
+        permissions: [...CLEANUP_TAG_PERMISSIONS],
+      },
+      afterDevApis,
+    );
     new gcp.projects.IAMMember(n("runtime-firestore"), { project: dev, role: "roles/datastore.user", member: runtimeMember });
 
     // Deploying a revision also checks that the deployer can read every image in it, the guard included.
@@ -507,6 +540,13 @@ export function createPreviews({ config, factoryRepoName, pool, afterApis, cloud
           name: service.name,
           role: "roles/run.developer",
           member: deployerMember,
+        });
+        new gcp.cloudrunv2.ServiceIamMember(n(`${part}-cleanup`), {
+          project: dev,
+          location: region,
+          name: service.name,
+          role: cleanupTagsRole.name,
+          member: cleanupMember,
         });
         serviceHosts[`${p.product}-${part}`] = pulumi.output(devNumber).apply((num) => serviceBaseHost(name, num, region));
       }

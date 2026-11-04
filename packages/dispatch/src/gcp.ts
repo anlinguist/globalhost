@@ -121,7 +121,8 @@ const MAX_CAS_ATTEMPTS = 8;
 //      session may exist and its cost is unknown): it settles the reservation.
 //   5. completeReviewClaim (only after archiving); post the GitHub review only if it returned true.
 // A crashed run never settles, so its reservation stays counted at the full per-run cap (fails toward
-// overcounting); releaseStaleReservation is for the owner or the P1-13 cleanup job only, never automatic.
+// overcounting); releaseStaleReservation is for the owner or the P1-13 cleanup job only, never automatic in the
+// dispatcher. The cleanup job releases only for a closed PR (cleanup.ts), and the release is listed on the record.
 
 // Owner: 1–39 alphanumerics or hyphens, not starting with a hyphen. Name: 1–100 of [A-Za-z0-9._-]. This is a
 // superset of what GitHub allows (it also forbids trailing or doubled hyphens); `.` and `..` names are refused below.
@@ -206,9 +207,23 @@ export type ReviewClaimResult =
   | { claimed: false; existing: ReviewClaim; reason: "in-flight" | "completed" | "lost-race" }
   | { claimed: false; existing: null; reason: "corrupt" | "lost-race" };
 
+/** A planner or builder session's hold on a day's spend record. */
+export interface DispatchHold {
+  runId: string;
+  day: string;
+}
+
 export type ReserveReviewResult =
   | { reserved: true; reservation: ReviewReservation }
   | { reserved: false; reason: "pr-budget" | "daily-budget" | "already-recorded"; committedUsd: number };
+
+function parseJsonSafe(body: string): unknown {
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return undefined;
+  }
+}
 
 function parseLedger(name: string, body: string): ReviewLedger {
   try {
@@ -218,12 +233,31 @@ function parseLedger(name: string, body: string): ReviewLedger {
   }
 }
 
-/** The daily spend record (`spend/<day>/<repo>.json`): settled `usd`, recent `runs`, open review `reservations`. */
+/**
+ * The daily spend record (`spend/<day>/<repo>.json`): settled `usd`, recent `runs`, open `reservations` (reviews,
+ * and `kind: "dispatch"` holds for planner and builder sessions), and `released`, what the cleanup job dropped
+ * without settling: possible spend the ledger doesn't count, which the metrics issue reports.
+ */
 interface DailySpend {
   usd: number;
   runs: { runId: string; usd: number; kind?: string }[];
-  reservations: { runId: string; usd: number; at: string }[];
+  reservations: { runId: string; usd: number; at: string; kind?: string }[];
+  released?: unknown[];
 }
+
+/** What's on a reservation's own day record once it's released, or undefined if it isn't held there. */
+function releaseFromDaily(cur: DailySpend, runId: string, releasedAt: string): DailySpend | undefined {
+  const held = cur.reservations.find((r) => r.runId === runId);
+  if (!held) return undefined;
+  return {
+    ...cur,
+    reservations: cur.reservations.filter((r) => r.runId !== runId),
+    released: [...(cur.released ?? []), { runId, usd: held.usd, reservedAt: held.at, releasedAt, ...(held.kind ? { kind: held.kind } : {}) }].slice(-200),
+  };
+}
+
+/** Spend objects, as the release of a dispatch hold takes them. Nothing else can be named. */
+const SPEND_OBJECT = /^spend\/\d{4}-\d{2}-\d{2}\/[A-Za-z0-9-]+__[A-Za-z0-9._-]+\.json$/;
 
 /** Parses a daily spend record; null when it is corrupt (callers fail closed). */
 function parseDaily(raw: Record<string, unknown>): DailySpend | null {
@@ -236,7 +270,9 @@ function parseDaily(raw: Record<string, unknown>): DailySpend | null {
       typeof (r as { usd?: unknown }).usd === "number" && Number.isFinite((r as { usd: number }).usd) && (r as { usd: number }).usd >= 0;
     if (!ok) return null;
   }
-  return { usd, runs: runs as DailySpend["runs"], reservations: reservations as DailySpend["reservations"] };
+  const daily: DailySpend = { usd, runs: runs as DailySpend["runs"], reservations: reservations as DailySpend["reservations"] };
+  if (Array.isArray(raw.released)) daily.released = raw.released as unknown[];
+  return daily;
 }
 
 const dailyCommitted = (d: DailySpend) => addUsd(d.usd, ...d.reservations.map((r) => r.usd));
@@ -272,7 +308,7 @@ export class ControlPlane {
     return this.spendObjectFor(this.now().toISOString().slice(0, 10), repo);
   }
 
-  /** Today's settled spend plus open review reservations (builder and review runs share dailyUsd). */
+  /** Today's settled spend plus open reservations (builder and review runs share dailyUsd). */
   async spentTodayUsd(repo: string): Promise<number> {
     const obj = await this.store.read(CONTROL_BUCKET, this.spendObject(repo));
     if (!obj) return 0;
@@ -281,13 +317,45 @@ export class ControlPlane {
     return daily ? dailyCommitted(daily) : Number.POSITIVE_INFINITY; // corrupt → over budget
   }
 
-  /** Adds a run's cost to today's total. A resumed session's cost is cumulative, so pass the delta. */
-  async recordSpend(repo: string, runId: string, usd: number): Promise<void> {
+  /**
+   * Holds a planner or builder session's cap on today's record before it starts, so one that's killed leaves
+   * something behind: the hold stays counted against the day and the watcher reports it (ADR-0020). Settled by
+   * recordSpend. Throws if the record is corrupt: the session must not start without its hold.
+   */
+  async holdDispatchRun(repo: string, runId: string, usd: number): Promise<DispatchHold> {
+    checkRunId(runId);
+    const at = this.now().toISOString();
+    const day = at.slice(0, 10);
+    const name = this.spendObjectFor(day, repo);
+    await this.casDaily(name, (cur) => {
+      if (cur === null) throw new Error(`gs://${CONTROL_BUCKET}/${name} is not a valid spend record; fix it by hand`);
+      if (cur.reservations.some((r) => r.runId === runId)) return { result: undefined };
+      return { next: { ...cur, reservations: [...cur.reservations, { runId, usd, at, kind: "dispatch" }] }, result: undefined };
+    });
+    return { runId, day };
+  }
+
+  /**
+   * Adds a run's cost to today's total and settles its hold, if it took one. A resumed session's cost is
+   * cumulative, so pass the delta. A hold from before midnight is dropped from its own day's record, after the cost
+   * is on today's: a failure between the two leaves the hold, which overcounts.
+   */
+  async recordSpend(repo: string, runId: string, usd: number, hold?: DispatchHold): Promise<void> {
+    const today = this.now().toISOString().slice(0, 10);
+    const others = (list: unknown) => (Array.isArray(list) ? list.filter((r) => (r as { runId?: unknown } | null)?.runId !== hold?.runId) : []);
     await this.update(this.spendObject(repo), (cur) => ({
-      ...cur, // keeps open review reservations
+      ...cur, // keeps open reservations
       usd: Math.round(((typeof cur.usd === "number" ? cur.usd : 0) + usd) * 100) / 100,
       runs: [...(Array.isArray(cur.runs) ? cur.runs : []), { runId, usd }].slice(-200),
+      ...(hold?.day === today ? { reservations: others(cur.reservations) } : {}),
     }));
+    if (hold && hold.day !== today) {
+      await this.casDaily(this.spendObjectFor(hold.day, repo), (cur) =>
+        cur?.reservations.some((r) => r.runId === hold.runId)
+          ? { next: { ...cur, reservations: cur.reservations.filter((r) => r.runId !== hold.runId) }, result: undefined }
+          : { result: undefined },
+      );
+    }
   }
 
   /**
@@ -503,18 +571,63 @@ export class ControlPlane {
 
   /**
    * Drops a reservation whose run will never settle (it crashed), from the PR ledger and its day's spend record,
-   * without adding any cost. For the owner or the P1-13 cleanup job only: nothing calls it automatically, so an
-   * unsettled run stays counted. Returns false if there was no such reservation.
+   * without adding any cost, and lists it under `released` on that record so the metrics issue can report it: the
+   * session may have spent up to the hold. For the owner or the P1-13 cleanup job only: the dispatcher never calls
+   * it, so an unsettled run stays counted. `pr.repo` must have GitHub's casing, because spend records keep it (the
+   * ledger's name is lowercased either way). Returns false if there was no such reservation.
    */
   async releaseStaleReservation(pr: ReviewPr, runId: string): Promise<boolean> {
     checkRunId(runId);
     const name = reviewLedgerObject(pr);
     const held = (await this.reviewLedger(pr))?.reservations.find((r) => r.runId === runId);
     if (!held) return false;
-    await this.casDaily(this.spendObjectFor(held.day, pr.repo), (cur) =>
-      cur === null ? { result: undefined } : { next: { ...cur, reservations: cur.reservations.filter((r) => r.runId !== runId) }, result: undefined },
-    );
+    const releasedAt = this.now().toISOString();
+    await this.casDaily(this.spendObjectFor(held.day, pr.repo), (cur) => {
+      // Not held there (a corrupt record, or a crash between the ledger and the day): nothing to write, and no
+      // empty record to create under a name nothing reads.
+      const next = cur === null ? undefined : releaseFromDaily(cur, runId, releasedAt);
+      return next ? { next, result: undefined } : { result: undefined };
+    });
     return this.dropLedgerReservation(name, runId);
+  }
+
+  /** Drops a dead session's dispatch hold from its day's record, listed under `released`. Only `kind: "dispatch"`. */
+  async releaseDispatchHold(object: string, runId: string): Promise<boolean> {
+    if (!SPEND_OBJECT.test(object)) throw new Error("cleanup: not a spend object");
+    const releasedAt = this.now().toISOString();
+    return this.casDaily(object, (cur) => {
+      const isDispatch = cur?.reservations.some((r) => r.runId === runId && r.kind === "dispatch");
+      const next = cur && isDispatch ? releaseFromDaily(cur, runId, releasedAt) : undefined;
+      return next ? { next, result: true } : { result: false };
+    });
+  }
+
+  /**
+   * Deletes a closed PR's claims and ledger (the cleanup job). A ledger holding a reservation or failing its schema
+   * is kept, and so are its claims. Every delete is conditional on the generation just read; "conflict" means
+   * something changed under us, and whatever is left waits for the next run. Claims go first, so a ledger with no
+   * claims left is still found again if a later delete fails.
+   */
+  async deleteReviewState(pr: ReviewPr, claimShas: readonly string[]): Promise<"deleted" | "held" | "corrupt" | "conflict"> {
+    const name = reviewLedgerObject(pr);
+    const held = async () => {
+      const obj = await this.store.read(CONTROL_BUCKET, name);
+      if (!obj) return { obj, verdict: null };
+      const parsed = ReviewLedgerSchema.safeParse(parseJsonSafe(obj.body));
+      if (!parsed.success) return { obj, verdict: "corrupt" as const };
+      return { obj, verdict: parsed.data.reservations.length > 0 ? ("held" as const) : null };
+    };
+    const before = await held();
+    if (before.verdict) return before.verdict;
+    for (const sha of claimShas) {
+      const claim = reviewClaimObject({ ...pr, sha });
+      const obj = await this.store.read(CONTROL_BUCKET, claim);
+      if (obj && (await this.store.remove(CONTROL_BUCKET, claim, obj.generation)) === "conflict") return "conflict";
+    }
+    const after = await held();
+    if (after.verdict) return after.verdict;
+    if (after.obj && (await this.store.remove(CONTROL_BUCKET, name, after.obj.generation)) === "conflict") return "conflict";
+    return "deleted";
   }
 
   private dropLedgerReservation(name: string, runId: string): Promise<boolean> {

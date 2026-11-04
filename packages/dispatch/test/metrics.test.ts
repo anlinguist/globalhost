@@ -435,7 +435,7 @@ describe("what can reach the public report", () => {
 });
 
 describe("budget watcher", () => {
-  const spendOn = (day: string, usd: number) => spendObject(day, PUBLIC_REPO, { usd });
+  const spendOn = (day: string, usd: number, extra: object = {}) => spendObject(day, PUBLIC_REPO, { usd, ...extra });
   // Matching run records, so the only thing a test trips is what it's about.
   const runsFor = (usd: number, finishedAt: string) => [builderObject(runRecord({ runId: `r-${finishedAt}`, costUsd: usd, finishedAt }))];
 
@@ -456,8 +456,9 @@ describe("budget watcher", () => {
     });
   });
 
-  describe("(b) straight-line projection", () => {
-    // Nov 10 + 5 days = day 5 of a 30-day cycle (Nov 10 to Dec 9): $25 projects to exactly $150.
+  describe("(b) projection at the recent pace", () => {
+    // Nov 10 + 5 days = day 5 of a 30-day cycle (Nov 10 to Dec 9). All of day 5's window is in the cycle, so $25
+    // paces at $5 a day: $25 + $5 x 25 days left, exactly $150.
     const DAY5 = new Date("2026-11-15T03:00:00.000Z");
     const at = (usd: number, now = DAY5) => report({ spend: [spendOn("2026-11-10", usd)], now });
 
@@ -480,6 +481,93 @@ describe("budget watcher", () => {
       expect(at(25).cycle.projectedUsd).toBe(150);
       const october = report({ spend: [spendOn("2026-10-10", 10)], now: new Date("2026-10-15T03:00:00.000Z") });
       expect(october.cycle).toMatchObject({ lengthDays: 31, projectedUsd: 62 });
+    });
+
+    // Last complete day Nov 4: day 26 of the 31-day cycle from Oct 10, with 5 days left and a 7-day window from Oct 29.
+    const OCT = new Date("2026-11-05T03:00:00.000Z");
+    const onDays = (spendByDay: Record<string, number>, now = OCT) => report({ spend: Object.entries(spendByDay).map(([d, u]) => spendOn(d, u)), now });
+
+    it("counts a burst after a quiet start in full, instead of spreading it over the whole cycle", () => {
+      const r = onDays({ "2026-10-30": 2, "2026-10-31": 2, "2026-11-01": 2, "2026-11-02": 2, "2026-11-03": 2, "2026-11-04": 2 });
+      // $12 so far, $12 over 7 days, 5 left: $12 + $8.57. Spread over 26 elapsed days it would read $14.31.
+      expect(r.cycle.projectedUsd).toBeCloseTo(12 + (12 / 7) * 5, 6);
+      expect(r.cycle.projectionPaceDays).toBe(7);
+      expect(renderMetricsMarkdown(r)).toContain("Projected $20.57 at the last 7 days' pace.");
+    });
+
+    it("fires on a burst the old straight line would have missed", () => {
+      // $100 in the window's last day: the straight line says $119, the recent pace $171.43.
+      const r = onDays({ "2026-11-04": 100 });
+      expect(r.cycle.projectedUsd).toBeCloseTo(100 + (100 / 7) * 5, 6);
+      expect(codes(r)).toContain("cycle-projection");
+      expect(r.findings.find((f) => f.code === "cycle-projection")!.message).toContain("At the last 7 days' pace");
+    });
+
+    it("leaves spend from before the window out of the pace, but in the total", () => {
+      const r = onDays({ "2026-10-10": 50, "2026-10-28": 50, "2026-10-29": 7 });
+      expect(r.cycle.projectedUsd).toBeCloseTo(107 + 5, 6);
+    });
+
+    it("stays inside the cycle when the window crosses its start", () => {
+      // Last complete day Nov 15: day 6 of the cycle from Nov 10. Seven days back would reach Nov 9, last cycle.
+      const r = onDays({ "2026-11-09": 1000, "2026-11-10": 6 }, new Date("2026-11-16T03:00:00.000Z"));
+      expect(r.cycle).toMatchObject({ elapsedDays: 6, projectionPaceDays: 6, lengthDays: 30, spendUsd: 6 });
+      expect(r.cycle.projectedUsd).toBeCloseTo(6 + 1 * 24, 6);
+      expect(renderMetricsMarkdown(r)).toContain("at the last 6 days' pace");
+    });
+
+    it("uses the full 7 days once the cycle has them, on day 7", () => {
+      const r = onDays({ "2026-11-10": 7 }, new Date("2026-11-17T03:00:00.000Z"));
+      expect(r.cycle).toMatchObject({ elapsedDays: 7, projectionPaceDays: 7 });
+      expect(r.cycle.projectedUsd).toBeCloseTo(7 + 23, 6);
+    });
+
+    it("projects $0 with no spend, without dividing by zero", () => {
+      const r = onDays({});
+      expect(r.cycle.projectedUsd).toBe(0);
+      expect(codes(r)).not.toContain("cycle-projection");
+    });
+
+    it("projects just what's spent on the cycle's last day", () => {
+      const r = onDays({ "2026-11-09": 149 }, new Date("2026-11-10T03:00:00.000Z"));
+      expect(r.cycle).toMatchObject({ elapsedDays: 31, projectedUsd: 149 });
+    });
+
+    // Spend in the window only: S + (S/7)x5 = cap at S = $87.50.
+    it.each([
+      [87.49, false],
+      [87.5, false], // exactly at the cap
+      [87.51, true],
+    ])("with 5 days left, $%d in the window trips it: %s", (amount, trips) => {
+      expect(codes(onDays({ "2026-11-02": amount })).includes("cycle-projection")).toBe(trips);
+    });
+  });
+
+  describe("released holds", () => {
+    const released = (at: string, usd = 2) => ({ usd, releasedAt: at, runId: "x", reservedAt: "2026-11-11T00:00:00.000Z" });
+
+    it("shows what cleanup released this cycle, and leaves spend alone", () => {
+      const r = report({
+        spend: [spendOn("2026-11-11", 1, { released: [released("2026-11-13T02:47:00.000Z"), released("2026-11-13T02:47:00.000Z", 4)] })],
+      });
+      expect(r.cycle.released).toEqual({ count: 2, usd: 6 });
+      expect(r.cycle.spendUsd).toBe(1);
+      expect(renderMetricsMarkdown(r)).toContain("Released without settling this cycle: **2 reservations, $6.00**");
+    });
+
+    it("counts a release by when it happened, not the record's day", () => {
+      const r = report({ spend: [spendOn("2026-11-08", 0, { released: [released("2026-11-12T02:47:00.000Z")] })] });
+      expect(r.cycle.released.count).toBe(1);
+      const before = report({ spend: [spendOn("2026-11-08", 0, { released: [released("2026-11-09T02:47:00.000Z")] })] });
+      expect(before.cycle.released.count).toBe(0);
+    });
+
+    it("says nothing when there are none", () => {
+      expect(renderMetricsMarkdown(report())).not.toContain("Released without settling");
+    });
+
+    it("treats a malformed released list as a corrupt record", () => {
+      expect(codes(report({ spend: [spendOn("2026-11-11", 1, { released: [{ usd: "lots" }] })] }))).toContain("corrupt-spend");
     });
   });
 

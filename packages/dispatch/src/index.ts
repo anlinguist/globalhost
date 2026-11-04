@@ -1,4 +1,6 @@
 // Dispatcher + publisher (P1-07): the logic behind the installed globalhost.yml workflow.
+export * from "./cleanup.js";
+export * from "./cleanup-step.js";
 export * from "./closing-keywords.js";
 export * from "./dispatch.js";
 export * from "./gcp.js";

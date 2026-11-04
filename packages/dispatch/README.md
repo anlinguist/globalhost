@@ -101,7 +101,7 @@ Step environment: `GITHUB_*`, `RUNNER_TEMP`, `GLOBALHOST_APP_ID`, `GLOBALHOST_AP
 
 **Workflow** (`globalhost-review.yml`). The `gate` job has a read-only `GITHUB_TOKEN` (contents, pull requests, actions) and no environment. The `unlabel` job runs only for `unlabel` (an owner's `factory:review` that's refused by the gate, e.g. because CI hasn't succeeded on the head; a label the review step can't act on, such as one for a SHA whose review is in flight, is removed by that step). Its token can only write pull requests, it has no environment and no concurrency group, and it only removes the label with `gh api`, so it can't displace a review waiting in the PR's group. The `review` job runs only for `review`, in the environment `globalhost-review`, with `timeout-minutes` set to the gate's `timeout`. Its token is read-only (contents, issues for the spec issue, pull requests, actions) plus `id-token: write`, it uses GCP WIF as `sa:globalhost-gh-review`, and it runs with `concurrency: globalhost-review-pr-<n>`, `cancel-in-progress: false`. GitHub keeps only the newest waiting run per group, so an owner's `factory:review` that was replaced while waiting stays on the PR: remove it and apply it again.
 
-A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, but only for the owner or a cleanup job; nothing calls it automatically. The P1-13 orphans job should also delete `reviews/<repo>/pr-<n>*` once the PR is closed, after any shadow-index export the metrics need.
+A run that crashes never settles, so its hold stays counted at the full per-run cap. `releaseStaleReservation` clears one, for the owner or `cleanup.yml` only: the dispatcher and the review step never call it. See below.
 
 ## Metrics and the budget watcher (P1-13, ADR-0020)
 
@@ -109,9 +109,19 @@ A run that crashes never settles, so its hold stays counted at the full per-run 
 
 The output is public. Only numbers, enums and slug-checked repo names are taken from a record, and any repo not confirmed public is `other`. Errors logged carry fixed text and a status, never an object name. To find a record the watcher flagged, read `gs://globalhost-control/metrics/<day>.problems.json`, which lists object names and stays in the private bucket.
 
-The drift check compares two records of the same run, so a builder killed or throwing mid-session, which writes neither, doesn't show. ADR-0020 lists this and the check's other limits.
+The drift check compares two records of the same run, so a session killed or throwing mid-run, which writes neither, doesn't show there. It leaves the hold `dispatch.ts` takes before the session, which the watcher reports. ADR-0020 lists this and the check's other limits.
 
 Env: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`. `METRICS_DRY_RUN=1` writes nothing and prints the report, so the owner can run it locally with `gcloud` signed in.
+
+## Cleanup (P1-13 slice 2, ADR-0020)
+
+`globalhost cleanup` is the factory repo's `cleanup.yml`, which runs before `nightly.yml`. `cleanup.ts` is the pure policy, with the adversarial tests; `cleanup-step.ts` does the I/O: it reads everything into a plan, checks the plan against the cap, and only then writes.
+
+It removes preview tags and authorized domains whose PR GitHub says closed over an hour ago, deletes a PR's claims and ledger a week after closing, releases review reservations over 24 hours old on closed PRs, and releases dispatch holds over 48 hours old. Any GitHub answer but a clean one keeps the thing and reports it. Over 20 changes, it changes nothing and exits 1.
+
+The output is public: PR numbers, amounts and fixed text, in the log and the job summary. A release also goes under `released` on its day's spend record, which the metrics issue reports.
+
+Env: `GITHUB_TOKEN`, and `CLEANUP_APPLY`, which must be exactly `true` for any write. `CLEANUP_DRY_RUN=1` overrides it. A dry run needs no token for public repos, so the owner can run one locally with `gcloud` signed in, from the repo root: `CLEANUP_DRY_RUN=1 pnpm globalhost cleanup`.
 
 ## Product-repo setup
 

@@ -146,6 +146,46 @@ describe("dispatch step refusals", () => {
   });
 });
 
+describe("a session's hold", () => {
+  const env = { GLOBALHOST_ACTION: "start", GLOBALHOST_ROLE: "builder", GLOBALHOST_ISSUE: "12", GLOBALHOST_APP_SLUG: "globalhost-ai", GITHUB_RUN_ID: "1", RUNNER_TEMP: tmpdir() };
+  const spend = (cloud: FakeCloud) => {
+    const obj = [...cloud.objects.entries()].find(([k]) => k.startsWith("globalhost-control/spend/"))?.[1];
+    return obj ? (JSON.parse(obj.body) as { usd?: number; reservations: { kind?: string; usd: number }[] }) : undefined;
+  };
+
+  it("is on the record before the session starts, and stays when the run dies, so the watcher can see it", async () => {
+    const cloud = new FakeCloud();
+    const api = new Proxy({}, {
+      get: () => () => {
+        throw new Error("the session died");
+      },
+    }) as NonNullable<DispatchDeps["api"]>;
+    // It throws before any spend is recorded, so a hold on the record can only have been taken first.
+    await expect(dispatchStep({ ...deps(cloud, env), api })).rejects.toThrow();
+    expect(spend(cloud)).toMatchObject({ reservations: [{ kind: "dispatch", usd: 2 }] });
+    expect(spend(cloud)?.usd ?? 0).toBe(0);
+  });
+
+  it("isn't taken when the run is refused before a session", async () => {
+    const cloud = new FakeCloud();
+    cloud.objects.set("globalhost-control/state.json", { body: '{"paused":true}', generation: 1 });
+    await dispatchStep(deps(cloud, env));
+    expect(spend(cloud)).toBeUndefined();
+  });
+
+  it("refuses to start a session on a corrupt spend record", async () => {
+    const cloud = new FakeCloud();
+    const api = new Proxy({}, {
+      get: () => () => {
+        throw new Error("a session must not start");
+      },
+    }) as NonNullable<DispatchDeps["api"]>;
+    const day = new Date().toISOString().slice(0, 10);
+    cloud.objects.set(`globalhost-control/spend/${day}/anlinguist__demo.json`, { body: '{"usd":0,"reservations":"lots"}', generation: 1 });
+    await expect(dispatchStep({ ...deps(cloud, env), api })).resolves.toBeUndefined(); // corrupt counts as over budget
+  });
+});
+
 describe("control plane", () => {
   it("lets only one builder hold a slot and frees it for the holder only", async () => {
     const cloud = new FakeCloud();

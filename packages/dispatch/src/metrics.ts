@@ -4,7 +4,7 @@
 // taken from a run.json are numbers, enums and a repo name that passes the slug check. `report`, `problems`,
 // `stopReason`, `model`, `outputIssues` and every other free-text field are parsed for validity and dropped. A
 // repo that isn't confirmed public is reported as OTHER_REPO, in every table and every finding.
-import { addUsd, DEFAULT_DAILY_USD } from "@globalhost/core";
+import { addUsd, DEFAULT_DAILY_USD, ReviewLedgerSchema } from "@globalhost/core";
 import { ReviewRunSchema, RunRecordSchema } from "@globalhost/runner";
 import { z } from "zod";
 import { isRepoSlug } from "./gcp.js";
@@ -15,8 +15,10 @@ export const BUDGET_CYCLE_START_DAY = 10;
 export const BUDGET_CYCLE_CAP_USD = 150;
 /** Share of the cap, and of the daily limit, that trips the watcher. */
 export const WATCH_SHARE = 0.8;
-/** A straight-line projection means little earlier in the cycle than this. */
+/** A projection means little earlier in the cycle than this. */
 export const PROJECTION_MIN_DAYS = 5;
+/** The projection's pace is the average over this many trailing complete days, or as many as the cycle has had. */
+export const PROJECTION_PACE_DAYS = 7;
 /** Run records and the ledger are compared over this many complete days, not per day (midnight attribution). */
 export const DRIFT_WINDOW_DAYS = 7;
 export const DRIFT_MIN_USD = 1;
@@ -214,18 +216,23 @@ export function parseRuns(objects: readonly StoredObject[]): ParsedRuns {
   return { events, unrecognized };
 }
 
+const isoTime = z.string().refine((s) => !Number.isNaN(Date.parse(s)));
+
 const SpendRecordSchema = z.object({
   usd: z.number().nonnegative().default(0),
   // Written capped at 200 and never needed here: `usd` is the complete total. Only the shape is checked.
   runs: z.array(z.unknown()).default([]),
-  reservations: z.array(z.object({ usd: z.number().nonnegative(), at: z.string().refine((s) => !Number.isNaN(Date.parse(s))) })).default([]),
+  reservations: z.array(z.object({ runId: z.string().optional(), usd: z.number().nonnegative(), at: isoTime })).default([]),
+  released: z.array(z.object({ usd: z.number().nonnegative(), releasedAt: isoTime })).default([]),
 });
 
 export interface SpendRow {
   day: string;
   repo: string;
   usd: number;
-  reservations: { usd: number; at: string }[];
+  reservations: { runId?: string | undefined; usd: number; at: string }[];
+  /** Holds cleanup.yml dropped without settling: the session may have spent up to `usd`. */
+  released: { usd: number; releasedAt: string }[];
 }
 
 export interface CorruptSpend {
@@ -260,9 +267,49 @@ export function parseSpend(objects: readonly StoredObject[]): ParsedSpend {
       corrupt.push({ name, day: key?.day ?? null, repo: key?.repo ?? null });
       continue;
     }
-    rows.push({ day: key.day, repo: key.repo, usd: parsed.data.usd, reservations: parsed.data.reservations });
+    rows.push({ day: key.day, repo: key.repo, usd: parsed.data.usd, reservations: parsed.data.reservations, released: parsed.data.released });
   }
   return { rows, corrupt };
+}
+
+/** `reviews/<repo>/pr-<n>.json`, the PR's review ledger. Claims sit in a `pr-<n>/` folder beside it. */
+export const REVIEW_LEDGER_PATH = /^reviews\/([^/]+\/[^/]+)\/pr-[1-9][0-9]*\.json$/;
+
+export interface LedgerHold {
+  /** The object name, for the private problems file only. */
+  name: string;
+  repo: string;
+  runId: string;
+  usd: number;
+  at: string;
+}
+
+export interface ParsedLedgers {
+  holds: LedgerHold[];
+  /** A corrupt ledger stops that PR's reviews. `name` is for the private problems file only. */
+  corrupt: { name: string; repo: string }[];
+}
+
+export function parseLedgers(objects: readonly StoredObject[]): ParsedLedgers {
+  const holds: LedgerHold[] = [];
+  const corrupt: ParsedLedgers["corrupt"] = [];
+  for (const { name, body } of objects) {
+    const repo = REVIEW_LEDGER_PATH.exec(name)?.[1]?.toLowerCase();
+    if (!repo || !isRepoSlug(repo)) continue;
+    const parsed = ReviewLedgerSchema.safeParse(parseJson(body));
+    if (!parsed.success) {
+      corrupt.push({ name, repo });
+      continue;
+    }
+    for (const r of parsed.data.reservations) holds.push({ name, repo, runId: r.runId, usd: r.reservedUsd, at: r.reservedAt });
+  }
+  return { holds, corrupt };
+}
+
+/** Ledger holds older than the reservation limit. */
+export function staleLedgerHolds(ledgers: ParsedLedgers, now: Date): LedgerHold[] {
+  const cutoff = now.getTime() - RESERVATION_MAX_AGE_HOURS * 3_600_000;
+  return ledgers.holds.filter((h) => Date.parse(h.at) < cutoff);
 }
 
 // ---- Aggregating ----
@@ -301,6 +348,7 @@ export type FindingCode =
   | "daily-spend"
   | "ledger-drift"
   | "corrupt-spend"
+  | "corrupt-ledger"
   | "unrecognized-run"
   | "stale-reservation";
 
@@ -318,10 +366,14 @@ export interface MetricsReport {
     elapsedDays: number;
     capUsd: number;
     spendUsd: number;
-    /** Null until PROJECTION_MIN_DAYS have elapsed. */
+    /** Spend so far plus the recent pace over the days left. Null until PROJECTION_MIN_DAYS have elapsed. */
     projectedUsd: number | null;
+    /** The days the pace was averaged over: PROJECTION_PACE_DAYS, fewer early in a cycle. */
+    projectionPaceDays: number;
     /** The cycle reaches back further than run records last, so its run-derived numbers may be low. */
     runRecordsExpiring: boolean;
+    /** Holds cleanup.yml released this cycle, from the records read: never in the ledger, possibly spent. */
+    released: { count: number; usd: number };
     metrics: PeriodMetrics;
   };
   byRepo: { repo: string; metrics: PeriodMetrics }[];
@@ -347,6 +399,8 @@ export interface AggregateInput {
   runs: ParsedRuns;
   spend: ParsedSpend;
   repos: ReadonlyMap<string, RepoInfo>;
+  /** The PR ledgers' holds. They outlast the spend window, so the watcher reads them as well. */
+  ledgers?: ParsedLedgers;
 }
 
 const ratio = (a: number, b: number): number | null => (b > 0 ? a / b : null);
@@ -354,7 +408,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
 const distinct = (items: readonly string[]) => new Set(items).size;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): MetricsReport {
+export function aggregateMetrics({ now, runs, spend, repos, ledgers = { holds: [], corrupt: [] } }: AggregateInput): MetricsReport {
   const day = lastCompleteDay(now);
   const cycle = budgetCycle(day);
   const label = (repo: string | null) => (repo !== null && repos.get(repo)?.public === true ? repo : OTHER_REPO);
@@ -411,12 +465,18 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
     });
   }
 
-  // (b) Straight-line projection, compared without dividing.
-  const projectedUsd = elapsedDays >= PROJECTION_MIN_DAYS ? (spendUsd * cycle.lengthDays) / elapsedDays : null;
-  if (projectedUsd !== null && spendCents * cycle.lengthDays > capCents * elapsedDays) {
+  // (b) Spend so far plus the recent pace over the days left, so a burst counts in full however quiet the cycle's
+  // start was. The window stays inside the cycle, so it's never empty, and last cycle's spend sets no pace here.
+  // Compared without dividing.
+  const projectionPaceDays = Math.min(PROJECTION_PACE_DAYS, elapsedDays);
+  const paceFrom = addDays(day, 1 - projectionPaceDays);
+  const paceUsd = addUsd(...spend.rows.filter((r) => r.day >= paceFrom && r.day <= day).map((r) => r.usd));
+  const daysLeft = cycle.lengthDays - elapsedDays;
+  const projectedUsd = elapsedDays >= PROJECTION_MIN_DAYS ? spendUsd + (paceUsd / projectionPaceDays) * daysLeft : null;
+  if (projectedUsd !== null && spendCents * projectionPaceDays + cents(paceUsd) * daysLeft > capCents * projectionPaceDays) {
     findings.push({
       code: "cycle-projection",
-      message: `At this rate the cycle ends at ${usd(projectedUsd)}, over the ${usd(BUDGET_CYCLE_CAP_USD)} cap (${usd(spendUsd)} in ${elapsedDays} of ${cycle.lengthDays} days).`,
+      message: `At the last ${projectionPaceDays} days' pace the cycle ends at ${usd(projectedUsd)}, over the ${usd(BUDGET_CYCLE_CAP_USD)} cap (${usd(spendUsd)} so far, ${usd(paceUsd)} of it in those days, ${daysLeft} days left).`,
     });
   }
 
@@ -460,11 +520,18 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
       message:
         `Run records and the ledger differ by ${usd(drift.diffUsd)}, added up per repo, from ${driftFrom} to ${day} (run records ${usd(runRecordsUsd)}, ledger ${usd(ledgerUsd)}; ` +
         `allowed ${usd(drift.allowedUsd)}). Possible causes: a failed review settled up to its cap with no run.json, which stays red until it leaves the window; a run crossing midnight at the window's edge, which clears in a day; ` +
-        `a job that stopped between recording spend and archiving. A builder killed mid-session doesn't show here: only the Console sees its spend.`,
+        `a job that stopped between recording spend and archiving. A builder killed mid-session doesn't show here: it shows as an open reservation, and only the Console knows its spend.`,
     });
   }
 
   // (e) Records that couldn't be used. Named by day and report label only: the object name can name a private repo.
+  if (ledgers.corrupt.length > 0) {
+    const where = [...new Set(ledgers.corrupt.map((c) => label(c.repo)))].sort().join(", ");
+    findings.push({
+      code: "corrupt-ledger",
+      message: `${plural(ledgers.corrupt.length, "PR review ledger is", "PR review ledgers are")} corrupt (${where}). A corrupt ledger stops that PR's reviews, and cleanup leaves it for the owner.`,
+    });
+  }
   if (spend.corrupt.length > 0) {
     const where = [...new Set(spend.corrupt.map((c) => `${c.day ?? "unknown day"} (${label(c.repo)})`))].sort().join(", ");
     findings.push({
@@ -482,19 +549,24 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
     });
   }
 
-  // (f) A settled run removes its reservation, so an old one is a run that crashed.
+  // (f) A settled run removes its reservation, so an old one is a run that crashed. A review's hold is on both its
+  // day's record and its PR's ledger, and the ledger has no window, so holds from before the window show too.
   const cutoff = now.getTime() - RESERVATION_MAX_AGE_HOURS * 3_600_000;
-  const stale = spend.rows.flatMap((r) => r.reservations.filter((x) => Date.parse(x.at) < cutoff).map((x) => ({ ...x, repo: r.repo })));
+  const onDays = spend.rows.flatMap((r) => r.reservations.filter((x) => Date.parse(x.at) < cutoff).map((x) => ({ usd: x.usd, repo: r.repo, runId: x.runId })));
+  const seenHolds = new Set(onDays.map((h) => `${h.repo}\0${h.runId}`));
+  const stale = [...onDays, ...staleLedgerHolds(ledgers, now).filter((h) => !seenHolds.has(`${h.repo}\0${h.runId}`))];
   if (stale.length > 0) {
     const where = [...new Set(stale.map((s) => label(s.repo)))].sort().join(", ");
     findings.push({
       code: "stale-reservation",
-      message: `${plural(stale.length, "open review reservation is", "open review reservations are")} older than ${RESERVATION_MAX_AGE_HOURS} hours, holding ${usd(addUsd(...stale.map((s) => s.usd)))} (${where}).`,
+      message: `${plural(stale.length, "open reservation is", "open reservations are")} older than ${RESERVATION_MAX_AGE_HOURS} hours, holding ${usd(addUsd(...stale.map((s) => s.usd)))} (${where}). Each is a review or builder session that died without settling. \`cleanup.yml\` releases a closed PR's and a dead builder's; one on an open PR stays until the owner clears it.`,
     });
   }
 
   const cycleRepos = [...runs.events.filter((e) => inCycle(e.day)).map((e) => e.repo), ...spend.rows.filter((r) => inCycle(r.day)).map((r) => r.repo)];
   const labels = [...new Set(cycleRepos.map((r) => label(r)))].sort((a, b) => (a === OTHER_REPO ? 1 : b === OTHER_REPO ? -1 : a.localeCompare(b)));
+
+  const released = spend.rows.flatMap((r) => r.released).filter((x) => inCycle(toDay(Date.parse(x.releasedAt))));
 
   const days: MetricsReport["days"] = [];
   for (let d = cycle.start; d <= day; d = addDays(d, 1)) days.push({ day: d, metrics: period(d, d) });
@@ -509,7 +581,9 @@ export function aggregateMetrics({ now, runs, spend, repos }: AggregateInput): M
       capUsd: BUDGET_CYCLE_CAP_USD,
       spendUsd,
       projectedUsd,
+      projectionPaceDays,
       runRecordsExpiring: now.getTime() - dayMs(cycle.start) >= RUN_RECORD_RETENTION_DAYS * DAY_MS,
+      released: { count: released.length, usd: addUsd(...released.map((x) => x.usd)) },
       metrics,
     },
     byRepo: labels.map((repo) => ({ repo, metrics: period(cycle.start, day, repo) })),
@@ -561,7 +635,7 @@ export function renderMetricsMarkdown(report: MetricsReport): string {
     "",
     `## Cycle ${cycle.start} to ${cycle.end}`,
     "",
-    `Day ${cycle.elapsedDays} of ${cycle.lengthDays}. Spend ${usd(cycle.spendUsd)} of the ${usd(cycle.capUsd)} cap. ${cycle.projectedUsd === null ? `Projected from day ${PROJECTION_MIN_DAYS}.` : `Projected ${usd(cycle.projectedUsd)}.`}`,
+    `Day ${cycle.elapsedDays} of ${cycle.lengthDays}. Spend ${usd(cycle.spendUsd)} of the ${usd(cycle.capUsd)} cap. ${cycle.projectedUsd === null ? `Projected from day ${PROJECTION_MIN_DAYS}.` : `Projected ${usd(cycle.projectedUsd)} at the last ${cycle.projectionPaceDays} days' pace.`}`,
     "",
     table(["Repo", ...METRIC_HEADERS], [["all", ...metricCells(cycle.metrics)], ...report.byRepo.map((r) => [r.repo, ...metricCells(r.metrics)])]),
     "",
@@ -578,8 +652,11 @@ export function renderMetricsMarkdown(report: MetricsReport): string {
     "",
     "## Check against the Console",
     "",
-    `Cycle to date: **${usd(cycle.spendUsd)}**. Compare with the \`globalhost-runners\` workspace in the Anthropic Console (P1-13). The Console should read higher by what the ledger doesn't see: \`security-audit.yml\`, local \`globalhost run\` / \`assess\`, and any builder killed or failing mid-session, whose spend is recorded nowhere else. The Console's workspace limit is the hard cap. Ledger costs are list cost.`,
+    `Cycle to date: **${usd(cycle.spendUsd)}**. Compare with the \`globalhost-runners\` workspace in the Anthropic Console (P1-13). The Console should read higher by what the ledger doesn't see: \`security-audit.yml\`, local \`globalhost run\` / \`assess\`, and any session that died mid-run, whose spend only its reservation hints at. The Console's workspace limit is the hard cap. Ledger costs are list cost.`,
     "",
+    ...(cycle.released.count > 0
+      ? [`Released without settling this cycle: **${plural(cycle.released.count, "reservation")}, ${usd(cycle.released.usd)}**. Those sessions died, so the Console can read higher by up to that (\`cleanup.yml\`).`, ""]
+      : []),
     `Run records against the ledger, ${drift.from} to ${drift.to}: ${usd(drift.runRecordsUsd)} and ${usd(drift.ledgerUsd)}, a difference of ${usd(drift.diffUsd)} added up per repo (allowed ${usd(drift.allowedUsd)}).${drift.unknownBaseline ? " Not checked: a resumed run in this window has no earlier turn on record." : ""}`,
     "",
     "## By day",

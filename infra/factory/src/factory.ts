@@ -7,6 +7,7 @@
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudflareConfig, DispatchRepo, FactoryConfig } from "./config.js";
+import { createCleanup, SPEND_PREFIX } from "./cleanup.js";
 import { createNightly, METRICS_PREFIX } from "./nightly.js";
 import { createPreviews } from "./previews.js";
 import { createReleaseObservers } from "./releases.js";
@@ -20,6 +21,8 @@ export const BUDGET_DISPLAY_NAME = "globalhost-factory-monthly";
 export const DISPATCH_PROVIDER_ID = "globalhost-dispatch";
 /** Daily metrics reports are small but would otherwise pile up forever (ADR-0020). */
 export const METRICS_RETENTION_DAYS = 400;
+/** Spend records outlast any report (a cycle plus the drift window) by far, and let a year be compared with the last. */
+export const SPEND_RETENTION_DAYS = 400;
 
 export const REQUIRED_APIS = [
   "artifactregistry.googleapis.com", // image store for the budget function's build (Cloud Functions 2nd gen)
@@ -121,8 +124,10 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
       lifecycleRules: [
         { action: { type: "Delete" }, condition: { withState: "ARCHIVED", daysSinceNoncurrentTime: 30 } },
         { action: { type: "Delete" }, condition: { withState: "ARCHIVED", numNewerVersions: 100 } },
-        // The one rule that touches live objects. It deletes nothing else: not state.json, spend, or review state.
+        // The only rules that touch live objects, each limited to its prefix: never state.json, locks or review
+        // state. Versioning turns the delete into a noncurrent version, which the first rule removes 30 days later.
         { action: { type: "Delete" }, condition: { age: METRICS_RETENTION_DAYS, withState: "LIVE", matchesPrefixes: [METRICS_PREFIX] } },
+        { action: { type: "Delete" }, condition: { age: SPEND_RETENTION_DAYS, withState: "LIVE", matchesPrefixes: [SPEND_PREFIX] } },
       ],
       softDeletePolicy: { retentionDurationSeconds: 0 },
       labels,
@@ -210,6 +215,9 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
 
   // ── Nightly (PLAN P1-13, ADR-0020): reads both buckets, writes only metrics/ ───────────────────────
   const nightly = createNightly({ config, factoryRepoName, pool, control, runs, afterApis });
+
+  // ── Cleanup (PLAN P1-13 slice 2, ADR-0020): its own workflow and identity; its dev-project grants are in previews.ts ──
+  const cleanup = createCleanup({ config, factoryRepoName, pool, control, afterApis });
 
   // ── Secret: GitHub App private key (value added by the owner via infra/github-app) ─────────────
   const appKey = new gcp.secretmanager.Secret(
@@ -416,6 +424,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     pool,
     afterApis,
     routerScript,
+    cleanupMember: cleanup.member,
     ...(cloudflare ? { cloudflare } : {}),
   });
 
@@ -462,5 +471,7 @@ export function createFactory({ config, billingAccount, budgetPauseSource, facto
     reviewWorkloadIdentityProvider: reviewer?.workloadIdentityProvider,
     nightlyServiceAccount: nightly.serviceAccount,
     nightlyWorkloadIdentityProvider: nightly.workloadIdentityProvider,
+    cleanupServiceAccount: cleanup.serviceAccount,
+    cleanupWorkloadIdentityProvider: cleanup.workloadIdentityProvider,
   };
 }

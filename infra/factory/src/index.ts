@@ -76,3 +76,5 @@ export const reviewServiceAccount = out.reviewServiceAccount;
 export const reviewWorkloadIdentityProvider = out.reviewWorkloadIdentityProvider;
 export const nightlyServiceAccount = out.nightlyServiceAccount;
 export const nightlyWorkloadIdentityProvider = out.nightlyWorkloadIdentityProvider;
+export const cleanupServiceAccount = out.cleanupServiceAccount;
+export const cleanupWorkloadIdentityProvider = out.cleanupWorkloadIdentityProvider;

@@ -274,6 +274,9 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
       },
       cloneRepo: deps.cloneRepo,
     };
+    // Before anything can spend: if this job dies, the hold stays, counted against today and reported by the
+    // watcher (ADR-0020). A session that throws leaves it too, since its cost is unknown.
+    const hold = await control.holdDispatchRun(repo, runId, config.limits.perRunUsd);
     const record = resumeFrom
       ? await resumeRun({ sessionId: resumeFrom.session, feedback: feedback!, addBudgetUsd: config.limits.perRunUsd, timeoutMinutes: config.limits.perRunMinutes, outDir, toolchain: settings.toolchain }, runDeps)
       : await startRun(
@@ -295,7 +298,7 @@ async function runDispatch(deps: DispatchDeps, onError: { report?: (err: unknown
           runDeps,
         );
 
-    await control.recordSpend(repo, record.runId, Math.max(0, record.costUsd - (resumeFrom?.costUsd ?? 0)));
+    await control.recordSpend(repo, record.runId, Math.max(0, record.costUsd - (resumeFrom?.costUsd ?? 0)), hold);
     await archive(new ObjectStore(gcpToken, deps.fetchImpl), repo, record, outDir);
 
     const issueInfo = await reader.request("GET", `/repos/${repo}/issues/${issue}`, undefined, z.object({ title: z.string() }));
