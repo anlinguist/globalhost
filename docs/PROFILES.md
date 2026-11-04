@@ -139,7 +139,8 @@ export interface DeployAdapter<Cfg = unknown> extends AdapterDescriptor {
   status(handle: ReleaseHandle): Promise<ReleaseStatus>;   // polled by watcher for async gates
   rollback?(handle: ReleaseHandle): Promise<void>;
   // What the deploy runs with prod credentials (ADR-0015 §9), as repo-relative globs. A prod part whose adapter leaves
-  // this out, throws or returns no globs trips a trigger on every PR.
+  // this out, throws or returns no globs trips a trigger on every PR. The set covers what runs with those credentials;
+  // an adapter whose build and deploy aren't split (ADR-0015 §9) can't vouch for code that runs during its build.
   releaseExecutionSet?(part: { name: string; path: string }, cfg: Cfg): { globs: string[] };
 }
 // ReleaseHandle = { adapter, sha, data: Record<string, string> }: plain JSON recorded on GitHub, no credentials.

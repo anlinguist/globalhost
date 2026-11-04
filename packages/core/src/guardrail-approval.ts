@@ -49,9 +49,11 @@ export interface ApprovalEvidence {
   ownerIds: readonly number[];
   /** Both Apps' bot user IDs: never an owner, even if listed in `ownerIds` (ADR-0015 §10). */
   appActorIds: readonly number[];
-  /** The PR's labels now: a cross-check, since an event list can be cut short by paging. */
+  /** The PR's labels now. */
   currentLabels: readonly string[];
   events: readonly LabelEvent[];
+  /** False when `events` may be cut short (an API page limit): a missing event could be the removal, so nothing clears. */
+  eventsComplete: boolean;
 }
 
 export const APPROVAL_CODES = [
@@ -100,7 +102,7 @@ export function evaluateApproval(subject: { class: GuardrailClass; approvalLabel
   if (!CLEARABLE_CLASSES.includes(subject.class) || label === null || !APPROVAL_LABEL_PATTERN.test(label)) return no("not-clearable");
 
   const pushedAt = parseTime(ev.lastPushAt);
-  if (pushedAt === null || !SHA40.test(ev.headSha)) return no("invalid-evidence");
+  if (pushedAt === null || !SHA40.test(ev.headSha) || ev.eventsComplete !== true) return no("invalid-evidence");
 
   const relevant: Array<{ e: LabelEvent; at: number }> = [];
   for (const e of ev.events) {

@@ -81,6 +81,7 @@ export {
   RESERVED_RECORD_BASENAMES,
   globMatch,
   pathPolicyAllows,
+  scopeGlobToPart,
   type PathPolicyInput,
   type PathPolicyResult,
 } from "./path-policy.js";

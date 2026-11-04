@@ -138,7 +138,9 @@ Each target is `{ adapter, config }`:
 | `buildConfig` | no | the trigger's build config file, repo-relative; defaults to `cloudbuild.yaml` |
 | `releaseInputs` | no | globs of anything else the build config's steps run, such as a deploy script |
 
-`buildConfig`, `releaseInputs`, and any Cloud Build config, `Dockerfile`, `.dockerignore` or `.gcloudignore` in the repo form this adapter's release execution set: changing one always escalates, and no `approved:*` label clears it (ADR-0015 §8, §9).
+`buildConfig`, `releaseInputs`, and any `cloudbuild*` config, `Dockerfile*`, `Containerfile*`, `.dockerignore`, `.containerignore` or `.gcloudignore` in the repo form this adapter's release execution set: changing one always escalates, and no `approved:*` label clears it (ADR-0015 §8, §9).
+
+The set leaves out the rest of the Docker build context, or it would be every file. **So a `release-set` pass means nothing about build-time code until P2-01d**: a build tool's config or a script the build runs can change without tripping it. Those paths belong in `loadBearing` until the build and deploy are split.
 
 `cloudRun` is the deploy target the release observer checks: the service in `environments.prod.gcpProject` must serve the merged commit before a merge is reported as deployed (ADR-0019). Without `cloudRun` or `environments.prod`, a successful build is reported as "can't be verified" and the issue stays open. The trigger's build config must list its images under `images:`, so Cloud Build records what it pushed. The JSON Schema (`schemas/factory.schema.json`) leaves adapter config open: it is generated from core, which doesn't know adapters, so this table is the reference.
 

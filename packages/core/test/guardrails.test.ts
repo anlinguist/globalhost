@@ -22,12 +22,13 @@ import {
 } from "../src/index.js";
 
 const HEAD = "a".repeat(40);
-const approvalNone: ApprovalEvidence = { headSha: HEAD, lastPushAt: "2026-11-04T10:00:00Z", ownerIds: [1001], appActorIds: [9001], currentLabels: [], events: [] };
+const approvalNone: ApprovalEvidence = { headSha: HEAD, lastPushAt: "2026-11-04T10:00:00Z", ownerIds: [1001], appActorIds: [9001], currentLabels: [], events: [], eventsComplete: true };
 const ownerLabel = (label: string): LabelEvent => ({ action: "labeled", label, actor: { id: 1001, type: "User" }, at: "2026-11-04T11:00:00Z", headSha: HEAD });
 const approved = (...labels: string[]): ApprovalEvidence => ({ ...approvalNone, currentLabels: labels, events: labels.map(ownerLabel) });
 
 const DECLARED = [{ part: "web", adapter: "deployer", set: { globs: ["deploy/release.conf"] } }];
-const files = (...paths: string[]): ChangedFile[] => paths.map((path) => ({ path }));
+const PLAIN = ["100644", "100644"];
+const files = (...paths: string[]): ChangedFile[] => paths.map((path) => ({ path, modes: PLAIN }));
 
 function input(over: Partial<GuardrailEngineInput> = {}): GuardrailEngineInput {
   return {
@@ -177,22 +178,22 @@ describe("path spellings", () => {
 
 describe("renames and modes", () => {
   it("a rename out of a protected path trips", async () => {
-    expect(await tripped({ files: [{ path: "src/x.md", previousPath: "CLAUDE.md" }] })).toEqual(["instruction-surface"]);
-    expect(await tripped({ files: [{ path: "src/ci.yml", previousPath: ".github/workflows/ci.yml" }] })).toEqual(["prod-credential", "immutable"]);
+    expect(await tripped({ files: [{ path: "src/x.md", previousPath: "CLAUDE.md", modes: PLAIN }] })).toEqual(["instruction-surface"]);
+    expect(await tripped({ files: [{ path: "src/ci.yml", previousPath: ".github/workflows/ci.yml", modes: PLAIN }] })).toEqual(["prod-credential", "immutable"]);
   });
 
   it("a rename into a protected path trips", async () => {
-    expect(await tripped({ files: [{ path: "skills/x/SKILL.md", previousPath: "src/x.md" }] })).toEqual(["instruction-surface"]);
+    expect(await tripped({ files: [{ path: "skills/x/SKILL.md", previousPath: "src/x.md", modes: PLAIN }] })).toEqual(["instruction-surface"]);
   });
 
   it("both names are reported", async () => {
-    const { entries } = await run({ files: [{ path: "src/x.md", previousPath: "CLAUDE.md" }], config: { loadBearing: ["src/**"], immutable: [] } });
+    const { entries } = await run({ files: [{ path: "src/x.md", previousPath: "CLAUDE.md", modes: PLAIN }], config: { loadBearing: ["src/**"], immutable: [] } });
     expect(entries.find((e) => e.id === "instruction-surface")?.paths).toEqual(["CLAUDE.md"]);
     expect(entries.find((e) => e.id === "load-bearing")?.paths).toEqual(["src/x.md"]);
   });
 
   it("a malformed old name fails", async () => {
-    expect(await tripped({ files: [{ path: "src/x.md", previousPath: "../CLAUDE.md" }] })).toContain("malformed-path");
+    expect(await tripped({ files: [{ path: "src/x.md", previousPath: "../CLAUDE.md", modes: PLAIN }] })).toContain("malformed-path");
   });
 
   it.each([
@@ -200,6 +201,7 @@ describe("renames and modes", () => {
     ["a symlink replaced by a file", ["120000", "100644"]],
     ["a submodule", ["160000", "160000"]],
     ["an unknown type", ["140000", "100644"]],
+    ["no recorded mode", []],
   ])("%s trips, and no label clears it", async (_name, modes) => {
     const report = await run({ files: [{ path: "docs/notes", modes }], approval: approved("approved:load-bearing") });
     const e = report.entries.find((x) => x.id === "redirecting-file");
@@ -453,7 +455,7 @@ describe("guardrails fail closed", () => {
 
   it("a guardrail's paths match every spelling too", async () => {
     expect(await tripped({ files: files("x/SAMPLE.LOCK"), guardrails: [check()] })).toEqual(["sample-check"]);
-    expect(await tripped({ files: [{ path: "x", previousPath: "sample.lock" }], guardrails: [check()] })).toEqual(["sample-check"]);
+    expect(await tripped({ files: [{ path: "x", previousPath: "sample.lock", modes: PLAIN }], guardrails: [check()] })).toEqual(["sample-check"]);
   });
 
   it("guardrails get a private copy of the file list, without malformed paths", async () => {
@@ -511,6 +513,12 @@ describe("results are safe to post", () => {
     expect(safePath("СLAUDE.md")).toBe("%D0%A1LAUDE.md");
   });
 
+  it("safePath stops a bare www name from linking", () => {
+    expect(safePath("www.evil.example/x")).toBe("www%2Eevil.example/x");
+    expect(safePath("WWW.evil.example")).toBe("www%2Eevil.example");
+    expect(safePath("src/awww.ts")).toBe("src/awww.ts");
+  });
+
   it("safePath doesn't cut an escape in half", () => {
     const out = safePath("é".repeat(200));
     expect(out).toMatch(/(%[0-9A-F]{2})+\.\.\.$/);
@@ -522,6 +530,7 @@ describe("results are safe to post", () => {
     expect(out).toMatch(/^[A-Za-z0-9 .,:;()/_=+'?-]*$/);
     expect(out).not.toContain("://");
     expect(out).not.toContain("ghp_0123");
+    expect(safeText("see www.evil.example and WWW.evil.example now")).toBe("see www?evil.example and www?evil.example now");
     expect(safeText("<>").length).toBeGreaterThan(0);
     expect(safeText("")).toBe("no reason given");
     expect(safeText("y".repeat(5000)).length).toBeLessThanOrEqual(300);
@@ -530,7 +539,7 @@ describe("results are safe to post", () => {
   it("no entry of a report carries raw attacker text", async () => {
     const g = check({}, { kind: "needsApproval", reason: "bad @team <!-- x -->", subjects: ["@scope/pkg", "<img src=x>"] });
     const report = await run({
-      files: [...files(...nasty, "sample.lock"), { path: "skills/@everyone", previousPath: "CLAUDE<b>.md" }],
+      files: [...files(...nasty, "sample.lock"), { path: "skills/@everyone", previousPath: "CLAUDE<b>.md", modes: PLAIN }],
       guardrails: [g],
       config: { loadBearing: ["x/**"], immutable: [] },
     });
@@ -581,7 +590,7 @@ describe("CLAUDE.md #1", () => {
   it("the engine names no framework, manifest or lockfile format", () => {
     for (const file of ["guardrails.ts", "guardrail-approval.ts"]) {
       const source = fs.readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
-      expect(source).not.toMatch(/package(-lock)?\.json|pnpm|\bbun\b|\bnpm\b|yarn|dockerfile|cloudbuild|next\.js|node_modules|pyproject/i);
+      expect(source).not.toMatch(/package(-lock)?\.json|pnpm|\bbun\b|\bnpm\b|yarn|dockerfile|cloudbuild|next\.js|node_modules|pyproject|lockfile/i);
     }
   });
 });

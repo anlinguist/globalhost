@@ -110,17 +110,20 @@ const DEFAULT_BUILD_CONFIG = "cloudbuild.yaml";
 /**
  * What a Cloud Build trigger runs with its service account: the build config, and the image definition and upload
  * filter its docker step reads. At any depth, since a config can point a build anywhere in the repo. The build's whole
- * context isn't in the set (`COPY . .` would make it every file); application code is what the build/deploy split of
- * ADR-0015 §9 is for. Steps that run a repo script need it listed in `releaseInputs`.
+ * context isn't in the set (`COPY . .` would make it every file). So a pass on this set says nothing about code that
+ * runs during the build, such as a build tool's config: until the build/deploy split of ADR-0015 §9 (P2-01d) exists,
+ * that code runs in the same build as the deploy. Steps that run a repo script need it listed in `releaseInputs`.
  */
 export const BUILD_DEFINITION_GLOBS: readonly string[] = Object.freeze([
-  "**/cloudbuild.yaml",
-  "**/cloudbuild.yml",
-  "**/cloudbuild.json",
-  "**/Dockerfile",
-  "**/Dockerfile.*",
+  "**/cloudbuild*.yaml",
+  "**/cloudbuild*.yml",
+  "**/cloudbuild*.json",
+  "**/Dockerfile*",
   "**/*.Dockerfile",
+  "**/Containerfile*",
+  "**/*.Containerfile",
   "**/.dockerignore",
+  "**/.containerignore",
   "**/.gcloudignore",
 ]);
 

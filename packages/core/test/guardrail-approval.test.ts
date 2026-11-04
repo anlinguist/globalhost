@@ -15,6 +15,7 @@ const evidence = (events: LabelEvent[], over: Partial<ApprovalEvidence> = {}): A
   appActorIds: [9001, 9002],
   currentLabels: [LABEL],
   events,
+  eventsComplete: true,
   ...over,
 });
 const decide = (events: LabelEvent[], over: Partial<ApprovalEvidence> = {}, subject: { class: GuardrailClass; approvalLabel: string | null } = { class: "guardrail", approvalLabel: LABEL }) =>
@@ -142,6 +143,10 @@ describe("evaluateApproval", () => {
 
     it("ignores other labels' events, including a malformed one", () => {
       expect(decide([ev(), ev({ label: "approved:visual", action: "unlabeled", at: "nonsense" })]).cleared).toBe(true);
+    });
+
+    it("an event list that may be cut short clears nothing", () => {
+      expect(decide([ev()], { eventsComplete: false })).toEqual({ cleared: false, code: "invalid-evidence" });
     });
 
     it("refuses an unreadable last push", () => {

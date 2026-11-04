@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { DiffCtx, GuardrailResult } from "@globalhost/core";
-import { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_LOCKFILE_CHARS } from "../src/index.js";
+import { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_LOCKFILE_CHARS, refusedBeforeParsing } from "../src/index.js";
 
 // Recorded with real tools (npm 11.19.1, pnpm 12.16.1, bun 1.3.6) for { is-odd 3.0.1 (→ is-number), ms 2.1.3 (dev) }.
 const sample = (name: string) => fs.readFileSync(new URL(`./fixtures/lockfiles/${name}`, import.meta.url), "utf8");
@@ -174,6 +174,12 @@ describe("package-lock.json", () => {
     expect(await evaluate({ [f]: NPM, "package.json": MANIFEST }, { [f]: head, "package.json": swap(MANIFEST, '"version":"1.0.0"', '"version":"1.0.1"') })).toEqual({ kind: "pass" });
   });
 
+  it("the root's hasInstallScript appearing in the lockfile trips", async () => {
+    const doc = JSON.parse(NPM) as { packages: Record<string, Record<string, unknown>> };
+    doc.packages[""]!.hasInstallScript = true;
+    expect(subjectsOf(await evaluate({ [f]: NPM }, { [f]: JSON.stringify(doc, null, 2) }))).toEqual(["(root)"]);
+  });
+
   it("a root dependency changing in the lockfile trips", async () => {
     expect((await evaluate({ [f]: NPM }, { [f]: swap(NPM, '"is-odd": "3.0.1"', '"is-odd": "3.0.0"') })).kind).toBe("needsApproval");
   });
@@ -228,9 +234,10 @@ describe("pnpm-lock.yaml", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  // A check that takes minutes is a stall nothing can interrupt, since parsing is synchronous. The library's own
-  // duplicate check took 96s on a lockfile this shape at 8MB; a check over the whole document takes about 3s.
-  it("a lockfile near the size cap parses in seconds, not minutes", { timeout: 60_000 }, async () => {
+  // Parsing is synchronous, so nothing can interrupt a stall. The library's own duplicate check took 96s on a lockfile
+  // this shape at 8 MB; our check over the whole document takes about 3s. The bound is generous, to catch a return to
+  // quadratic behaviour without being flaky on a slow runner.
+  it("an ordinary lockfile near the size cap doesn't stall", { timeout: 60_000 }, async () => {
     const lock = (bump: string) => `lockfileVersion: '9.0'\npackages:\n${Array.from({ length: 40_000 }, (_, i) => `  p${i}@1.0.0: {resolution: {integrity: sha512-${"x".repeat(100)}}}\n`).join("")}${bump}`;
     const started = performance.now();
     const r = await evaluate({ [f]: lock("") }, { [f]: lock("  new@1.0.0: {}\n") });
@@ -279,10 +286,33 @@ describe("files it can't compare", () => {
     ["bun.lockb"],
     ["yarn.lock"],
     ["apps/web/.npmrc"],
+    [".yarnrc"],
     [".yarnrc.yml"],
+    [".yarn/plugins/x.cjs"],
+    [".yarn/releases/yarn-4.cjs"],
+    [".yarn/cache/x.zip"],
+    [".pnp.cjs"],
+    [".pnp.loader.mjs"],
     ["bunfig.toml"],
     [".pnpmfile.cjs"],
+    [".pnpmfile.mjs"],
     ["pnpm-workspace.yaml"],
+    ["package.yaml"],
+    ["apps/web/package.json5"],
+    ["binding.gyp"],
+    ["requirements/base.txt"],
+    ["requirements/ci/test.txt"],
+    ["node_modules/evil/package.json"],
+    ["apps/web/node_modules/evil/package-lock.json"],
+    ["patches/package.json"],
+    ["p\u0430ckage.json"],
+    ["package.json."],
+    ["package.json "],
+    [".npmrc."],
+    ["pnpm-lock.yaml."],
+    ["b\u03C5n.lock"],
+    ["\uFF50ackage-lock.json"],
+    ["package\u200D.json"],
     ["patches/lodash.patch"],
     ["node_modules/x/index.js"],
     ["uv.lock"],
@@ -309,6 +339,11 @@ describe("files it can't compare", () => {
     expect(await evaluate({ "yarn.lock": "a" }, { "yarn.lock": "a" }, ["yarn.lock"])).toEqual({ kind: "pass" });
   });
 
+  it("everything the guardrail's own globs route here gets a kind: nothing passes by falling through", async () => {
+    const samples = DEPENDENCY_CHANGE_GLOBS.map((g) => g.replace(/\*\*\//g, "x/").replace(/\/\*\*/g, "/y").replace(/\*/g, "z"));
+    for (const path of samples) expect(reasonOf(await evaluate({ [path]: "{}" }, { [path]: '{"dependencies":{"a":"1"}}' }))).not.toBe("");
+  });
+
   it("a file that has nothing to do with dependencies is ignored", async () => {
     expect(await evaluate({ "src/a.ts": "a" }, { "src/a.ts": "b" })).toEqual({ kind: "pass" });
   });
@@ -321,7 +356,7 @@ describe("package.json", () => {
   // Decision (see the comment on NON_DEPENDENCY_FIELDS): scripts run in CI, but so does every source file in the PR.
   it.each<[string, Manifest]>([
     ["a script", { scripts: { test: "vitest" } }],
-    ["an install hook, deliberately", { scripts: { postinstall: "node x.js" } }],
+    ["an ordinary script alongside unchanged hooks", { scripts: { test: "vitest", build: "tsc" } }],
     ["the description", { description: "hello" }],
     ["the version", { version: "2.0.0" }],
     ["engines", { engines: { node: ">=24" } }],
@@ -343,6 +378,32 @@ describe("package.json", () => {
   ])("changing %s with no lockfile change trips", async (_name, change) => {
     const r = await evaluate({ [f]: MANIFEST, "package-lock.json": NPM }, { [f]: edit(change), "package-lock.json": NPM }, [f]);
     expect(reasonOf(r)).toContain("with no lockfile change");
+  });
+
+  it.each(["preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare", "prepublish", "dependencies", "pnpm:devPreinstall"])(
+    "adding, changing or removing the %s hook trips, with an identical lockfile",
+    async (hook) => {
+      const withHook = edit({ scripts: { [hook]: "node a.js" } });
+      const trips = async (base: string, head: string) => reasonOf(await evaluate({ [f]: base, "package-lock.json": NPM }, { [f]: head, "package-lock.json": NPM }, [f]));
+      expect(await trips(MANIFEST, withHook)).toContain("install hooks changed");
+      expect(await trips(withHook, edit({ scripts: { [hook]: "node b.js" } }))).toContain("install hooks changed");
+      expect(await trips(withHook, MANIFEST)).toContain("install hooks changed");
+    },
+  );
+
+  it("a hook in a nested or new manifest trips", async () => {
+    const m = "apps/web/package.json";
+    expect(reasonOf(await evaluate({ [m]: MANIFEST }, { [m]: edit({ scripts: { postinstall: "x" } }) }))).toContain("install hooks changed");
+    expect(reasonOf(await evaluate({}, { [m]: '{"scripts":{"preinstall":"x"}}' }))).toContain("install hooks changed");
+  });
+
+  it("an unchanged hook doesn't trip when another script changes", async () => {
+    const withHook = edit({ scripts: { prepare: "husky", test: "a" } });
+    expect(await evaluate({ [f]: withHook }, { [f]: edit({ scripts: { prepare: "husky", test: "b" } }) })).toEqual({ kind: "pass" });
+  });
+
+  it("a scripts field that isn't a map compares whole", async () => {
+    expect(reasonOf(await evaluate({ [f]: MANIFEST }, { [f]: edit({ scripts: "postinstall" }) }))).toContain("install hooks changed");
   });
 
   it("a dependency change with a lockfile change trips and says what changed", async () => {
@@ -399,5 +460,77 @@ describe("output", () => {
     const r = await evaluate({ "package-lock.json": NPM }, { "package-lock.json": JSON.stringify(doc) });
     expect(reasonOf(r)).toBe("Dependency change. lockfile entries: 1 added.");
     expect(subjectsOf(r)).toEqual(["<!-- evil @team -->"]);
+  });
+});
+
+describe("refusedBeforeParsing", () => {
+  it.each([
+    ["an anchor", "x: &a 1\n"],
+    ["an alias", "x: 1\ny: *a\n"],
+    ["a tag", "x: !!str 1\n"],
+    ["an anchor as a key", "&a x: 1\n"],
+    ["an anchor at the very start", "&x &x &x"],
+    ["in a sequence", "- &a 1\n"],
+    ["in a nested sequence", "- - - *a\n"],
+    ["on a complex key", "? &a x\n: 1\n"],
+    ["on a document marker", "x: 1\n--- &a\ny: 2\n"],
+    ["in a flow map", "x: {a: &b 1}\n"],
+    ["after a flow comma", "x: [1, *a]\n"],
+    ["right after a quoted key", '{"a":&x 1}'],
+    ["after a quoted value", '{"a":"b","c":*x}'],
+    ["on the line after a key", "x:\n  &a y\n"],
+    ["flow nesting past the limit", "[".repeat(100)],
+    ["a closing bracket with nothing open", "]"],
+    ["a quote after a closing quote", '""""'],
+    ["a closing brace with nothing open", "a: }\n"],
+    ["a tag after a closed quote in flow", "['a', !x b]"],
+  ])("finds %s", (_name, text) => {
+    expect(refusedBeforeParsing(text)).toBe(true);
+  });
+
+  it.each([
+    ["text in double quotes", '"a": "&x *y !z"\n'],
+    ["an escaped quote then text", '"a": "\\" &x"\n'],
+    ["text in single quotes", "a: '&x *y'\n"],
+    ["an escaped single quote", "a: 'it''s &x'\n"],
+    ["a quoted star, as pnpm writes it", "specifier: '*'\n"],
+    ["characters inside a plain value", "deprecated: use a, *not* b & !c\n"],
+    ["a URL", "tarball: https://x.example/a&b=*\n"],
+    ["a comment", "# &x\na: 1 # *y\n"],
+    ["a plain value with an ampersand first after text", "a: b&c\n"],
+    ["a version range", "a: ^1.0.0 || >=2\n"],
+    ["a bracket inside a plain value", "a: b]c}\n"],
+    ["a peer suffix", "foo@1.0.0(bar@2.0.0): {}\n"],
+    ["JSON with trailing commas", '{"a": ["x", "", {}, "y",],}'],
+    ["empty text", ""],
+  ])("allows %s", (_name, text) => {
+    expect(refusedBeforeParsing(text)).toBe(false);
+  });
+
+  it.each([
+    ["package-lock.json", NPM],
+    ["pnpm-lock.yaml", PNPM],
+    ["bun.lock", BUN],
+    ["package.json", MANIFEST],
+    ["this repo's own pnpm-lock.yaml", fs.readFileSync(new URL("../../../../pnpm-lock.yaml", import.meta.url), "utf8")],
+  ])("allows the real file: %s", (_name, text) => {
+    expect(refusedBeforeParsing(text)).toBe(false);
+  });
+
+  // These took from 12s to over 50s at 480 KB when they reached the parser. Refused before it, they don't depend on size,
+  // so the bound is far from anything a slow runner would hit.
+  it.each([
+    ["anchors", "&x "],
+    ["tags", "!x "],
+    ["anchors in a map", "a: &x\n"],
+    ["aliases in a sequence", "- *x\n"],
+    ["closing brackets", "]"],
+    ["closing braces", "}"],
+    ["double quotes", '"'],
+  ])("a file full of %s is refused without reaching the parser", { timeout: 20_000 }, async (_name, unit) => {
+    const text = unit.repeat(Math.floor((MAX_LOCKFILE_CHARS - 1) / unit.length));
+    const started = performance.now();
+    expect(reasonOf(await evaluate({ "pnpm-lock.yaml": PNPM }, { "pnpm-lock.yaml": text }))).toContain("could not be parsed");
+    expect(performance.now() - started).toBeLessThan(10_000);
   });
 });

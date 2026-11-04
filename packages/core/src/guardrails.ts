@@ -19,7 +19,7 @@ import {
   type ApprovalEvidence,
   type GuardrailClass,
 } from "./guardrail-approval.js";
-import { globMatch, isRepoRelativePath, isReservedRecordPath } from "./path-policy.js";
+import { globMatch, isRepoRelativePath, isReservedRecordPath, scopeGlobToPart } from "./path-policy.js";
 import type { DiffCtx, Guardrail, Profile, ReleaseExecutionSet } from "./profile.js";
 import { normalizeForScan } from "./review-scan.js";
 
@@ -48,7 +48,7 @@ export const MAX_RESULT_PATHS = 50;
 export const MAX_RESULT_SUBJECTS = 20;
 const MAX_SAFE_PATH = 300;
 const MAX_SAFE_TEXT = 300;
-/** Long enough for a large lockfile on a slow runner; a guardrail that hangs must not hang the check. */
+/** Long enough for a large file on a slow runner; a guardrail that hangs must not hang the check. */
 export const GUARDRAIL_TIMEOUT_MS = 60_000;
 
 // Git modes of an ordinary file, or of nothing on that side. Any other (symlink 120000, submodule 160000) trips.
@@ -59,8 +59,8 @@ export interface ChangedFile {
   path: string;
   /** For a rename or copy, the old path. It counts as changed just like the new one. */
   previousPath?: string;
-  /** Git modes on either side, when the caller can see them (`git diff --raw`). */
-  modes?: readonly string[];
+  /** Git modes on both sides (`git diff --raw`). Required: without them a symlink looks like a file, so an empty list trips. */
+  modes: readonly string[];
 }
 
 /** One deploy target's declared set. `set` undefined means the adapter declared none, which trips. */
@@ -119,6 +119,9 @@ export interface GuardrailReport {
 const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const unique = (items: Iterable<string>) => [...new Set(items)].sort(byCodeUnit);
 
+// GitHub links a bare `www.` name even without a scheme.
+const WWW_AUTOLINK = /\bwww\./gi;
+
 function percentEncode(text: string): string {
   // Bytes rather than encodeURIComponent, which throws on a lone surrogate.
   let out = "";
@@ -136,7 +139,7 @@ function percentEncode(text: string): string {
  * span, and fence it as untrusted before it goes near a prompt.
  */
 export function safePath(path: string): string {
-  const out = percentEncode(maskSecrets(path).text);
+  const out = percentEncode(maskSecrets(path).text).replace(WWW_AUTOLINK, "www%2E");
   return out.length > MAX_SAFE_PATH ? `${out.slice(0, MAX_SAFE_PATH).replace(/%[0-9A-F]?$/, "")}...` : out;
 }
 
@@ -145,6 +148,7 @@ export function safeText(text: string): string {
   const out = maskSecrets(text)
     .text.replace(/[^A-Za-z0-9 .,:;()/_=+'-]/g, "?")
     .replace(/:\/\//g, ":?/")
+    .replace(WWW_AUTOLINK, "www?")
     .slice(0, MAX_SAFE_TEXT)
     .trim();
   return out === "" ? "no reason given" : out;
@@ -193,8 +197,6 @@ function declaredSet(declare: () => ReleaseExecutionSet | undefined): ReleaseExe
   }
 }
 
-/** Part-relative glob → repo-relative. */
-const inPart = (partPath: string, glob: string) => (partPath === "." ? glob : `${partPath}/${glob}`);
 
 /** The parts of a Registry the engine reads, so a registry of any concrete profile and adapter types fits. */
 export interface GuardrailRegistry {
@@ -217,7 +219,7 @@ export function guardrailInputsFor(
   for (const [part, cfg] of Object.entries(config.parts)) {
     const profile = registry.profile(cfg.profile);
     if (profile) {
-      immutable.push(...profile.guardrails.immutable.map((g) => inPart(cfg.path, g)));
+      immutable.push(...profile.guardrails.immutable.map((g) => scopeGlobToPart(cfg.path, g)));
       guardrails.push(...profile.guardrails.checks);
     } else {
       unknownProfiles.push(part);
@@ -373,7 +375,7 @@ function triggerEntries(input: GuardrailEngineInput, paths: readonly string[], m
   const immutableGlobs = [...IMMUTABLE_BASELINE, ...input.config.immutable];
   const releaseGlobs = input.releaseSets.flatMap((r) => r.set?.globs ?? []);
   const undeclared = input.releaseSets.filter((r) => r.set === undefined);
-  const redirecting = input.files.filter((f) => f.modes?.some((m) => !PLAIN_MODES.has(m)));
+  const redirecting = input.files.filter((f) => f.modes.length === 0 || f.modes.some((m) => !PLAIN_MODES.has(m)));
   const fileListBad = !input.filesComplete || input.files.length === 0;
 
   return [
@@ -387,7 +389,7 @@ function triggerEntries(input: GuardrailEngineInput, paths: readonly string[], m
       "redirecting-file",
       "integrity",
       redirecting.flatMap((f) => [f.path, ...(f.previousPath === undefined ? [] : [f.previousPath])]),
-      "a changed file is a symlink, submodule or unknown file type, so its path doesn't say what it points at",
+      "a changed file is a symlink, submodule or unknown file type, or has no recorded mode, so its path doesn't say what it points at",
       "no symlink, submodule or unknown file type changed",
     ),
     input.unknownProfiles.length > 0

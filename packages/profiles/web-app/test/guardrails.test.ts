@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { visualBaseline, webApp } from "../src/index.js";
 
 const HEAD = "a".repeat(40);
-const noApproval: ApprovalEvidence = { headSha: HEAD, lastPushAt: "2026-11-04T10:00:00Z", ownerIds: [1001], appActorIds: [], currentLabels: [], events: [] };
+const noApproval: ApprovalEvidence = { headSha: HEAD, lastPushAt: "2026-11-04T10:00:00Z", ownerIds: [1001], appActorIds: [], currentLabels: [], events: [], eventsComplete: true };
 const approvedVisual: ApprovalEvidence = {
   ...noApproval,
   currentLabels: ["approved:visual"],
@@ -13,7 +13,7 @@ const approvedVisual: ApprovalEvidence = {
 /** The web-app profile's own checks through the real engine, as slice 2's caller will run them. */
 const run = (paths: string[], approval = noApproval, trees: { base?: Record<string, string>; head?: Record<string, string> } = {}) =>
   evaluateGuardrails({
-    files: paths.map((path) => ({ path })),
+    files: paths.map((path) => ({ path, modes: ["100644", "100644"] })),
     filesComplete: true,
     config: { loadBearing: [], immutable: [] },
     guardrails: webApp.guardrails.checks,
@@ -48,7 +48,7 @@ describe("visual-baseline", () => {
 
   it("trips when a baseline is renamed away", async () => {
     const report = await evaluateGuardrails({
-      files: [{ path: "src/old.png", previousPath: "e2e/a.spec.ts-snapshots/old.png" }],
+      files: [{ path: "src/old.png", previousPath: "e2e/a.spec.ts-snapshots/old.png", modes: ["100644", "100644"] }],
       filesComplete: true,
       config: { loadBearing: [], immutable: [] },
       guardrails: [visualBaseline],

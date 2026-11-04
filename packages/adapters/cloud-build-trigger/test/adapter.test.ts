@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { GLOB_PATTERN, guardrailInputsFor } from "@globalhost/core";
+import { globMatch, GLOB_PATTERN, guardrailInputsFor } from "@globalhost/core";
 import { describe, expect, it } from "vitest";
 import {
   BUILD_DEFINITION_GLOBS,
@@ -419,8 +419,39 @@ describe("release execution set", () => {
 
   it("declares the build config and everything that defines the image", () => {
     const { globs } = declare(numuKnow);
-    for (const name of ["cloudbuild.yaml", "**/Dockerfile", "**/.dockerignore"]) expect(globs).toContain(name);
+    expect(globs).toContain("cloudbuild.yaml");
     expect(globs).toEqual(expect.arrayContaining([...BUILD_DEFINITION_GLOBS]));
+  });
+
+  it.each([
+    "cloudbuild.yaml",
+    "cloudbuild.yml",
+    "cloudbuild.json",
+    "cloudbuild-prod.yaml",
+    "cloudbuild.prod.yaml",
+    "ci/cloudbuild-staging.yml",
+    "deploy/cloudbuild.prod.json",
+    "Dockerfile",
+    "Dockerfile-prod",
+    "Dockerfile.prod",
+    "apps/web/Dockerfile",
+    "web.Dockerfile",
+    "dockerfile",
+    "Containerfile",
+    "Containerfile.prod",
+    "apps/web/web.containerfile",
+    ".dockerignore",
+    "apps/web/.dockerignore",
+    ".containerignore",
+    ".gcloudignore",
+  ])("the set covers %s", (path) => {
+    const { globs } = declare(numuKnow);
+    expect(globs.some((g) => globMatch(g, path))).toBe(true);
+  });
+
+  it.each(["src/cloudbuild.ts", "docs/dockerfile-notes/x.md", "cloudbuild.md"])("the set leaves %s alone", (path) => {
+    const { globs } = declare(numuKnow);
+    expect(globs.some((g) => globMatch(g, path))).toBe(false);
   });
 
   it("every glob is in the factory.yaml dialect, so the engine won't reject the declaration", () => {
