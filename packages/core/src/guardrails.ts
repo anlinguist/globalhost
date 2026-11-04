@@ -139,7 +139,7 @@ function percentEncode(text: string): string {
  * span, and fence it as untrusted before it goes near a prompt.
  */
 export function safePath(path: string): string {
-  const out = percentEncode(maskSecrets(path).text).replace(WWW_AUTOLINK, "www%2E");
+  const out = percentEncode(maskSecrets(path).text).replace(WWW_AUTOLINK, (m) => `${m.slice(0, 3)}%2E`);
   return out.length > MAX_SAFE_PATH ? `${out.slice(0, MAX_SAFE_PATH).replace(/%[0-9A-F]?$/, "")}...` : out;
 }
 
@@ -148,7 +148,7 @@ export function safeText(text: string): string {
   const out = maskSecrets(text)
     .text.replace(/[^A-Za-z0-9 .,:;()/_=+'-]/g, "?")
     .replace(/:\/\//g, ":?/")
-    .replace(WWW_AUTOLINK, "www?")
+    .replace(WWW_AUTOLINK, (m) => `${m.slice(0, 3)}?`)
     .slice(0, MAX_SAFE_TEXT)
     .trim();
   return out === "" ? "no reason given" : out;
@@ -375,7 +375,7 @@ function triggerEntries(input: GuardrailEngineInput, paths: readonly string[], m
   const immutableGlobs = [...IMMUTABLE_BASELINE, ...input.config.immutable];
   const releaseGlobs = input.releaseSets.flatMap((r) => r.set?.globs ?? []);
   const undeclared = input.releaseSets.filter((r) => r.set === undefined);
-  const redirecting = input.files.filter((f) => f.modes.length === 0 || f.modes.some((m) => !PLAIN_MODES.has(m)));
+  const redirecting = input.files.filter((f) => !Array.isArray(f.modes) || f.modes.length === 0 || f.modes.some((m) => !PLAIN_MODES.has(m)));
   const fileListBad = !input.filesComplete || input.files.length === 0;
 
   return [

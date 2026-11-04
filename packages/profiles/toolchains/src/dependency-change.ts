@@ -10,11 +10,19 @@ import { isScalar, parseDocument, visit } from "yaml";
 /**
  * About 35 times numu-know's lockfile (233 KB). A real lockfile this size parses in about 3s. The worst hostile input
  * we found that gets past refusedBeforeParsing takes about 20s per side at this size. That is measured, not a proven
- * bound: parsing is synchronous, so nothing interrupts it if a worse input exists.
+ * bound: parsing is synchronous and in-process, so a worse input could stall it or exhaust the heap, and no timeout or
+ * try/catch helps. The check that posts results must run this in a child process with a heap limit and a hard kill
+ * (PLAN P2-03).
  */
 export const MAX_LOCKFILE_CHARS = 8 * 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_NODES = 2_000_000;
+
+/**
+ * Opening brackets in one file. A run of nested ones can exhaust the heap in the parser, which nothing in this process
+ * survives. A lockfile-shaped file at the 8 MB cap has about 200,000; see the tests for real files.
+ */
+export const MAX_FLOW_OPENERS = 300_000;
 
 const MANIFEST = "package.json";
 const PARSED_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock"];
@@ -128,7 +136,8 @@ const isSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n"
 /**
  * Refuses in one linear pass what the parser is superlinear on, since parsing is synchronous and the engine's timeout
  * can't interrupt it: YAML's anchors, aliases and tags (none of the three lockfile formats writes them), a closing
- * bracket with nothing open, a quote straight after a closing quote, and flow nesting deeper than any lockfile has.
+ * bracket with nothing open, a quote straight after a closing quote, and more flow nesting or opening brackets than any
+ * lockfile has. This narrows what reaches the parser; it isn't a bound. See MAX_LOCKFILE_CHARS.
  *
  * It tracks just enough to know where a value starts: inside quotes these characters are text, and inside a plain value
  * (`deprecated: use a, *not* b`) they are too. When unsure it refuses, which only costs a trip on a changed file.
@@ -137,15 +146,19 @@ export function refusedBeforeParsing(text: string): boolean {
   let atStart = true; // the next non-space character begins a value or key
   let afterQuote = false; // just closed a quoted key, where `"a":&x` needs no space after the colon
   let flowDepth = 0;
-  for (let i = 0; i < text.length; i++) {
+  let openers = 0;
+  // A document marker can carry properties, so step over it. A byte order mark counts as nothing either.
+  const skipMarker = (from: number) => (text.startsWith("---", from) && isSpace(text[from + 3]) ? from + 3 : from);
+  const first = text.startsWith("\uFEFF") ? 1 : 0;
+  for (let i = skipMarker(first); i < text.length; i++) {
     const c = text[i]!;
-    if (c === "\n") {
+    if (c === "\n" || c === "\r") {
       atStart = true;
       afterQuote = false;
-      if (text.startsWith("---", i + 1) && isSpace(text[i + 4])) i += 3; // a document marker can carry properties
+      i = skipMarker(i + 1) - 1;
       continue;
     }
-    if (c === " " || c === "\t" || c === "\r") continue;
+    if (c === " " || c === "\t" || c === "\uFEFF") continue;
     if (c === "#" && (atStart || isSpace(text[i - 1]))) {
       const end = text.indexOf("\n", i);
       if (end === -1) return false;
@@ -154,16 +167,13 @@ export function refusedBeforeParsing(text: string): boolean {
     }
     if (c === "[" || c === "{") {
       if (atStart || flowDepth > 0) {
-        if (++flowDepth > MAX_DEPTH) return true;
+        if (++flowDepth > MAX_DEPTH || ++openers > MAX_FLOW_OPENERS) return true;
         atStart = true;
       }
       continue;
     }
     if (c === "]" || c === "}") {
-      if (flowDepth === 0) {
-        if (atStart) return true; // nothing is open, so it can't be a value; the parser's error path is slow on a run of these
-        continue;
-      }
+      if (flowDepth === 0) return true; // nothing is open. A real plain value with one only costs a trip on a changed file.
       flowDepth--;
       atStart = false;
       continue;

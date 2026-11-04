@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { DiffCtx, GuardrailResult } from "@globalhost/core";
-import { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_LOCKFILE_CHARS, refusedBeforeParsing } from "../src/index.js";
+import { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_FLOW_OPENERS, MAX_LOCKFILE_CHARS, refusedBeforeParsing } from "../src/index.js";
 
 // Recorded with real tools (npm 11.19.1, pnpm 12.16.1, bun 1.3.6) for { is-odd 3.0.1 (→ is-number), ms 2.1.3 (dev) }.
 const sample = (name: string) => fs.readFileSync(new URL(`./fixtures/lockfiles/${name}`, import.meta.url), "utf8");
@@ -483,6 +483,15 @@ describe("refusedBeforeParsing", () => {
     ["a closing bracket with nothing open", "]"],
     ["a quote after a closing quote", '""""'],
     ["a closing brace with nothing open", "a: }\n"],
+    ["a closing bracket after a plain value starts", "a: b]\n"],
+    ["more closers than openers", "a: {}}\n"],
+    ["a leading document marker with an anchor", "--- &a\nb: 1\n"],
+    ["a leading document marker with a tag", "--- !!map\nb: 1\n"],
+    ["a byte order mark before an anchor", "\uFEFF&a b: 1\n"],
+    ["a byte order mark before a document marker with an anchor", "\uFEFF--- &a\nb: 1\n"],
+    ["a byte order mark after a document marker", "--- \uFEFF&a\nb: 1\n"],
+    ["an anchor after a bare carriage return", "x: 1\r&a y: 2\n"],
+    ["a document marker after a bare carriage return", "x: 1\r--- &a\n"],
     ["a tag after a closed quote in flow", "['a', !x b]"],
   ])("finds %s", (_name, text) => {
     expect(refusedBeforeParsing(text)).toBe(true);
@@ -499,9 +508,13 @@ describe("refusedBeforeParsing", () => {
     ["a comment", "# &x\na: 1 # *y\n"],
     ["a plain value with an ampersand first after text", "a: b&c\n"],
     ["a version range", "a: ^1.0.0 || >=2\n"],
-    ["a bracket inside a plain value", "a: b]c}\n"],
+    ["an opening bracket inside a plain value", "a: b[c{\n"],
     ["a peer suffix", "foo@1.0.0(bar@2.0.0): {}\n"],
     ["JSON with trailing commas", '{"a": ["x", "", {}, "y",],}'],
+    ["closers in quotes", 'a: "]}"\n'],
+    ["a closer in a comment", "a: 1 # ]\n"],
+    ["a leading document marker", "---\na: 1\n"],
+    ["a leading byte order mark", "\uFEFFa: 1\n"],
     ["empty text", ""],
   ])("allows %s", (_name, text) => {
     expect(refusedBeforeParsing(text)).toBe(false);
@@ -515,6 +528,45 @@ describe("refusedBeforeParsing", () => {
     ["this repo's own pnpm-lock.yaml", fs.readFileSync(new URL("../../../../pnpm-lock.yaml", import.meta.url), "utf8")],
   ])("allows the real file: %s", (_name, text) => {
     expect(refusedBeforeParsing(text)).toBe(false);
+  });
+
+  // Each of these ran Node out of heap when it reached the parser, which nothing in the process can catch.
+  describe("inputs that exhaust the heap", () => {
+    const repeatTo = (unit: string, size: number) => unit.repeat(Math.floor(size / unit.length));
+    const closers = `a: ${"{".repeat(60)}${"}".repeat(MAX_LOCKFILE_CHARS - 100)}`;
+    const nested = repeatTo(`${"[".repeat(60)}a${"]".repeat(60)}\n`, MAX_LOCKFILE_CHARS - 1);
+
+    it.each([
+      ["a run of stray closers", closers],
+      ["repeated nesting that stays under the depth limit", nested],
+    ])("%s is refused before the parser", { timeout: 20_000 }, async (_name, text) => {
+      expect(text.length).toBeLessThanOrEqual(MAX_LOCKFILE_CHARS);
+      expect(refusedBeforeParsing(text)).toBe(true);
+      const started = performance.now();
+      expect(reasonOf(await evaluate({ "pnpm-lock.yaml": PNPM }, { "pnpm-lock.yaml": text }))).toContain("could not be parsed");
+      expect(performance.now() - started).toBeLessThan(10_000);
+    });
+
+    it("the limit on opening brackets is exact", () => {
+      const brackets = (n: number) => `a: [${"[],".repeat(n - 1)}]\n`;
+      expect(refusedBeforeParsing(brackets(MAX_FLOW_OPENERS))).toBe(false);
+      expect(refusedBeforeParsing(brackets(MAX_FLOW_OPENERS + 1))).toBe(true);
+    });
+
+    it("real files sit well under the limit", () => {
+      const real = fs.readFileSync(new URL("../../../../pnpm-lock.yaml", import.meta.url), "utf8");
+      for (const text of [NPM, PNPM, BUN, MANIFEST, real]) expect((text.match(/[[{]/g) ?? []).length).toBeLessThan(MAX_FLOW_OPENERS / 10);
+    });
+
+    it("a lockfile-shaped file at the size cap is under the limit", () => {
+      const entry = (i: number) => `  p${i}@1.0.0: {resolution: {integrity: sha512-${"x".repeat(88)}}, engines: {node: '>=4'}}\n`;
+      const lines: string[] = [];
+      for (let i = 0, size = 0; size < MAX_LOCKFILE_CHARS - 200; i++) {
+        lines.push(entry(i));
+        size += lines.at(-1)!.length;
+      }
+      expect(refusedBeforeParsing(`packages:\n${lines.join("")}`)).toBe(false);
+    });
   });
 
   // These took from 12s to over 50s at 480 KB when they reached the parser. Refused before it, they don't depend on size,

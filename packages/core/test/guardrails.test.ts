@@ -210,6 +210,16 @@ describe("renames and modes", () => {
     expect(report.verdict).toBe("needsApproval");
   });
 
+  it.each([
+    ["undefined", undefined],
+    ["null", null],
+    ["a string", "100644"],
+  ])("modes that are %s at runtime trip rather than throw", async (_name, modes) => {
+    const report = await run({ files: [{ path: "docs/notes", modes } as unknown as ChangedFile] });
+    expect(report.entries.find((e) => e.id === "redirecting-file")?.verdict).toBe("needsApproval");
+    expect(report.verdict).toBe("needsApproval");
+  });
+
   it("ordinary modes, an executable bit included, don't trip", async () => {
     expect(await tripped({ files: [{ path: "bin/run", modes: ["100644", "100755"] }, { path: "gone", modes: ["100644", "000000"] }] })).toEqual([]);
   });
@@ -515,7 +525,7 @@ describe("results are safe to post", () => {
 
   it("safePath stops a bare www name from linking", () => {
     expect(safePath("www.evil.example/x")).toBe("www%2Eevil.example/x");
-    expect(safePath("WWW.evil.example")).toBe("www%2Eevil.example");
+    expect(safePath("WWW.evil.example")).toBe("WWW%2Eevil.example");
     expect(safePath("src/awww.ts")).toBe("src/awww.ts");
   });
 
@@ -530,7 +540,7 @@ describe("results are safe to post", () => {
     expect(out).toMatch(/^[A-Za-z0-9 .,:;()/_=+'?-]*$/);
     expect(out).not.toContain("://");
     expect(out).not.toContain("ghp_0123");
-    expect(safeText("see www.evil.example and WWW.evil.example now")).toBe("see www?evil.example and www?evil.example now");
+    expect(safeText("see www.evil.example and WWW.evil.example now")).toBe("see www?evil.example and WWW?evil.example now");
     expect(safeText("<>").length).toBeGreaterThan(0);
     expect(safeText("")).toBe("no reason given");
     expect(safeText("y".repeat(5000)).length).toBeLessThanOrEqual(300);

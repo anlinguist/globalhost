@@ -4,7 +4,7 @@
 // detector here that converts its version syntax into core's canonical range grammar.
 import { MAX_TOOLCHAIN_NOTES, ToolchainSchema, type Toolchain } from "@globalhost/core";
 
-export { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_LOCKFILE_CHARS, refusedBeforeParsing } from "./dependency-change.js";
+export { dependencyChange, DEPENDENCY_CHANGE_GLOBS, MAX_FLOW_OPENERS, MAX_LOCKFILE_CHARS, refusedBeforeParsing } from "./dependency-change.js";
 export { bunRequirement, CI_WORKFLOW, detectBun, detectNode, NODE_VERSION_FILES, nodeRequirement } from "./node.js";
 export { detectPython, detectUv, pythonRequirement, uvRequirement } from "./python.js";
 export { ANY, UNSATISFIABLE, canonicalToPep440, MAX_SPEC_CHARS, npmRangeToCanonical, pep440ToCanonical, type Converted } from "./ranges.js";
